@@ -12,9 +12,14 @@ from drf_spectacular.views import (
     SpectacularRedocView,
 )
 
+from django.http import JsonResponse
 from academics.views import TelegramWebhookView
 
+def health_check(request):
+    return JsonResponse({"status": "healthy", "service": "SmartTalim Backend"})
+
 urlpatterns = [
+    path('', health_check, name='health-check'),
     path('admin/', admin.site.urls),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
 
