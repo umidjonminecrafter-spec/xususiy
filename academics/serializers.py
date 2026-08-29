@@ -117,6 +117,7 @@ class StudentSerializer(serializers.ModelSerializer):
         model = Student
         fields = [
             'id', 'first_name', 'last_name', 'phone', 'email', 'balance',
+            'school_class',
             'referred_by', 'moderator', 'debt_limit',
             'student_login', 'parent_login', 'password',
             'telegram_chat_id', 'category', 'birth_date', 'application',
@@ -248,6 +249,14 @@ class StudentSerializer(serializers.ModelSerializer):
 
         if 'phone_number' in data and 'phone' not in data:
             data['phone'] = data['phone_number']
+
+        if 'school_class_id' in data and 'school_class' not in data:
+            data['school_class'] = data['school_class_id']
+        elif 'class_id' in data and 'school_class' not in data:
+            data['school_class'] = data['class_id']
+        elif 'class' in data and 'school_class' not in data:
+            data['school_class'] = data['class']
+
         return super().to_internal_value(data)
 
     def create(self, validated_data):
@@ -255,6 +264,18 @@ class StudentSerializer(serializers.ModelSerializer):
         phone = validated_data.get('phone')
 
         student = super().create(validated_data)
+
+        if student.school_class:
+            from academics.models import ClassStudent
+            ClassStudent.objects.update_or_create(
+                student=student,
+                school_class=student.school_class,
+                defaults={
+                    'is_active': True,
+                    'organization': student.organization,
+                    'branch': student.branch
+                }
+            )
 
         if phone:
             from accounts.models import User
@@ -290,6 +311,21 @@ class StudentSerializer(serializers.ModelSerializer):
         old_phone = instance.phone
         student = super().update(instance, validated_data)
 
+        from academics.models import ClassStudent
+        if student.school_class:
+            ClassStudent.objects.update_or_create(
+                student=student,
+                school_class=student.school_class,
+                defaults={
+                    'is_active': True,
+                    'organization': student.organization,
+                    'branch': student.branch
+                }
+            )
+            ClassStudent.objects.filter(student=student).exclude(school_class=student.school_class).update(is_active=False)
+        elif 'school_class' in validated_data and validated_data['school_class'] is None:
+            ClassStudent.objects.filter(student=student).update(is_active=False)
+
         from accounts.models import User
         user = User.objects.filter(username=old_phone).first()
         if user:
@@ -309,6 +345,22 @@ class StudentSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         rep = super().to_representation(instance)
         rep['full_name'] = f"{instance.first_name} {instance.last_name}".strip()
+
+        if instance.school_class:
+            rep['school_class_name'] = str(instance.school_class)
+            rep['class_name'] = str(instance.school_class)
+            rep['school_class_detail'] = {
+                'id': instance.school_class.id,
+                'name': str(instance.school_class),
+                'grade_level': instance.school_class.grade_level,
+                'section': instance.school_class.section,
+                'language': getattr(instance.school_class, 'language', 'uz'),
+                'academic_year': getattr(instance.school_class, 'academic_year', '')
+            }
+        else:
+            rep['school_class_name'] = None
+            rep['class_name'] = None
+            rep['school_class_detail'] = None
 
         # Check hide_student_data setting for teachers
         request = self.context.get('request')

@@ -88,6 +88,14 @@ class Student(TenantModel):
     student_login = models.CharField(null=True, blank=True,)
     parent_login = models.CharField(null=True, blank=True,)
     is_archived = models.BooleanField(default=False)
+    school_class = models.ForeignKey(
+        'academics.SchoolClass',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='students_list',
+        verbose_name="Sinfi"
+    )
 
     def __str__(self):
         if self.last_name:
@@ -128,6 +136,7 @@ class StudentFieldSetting(TenantModel):
         ("payment_date", "To'lov sanasi"),
         ("address", "Uy manzili"),
         ("target_university", "Maqsad qilgan universitet"),
+        ("school_class", "Sinf"),
         ("organization", "Tashkilot"),
         ("father_name", "Otasining ismi"),
         ("father_phone", "Otasining telefon raqami"),

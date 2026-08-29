@@ -1273,6 +1273,70 @@ class NewAcademicsAndStudentsAPITests(APITestCase):
         self.assertEqual(course_res.data['color'], "#FF5733")
         self.assertTrue(course_res.data['is_active'])
 
+    def test_student_school_class_create_update_and_filter(self):
+        from academics.models import SchoolClass, ClassStudent, Student
+
+        # 1. Create a SchoolClass
+        school_class = SchoolClass.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            grade_level="5",
+            section="B",
+            language="uz",
+            academic_year="2026-2027"
+        )
+
+        # 2. Create a new Student with school_class
+        res = self.client.post('/api/v1/academics/students/', {
+            "first_name": "Sardor",
+            "last_name": "Rahimov",
+            "phone": "+998905556677",
+            "password": "password123",
+            "school_class": school_class.id
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['school_class'], school_class.id)
+        self.assertEqual(res.data['school_class_name'], "5-B")
+        self.assertEqual(res.data['class_name'], "5-B")
+        self.assertEqual(res.data['school_class_detail']['grade_level'], "5")
+        student_id = res.data['id']
+
+        # Verify ClassStudent was automatically created
+        self.assertTrue(
+            ClassStudent.objects.filter(student_id=student_id, school_class=school_class, is_active=True).exists()
+        )
+
+        # 3. Filter students by school_class
+        filter_res = self.client.get(f'/api/v1/academics/students/?school_class={school_class.id}')
+        self.assertEqual(filter_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(filter_res.data), 1)
+        self.assertEqual(filter_res.data[0]['id'], student_id)
+
+        # 4. Update student class to another class
+        school_class_6a = SchoolClass.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            grade_level="6",
+            section="A",
+            language="uz",
+            academic_year="2026-2027"
+        )
+
+        patch_res = self.client.patch(f'/api/v1/academics/students/{student_id}/', {
+            "school_class": school_class_6a.id
+        })
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_res.data['school_class'], school_class_6a.id)
+        self.assertEqual(patch_res.data['school_class_name'], "6-A")
+
+        # Verify previous class is inactive and new class is active in ClassStudent
+        self.assertTrue(
+            ClassStudent.objects.filter(student_id=student_id, school_class=school_class_6a, is_active=True).exists()
+        )
+        self.assertTrue(
+            ClassStudent.objects.filter(student_id=student_id, school_class=school_class, is_active=False).exists()
+        )
+
 
 
 

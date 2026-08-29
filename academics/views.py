@@ -176,10 +176,10 @@ class RoomViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Talabalar'
-    queryset = Student.objects.all()
+    queryset = Student.objects.all().select_related('school_class')
     serializer_class = StudentSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
-    search_fields = ['first_name', 'last_name', 'phone', 'email']
+    search_fields = ['first_name', 'last_name', 'phone', 'email', 'school_class__grade_level', 'school_class__section']
     pagination_class = None
 
     def get_queryset(self):
@@ -187,6 +187,16 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         group_id = self.request.query_params.get('group') or self.request.query_params.get('group_id')
         if group_id:
             queryset = queryset.filter(student_groups__group_id=group_id)
+
+        # 🌟 Sinf (SchoolClass) bo'yicha filterlash
+        class_id = (
+            self.request.query_params.get('school_class') or
+            self.request.query_params.get('school_class_id') or
+            self.request.query_params.get('class_id') or
+            self.request.query_params.get('class')
+        )
+        if class_id:
+            queryset = queryset.filter(school_class_id=class_id)
 
         # 🌟 Yangi: ID bo'yicha filterlash
         student_id = self.request.query_params.get('id')
@@ -2466,6 +2476,10 @@ class SchoolClassViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 added.append(int(s_id))
             except Exception:
                 pass
+
+        if added:
+            Student.objects.filter(id__in=added).update(school_class=school_class)
+
         return Response({'status': 'success', 'added_students': added}, status=status.HTTP_200_OK)
 
     # Sinfdan o'quvchini chiqarish
@@ -2477,6 +2491,7 @@ class SchoolClassViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             return Response({'error': 'student_id talab qilinadi'}, status=status.HTTP_400_BAD_REQUEST)
         
         updated = ClassStudent.objects.filter(school_class=school_class, student_id=student_id).update(is_active=False)
+        Student.objects.filter(id=student_id, school_class=school_class).update(school_class=None)
         return Response({'status': 'removed_successfully', 'updated_count': updated}, status=status.HTTP_200_OK)
 
     # O'quvchini boshqa sinfga o'tkazish (Transfer)
@@ -2507,6 +2522,7 @@ class SchoolClassViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 'branch': target_class.branch
             }
         )
+        Student.objects.filter(id=student_id).update(school_class=target_class)
         return Response({'status': 'transferred_successfully'}, status=status.HTTP_200_OK)
 
 

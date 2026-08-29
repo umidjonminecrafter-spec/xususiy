@@ -29,8 +29,10 @@ class RoomAdmin(admin.ModelAdmin):
 
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
-    list_display = ('id', 'first_name', 'last_name', 'phone', 'balance', 'organization')
-    search_fields = ('first_name', 'last_name', 'phone')
+    list_display = ('id', 'first_name', 'last_name', 'phone', 'school_class', 'balance', 'is_archived', 'organization')
+    list_filter = ('school_class', 'is_archived', 'organization', 'branch')
+    search_fields = ('first_name', 'last_name', 'phone', 'school_class__grade_level', 'school_class__section')
+    raw_id_fields = ('school_class',)
 
 @admin.register(Group)
 class GroupAdmin(admin.ModelAdmin):
