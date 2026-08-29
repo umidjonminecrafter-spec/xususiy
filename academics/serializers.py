@@ -2,7 +2,8 @@ from rest_framework import serializers
 from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, LessonSchedule,
     BalanceHistory, Exam, ExamResult, LeaveReason, LessonTime, OnlineLesson, StudentGroupLeave, StudentPricing,
-    StudentArchive, Holiday, Homework, StudentEvaluationLevel, CourseMaterial
+    StudentArchive, Holiday, Homework, StudentEvaluationLevel, CourseMaterial,
+    Building, SchoolClass, ClassStudent, Parent, StudentAddress
 )
 from accounts.serializers import UserSerializer
 from .models import StudentFieldSetting, GroupLesson
@@ -822,13 +823,21 @@ class HolidaySerializer(serializers.ModelSerializer):
 
 
 class HomeworkSerializer(serializers.ModelSerializer):
-    group_name = serializers.CharField(source='group.name', read_only=True)
+    group_name = serializers.CharField(source='group.name', read_only=True, default='')
+    teacher_name = serializers.SerializerMethodField(read_only=True)
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
 
     class Meta:
         model = Homework
         fields = '__all__'
         read_only_fields = ('organization', 'created_by', 'created_at', 'updated_at')
+
+    def get_teacher_name(self, obj):
+        if obj.teacher:
+            return obj.teacher.get_full_name() or getattr(obj.teacher, 'full_name', None) or obj.teacher.username
+        if obj.created_by:
+            return obj.created_by.get_full_name() or obj.created_by.username
+        return ''
 
 
 class StudentFieldSettingSerializer(serializers.ModelSerializer):
@@ -928,3 +937,83 @@ class CourseMaterialSerializer(serializers.ModelSerializer):
             rep['file_url'] = None
             rep['file_name'] = None
         return rep
+
+
+# ─────────────────────────────────────────────────────────────
+# 1. BINO SERIALIZER
+# ─────────────────────────────────────────────────────────────
+class BuildingSerializer(serializers.ModelSerializer):
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='')
+
+    class Meta:
+        model = Building
+        fields = '__all__'
+        read_only_fields = ('organization', 'created_at', 'updated_at')
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. SINF SERIALIZER
+# ─────────────────────────────────────────────────────────────
+class SchoolClassSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(read_only=True)
+    teacher_name = serializers.SerializerMethodField(read_only=True)
+    room_name = serializers.CharField(source='room.name', read_only=True, default='')
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='')
+    students_count = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = SchoolClass
+        fields = [
+            'id', 'branch', 'branch_name', 'name', 'grade_level', 'section', 'language',
+            'teacher', 'teacher_name', 'room', 'room_name',
+            'academic_year', 'students_count', 'created_at'
+        ]
+        read_only_fields = ('organization', 'created_at', 'updated_at')
+
+    def get_teacher_name(self, obj):
+        if obj.teacher:
+            return obj.teacher.get_full_name() or getattr(obj.teacher, 'full_name', None) or obj.teacher.username
+        return ''
+
+    def get_students_count(self, obj):
+        return obj.students.filter(is_active=True).count()
+
+
+# ─────────────────────────────────────────────────────────────
+# 3. SINF TARKIBIDAGI TALABA SERIALIZER
+# ─────────────────────────────────────────────────────────────
+class ClassStudentSerializer(serializers.ModelSerializer):
+    student_id = serializers.IntegerField(source='student.id', read_only=True)
+    full_name = serializers.CharField(source='student.full_name', read_only=True)
+    phone = serializers.CharField(source='student.phone', read_only=True)
+    balance = serializers.DecimalField(source='student.balance', max_digits=12, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = ClassStudent
+        fields = ['id', 'student_id', 'full_name', 'phone', 'balance', 'is_active', 'joined_at']
+        read_only_fields = ('organization', 'created_at', 'updated_at')
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. OTA-ONA SERIALIZER
+# ─────────────────────────────────────────────────────────────
+class ParentSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='student.full_name', read_only=True)
+    relation_display = serializers.CharField(source='get_relation_display', read_only=True)
+
+    class Meta:
+        model = Parent
+        fields = '__all__'
+        read_only_fields = ('organization', 'created_at', 'updated_at')
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. O'QUVCHI MANZILI SERIALIZER
+# ─────────────────────────────────────────────────────────────
+class StudentAddressSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='student.full_name', read_only=True)
+
+    class Meta:
+        model = StudentAddress
+        fields = '__all__'
+        read_only_fields = ('organization', 'created_at', 'updated_at')

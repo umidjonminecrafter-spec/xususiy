@@ -10,7 +10,8 @@ from .views import (
     VerifyCodeAPIView, StudentProfileAPIView, StudentLessonsAPIView, ParentStudentsAPIView, ParentStudentDetailsAPIView,
     StaffProfileAPIView, StaffScheduleAPIView, BotMessageTemplateViewSet, TelegramWebhookView, SetLessonTopicAPIView,
     CancelOrRestoreLessonAPIView, RescheduleLessonAPIView, GroupLessonListAPIView, BirthdayCalendarAPIView,
-    StudentEvaluationLevelViewSet, CourseMaterialViewSet, CheckBotRegistrationAPIView
+    StudentEvaluationLevelViewSet, CourseMaterialViewSet, CheckBotRegistrationAPIView,
+    BuildingViewSet, SchoolClassViewSet, ParentViewSet, StudentAddressViewSet
 )
 from .views import StudentFieldSettingViewSet
 from finance.views import TeacherSalaryCalculationViewSet, TeacherSalaryRuleViewSet
@@ -39,6 +40,10 @@ router.register(r'student-balances', StudentBalancesViewSet, basename='student-b
 router.register(r'attendances', AttendanceViewSet, basename='attendance')
 
 # New ViewSets
+router.register(r'buildings', BuildingViewSet, basename='building')
+router.register(r'classes', SchoolClassViewSet, basename='school-class')
+router.register(r'parents', ParentViewSet, basename='parent')
+router.register(r'addresses', StudentAddressViewSet, basename='student-address')
 router.register(r'holidays', HolidayViewSet, basename='holiday')
 router.register(r'balance-history', BalanceHistoryViewSet, basename='balance-history')
 router.register(r'exams', ExamViewSet, basename='exam')
@@ -49,6 +54,7 @@ router.register(r'online-lessons', OnlineLessonViewSet, basename='online-lesson'
 router.register(r'student-group-leaves', StudentGroupLeaveViewSet, basename='student-group-leave')
 router.register(r'student-pricings', StudentPricingViewSet, basename='student-pricing')
 router.register(r'archive', StudentArchiveViewSet, basename='student-archive')
+router.register(r'homework', HomeworkViewSet, basename='homework-single')
 router.register(r'homeworks', HomeworkViewSet, basename='homework')
 router.register(r'bot-message-templates', BotMessageTemplateViewSet, basename='bot-message-template')
 

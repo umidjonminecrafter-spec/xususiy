@@ -45,6 +45,7 @@ urlpatterns = [
     # Versioned app endpoints
     path('api/v1/accounts/', include('accounts.urls')),
     path('api/v1/academics/', include('academics.urls')),
+    path('api/v1/students/', include('academics.student_urls')),
     path('api/v1/finance/', include('finance.urls')),
     
     # CRM supports /api/v1/crm/ and /api/v1/crm/crm/

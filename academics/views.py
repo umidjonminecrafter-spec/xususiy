@@ -14,7 +14,8 @@ from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, LessonSchedule,
     BalanceHistory, Exam, ExamResult, LeaveReason, LessonTime, OnlineLesson, StudentGroupLeave, StudentPricing,
     StudentArchive, Holiday, Homework,
-    BotMessageTemplate, CourseMaterial
+    BotMessageTemplate, CourseMaterial,
+    Building, SchoolClass, ClassStudent, Parent, StudentAddress
 )
 from organizations.mixins import TenantViewSetMixin
 from organizations.permissions import (
@@ -26,7 +27,8 @@ from academics.serializers import (
     LessonScheduleSerializer, StudentBalanceSerializer, BalanceHistorySerializer, ExamSerializer,
     ExamResultSerializer, LeaveReasonSerializer, LessonTimeSerializer, OnlineLessonSerializer,
     StudentGroupLeaveSerializer, StudentPricingSerializer, StudentArchiveSerializer, HolidaySerializer,
-    HomeworkSerializer, BotMessageTemplateSerializer, CourseMaterialSerializer
+    HomeworkSerializer, BotMessageTemplateSerializer, CourseMaterialSerializer,
+    BuildingSerializer, SchoolClassSerializer, ClassStudentSerializer, ParentSerializer, StudentAddressSerializer
 )
 
 from .models import TelegramVerification, Student
@@ -1774,10 +1776,11 @@ class HolidayViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 class HomeworkViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     permission_page_name = 'Guruhlar'
-    queryset = Homework.objects.select_related('group', 'created_by').all()
+    queryset = Homework.objects.select_related('group', 'teacher', 'created_by').all()
     serializer_class = HomeworkSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
-    search_fields = ['title', 'text', 'group__name']
+    filterset_fields = ['group', 'teacher']
+    search_fields = ['title', 'description', 'text', 'group__name']
     pagination_class = None
 
     def get_queryset(self):
@@ -1785,6 +1788,10 @@ class HomeworkViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         group_id = self.request.query_params.get('group') or self.request.query_params.get('group_id')
         if group_id:
             queryset = queryset.filter(group_id=group_id)
+
+        teacher_id = self.request.query_params.get('teacher') or self.request.query_params.get('teacher_id')
+        if teacher_id:
+            queryset = queryset.filter(teacher_id=teacher_id)
 
         current_user = getattr(self.request, 'user', None)
         if current_user and getattr(current_user, 'role', None) == 'student':
@@ -2388,3 +2395,134 @@ class CheckBotRegistrationAPIView(APIView):
             }, status=status.HTTP_200_OK)
 
         return Response({"error": "phone, student_id yoki user_id yuborilishi majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ─────────────────────────────────────────────────────────────
+# 1. BINOLAR VIEWSET
+# ─────────────────────────────────────────────────────────────
+class BuildingViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    queryset = Building.objects.all()
+    serializer_class = BuildingSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ['branch']
+    search_fields = ['name', 'address']
+    pagination_class = None
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. SINFLAR VIEWSET
+# ─────────────────────────────────────────────────────────────
+class SchoolClassViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    queryset = SchoolClass.objects.all().select_related('teacher', 'room', 'branch')
+    serializer_class = SchoolClassSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ['branch', 'grade_level', 'language', 'academic_year', 'teacher']
+    search_fields = ['grade_level', 'section', 'teacher__first_name', 'teacher__last_name', 'teacher__username']
+    pagination_class = None
+
+    # Sinf ichidagi faol o'quvchilar ro'yxati
+    @decorators.action(detail=True, methods=['get'])
+    def students(self, request, pk=None):
+        school_class = self.get_object()
+        class_students = school_class.students.filter(is_active=True).select_related('student')
+        serializer = ClassStudentSerializer(class_students, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    # Sinfga o'quvchi biriktirish (bitta yoki ko'plab)
+    @decorators.action(detail=True, methods=['post'], url_path='add-students')
+    def add_students(self, request, pk=None):
+        school_class = self.get_object()
+        
+        if hasattr(request.data, 'getlist') and len(request.data.getlist('student_ids')) > 0:
+            student_ids = request.data.getlist('student_ids')
+        else:
+            student_ids = request.data.get('student_ids', [])
+
+        if not isinstance(student_ids, list):
+            student_ids = [student_ids]
+        
+        added = []
+        for s_id in student_ids:
+            try:
+                obj, created = ClassStudent.objects.update_or_create(
+                    school_class=school_class,
+                    student_id=int(s_id),
+                    defaults={
+                        'is_active': True,
+                        'organization': school_class.organization,
+                        'branch': school_class.branch
+                    }
+                )
+                added.append(int(s_id))
+            except Exception:
+                pass
+        return Response({'status': 'success', 'added_students': added}, status=status.HTTP_200_OK)
+
+    # Sinfdan o'quvchini chiqarish
+    @decorators.action(detail=True, methods=['post'], url_path='remove-student')
+    def remove_student(self, request, pk=None):
+        school_class = self.get_object()
+        student_id = request.data.get('student_id')
+        if not student_id:
+            return Response({'error': 'student_id talab qilinadi'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        updated = ClassStudent.objects.filter(school_class=school_class, student_id=student_id).update(is_active=False)
+        return Response({'status': 'removed_successfully', 'updated_count': updated}, status=status.HTTP_200_OK)
+
+    # O'quvchini boshqa sinfga o'tkazish (Transfer)
+    @decorators.action(detail=True, methods=['post'], url_path='transfer-student')
+    def transfer_student(self, request, pk=None):
+        source_class = self.get_object()
+        student_id = request.data.get('student_id')
+        target_class_id = request.data.get('target_class_id')
+        
+        if not student_id or not target_class_id:
+            return Response({'error': 'student_id va target_class_id talab qilinadi'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            target_class = SchoolClass.objects.get(id=target_class_id)
+        except SchoolClass.DoesNotExist:
+            return Response({'error': f'ID si {target_class_id} bo\'lgan sinf topilmadi'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Eski sinfda nofaol qilish
+        ClassStudent.objects.filter(school_class=source_class, student_id=student_id).update(is_active=False)
+        
+        # Yangi sinfga biriktirish
+        ClassStudent.objects.update_or_create(
+            school_class=target_class,
+            student_id=student_id,
+            defaults={
+                'is_active': True,
+                'organization': target_class.organization,
+                'branch': target_class.branch
+            }
+        )
+        return Response({'status': 'transferred_successfully'}, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────────────────────
+# 3. OTA-ONALAR VIEWSET
+# ─────────────────────────────────────────────────────────────
+class ParentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    queryset = Parent.objects.all().select_related('student')
+    serializer_class = ParentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ['student', 'relation', 'branch']
+    search_fields = ['full_name', 'phone', 'student__first_name', 'student__last_name', 'workplace', 'address']
+    pagination_class = None
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. O'QUVCHI MANZILLARI VIEWSET
+# ─────────────────────────────────────────────────────────────
+class StudentAddressViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    queryset = StudentAddress.objects.all().select_related('student')
+    serializer_class = StudentAddressSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ['region', 'district', 'student', 'branch']
+    search_fields = ['student__first_name', 'student__last_name', 'address', 'district', 'parent_name', 'parent_phone']
+    pagination_class = None

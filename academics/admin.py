@@ -1,5 +1,8 @@
 from django.contrib import admin
-from academics.models import Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, Homework,StudentFieldSetting, CourseMaterial
+from academics.models import (
+    Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, Homework,
+    StudentFieldSetting, CourseMaterial, Building, SchoolClass, ClassStudent, Parent, StudentAddress
+)
 from .models import BotMessageTemplate, LessonSchedule
 
 # khsrfbksazgfnhakrsgnvksdrzjvnds
@@ -10,7 +13,7 @@ class BotMessageTemplateAdmin(admin.ModelAdmin):
     search_fields = ('title', 'text')
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'price', 'duration_weeks', 'organization')
+    list_display = ('id', 'name', 'price', 'duration_weeks', 'color', 'is_active', 'organization')
     search_fields = ('name',)
 
 @admin.register(StudentFieldSetting)
@@ -56,9 +59,9 @@ class AttendanceAdmin(admin.ModelAdmin):
 
 @admin.register(Homework)
 class HomeworkAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title', 'group', 'due_date', 'organization')
-    list_filter = ('due_date',)
-    search_fields = ('title', 'text', 'group__name')
+    list_display = ('id', 'title', 'group', 'teacher', 'deadline', 'due_date', 'organization')
+    list_filter = ('deadline', 'due_date')
+    search_fields = ('title', 'description', 'text', 'group__name')
 
 @admin.register(LessonSchedule)
 class LessonScheduleAdmin(admin.ModelAdmin):
@@ -71,4 +74,39 @@ class CourseMaterialAdmin(admin.ModelAdmin):
     list_display = ('id', 'course', 'title', 'material_type', 'is_published', 'order', 'organization')
     list_filter = ('material_type', 'is_published', 'organization')
     search_fields = ('title', 'description', 'course__name')
+
+
+@admin.register(Building)
+class BuildingAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'branch', 'capacity', 'organization')
+    search_fields = ('name', 'address')
+    list_filter = ('branch', 'organization')
+
+
+@admin.register(SchoolClass)
+class SchoolClassAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'grade_level', 'section', 'language', 'teacher', 'room', 'academic_year', 'organization')
+    search_fields = ('grade_level', 'section', 'teacher__username')
+    list_filter = ('language', 'academic_year', 'branch', 'organization')
+
+
+@admin.register(ClassStudent)
+class ClassStudentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'school_class', 'student', 'is_active', 'joined_at', 'organization')
+    list_filter = ('is_active', 'school_class')
+
+
+@admin.register(Parent)
+class ParentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'full_name', 'relation', 'phone', 'student', 'organization')
+    search_fields = ('full_name', 'phone', 'student__first_name', 'student__last_name')
+    list_filter = ('relation', 'organization')
+
+
+@admin.register(StudentAddress)
+class StudentAddressAdmin(admin.ModelAdmin):
+    list_display = ('id', 'student', 'region', 'district', 'parent_name', 'parent_phone', 'organization')
+    search_fields = ('student__first_name', 'student__last_name', 'district', 'address')
+    list_filter = ('region', 'organization')
+
 

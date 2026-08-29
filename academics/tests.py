@@ -1049,6 +1049,211 @@ class StudentGroupLeaveTests(APITestCase):
         self.assertEqual(serializer2.errors["phone"][0], "Telefon raqami noto'g'ri formatda. Loyihada O'zbekiston raqamlari (+998XXXXXXXXX) qabul qilinadi.")
 
 
+class NewAcademicsAndStudentsAPITests(APITestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Smart Test Org")
+        from organizations.models import Subscription, Tariff, Branch
+        from decimal import Decimal
+        import datetime
+        today = datetime.date.today()
+        default_tariff = Tariff.objects.create(name="Premium", price=Decimal("100.00"), student_limit=0)
+        Subscription.objects.create(
+            organization=self.org,
+            tariff=default_tariff,
+            start_date=today,
+            end_date=today + datetime.timedelta(days=365),
+            is_active=True
+        )
+        self.branch = Branch.objects.create(name="Main Branch", organization=self.org)
+        self.admin_user = User.objects.create_user(
+            username="admin_user",
+            password="password123",
+            role="admin",
+            organization=self.org,
+            branch=self.branch
+        )
+        self.teacher_user = User.objects.create_user(
+            username="teacher_user",
+            first_name="Olim",
+            last_name="Hasanov",
+            password="password123",
+            role="teacher",
+            organization=self.org,
+            branch=self.branch
+        )
+        from academics.models import Room, Course, Student, Group
+        self.room = Room.objects.create(name="101-Xona", capacity=25, organization=self.org, branch=self.branch)
+        self.course = Course.objects.create(
+            name="Matematika",
+            price=Decimal("300000.00"),
+            duration_weeks=12,
+            color="#FF5733",
+            is_active=True,
+            organization=self.org,
+            branch=self.branch
+        )
+        self.group = Group.objects.create(
+            name="Math-01",
+            course=self.course,
+            room=self.room,
+            teacher=self.teacher_user,
+            organization=self.org,
+            branch=self.branch
+        )
+        self.student1 = Student.objects.create(
+            first_name="Anvar",
+            last_name="Karimov",
+            phone="+998901112233",
+            balance=Decimal("50000.00"),
+            organization=self.org,
+            branch=self.branch
+        )
+        self.student2 = Student.objects.create(
+            first_name="Jasur",
+            last_name="Aliyev",
+            phone="+998904445566",
+            balance=Decimal("0.00"),
+            organization=self.org,
+            branch=self.branch
+        )
+        self.client.force_authenticate(user=self.admin_user)
+
+    def test_buildings_api(self):
+        # Create building
+        res = self.client.post('/api/v1/academics/buildings/', {
+            "branch": self.branch.id,
+            "name": "1-Bino (Asosiy)",
+            "address": "Chilonzor ko'chasi, 5-uy",
+            "capacity": 350
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['name'], "1-Bino (Asosiy)")
+        b_id = res.data['id']
+
+        # List buildings
+        list_res = self.client.get('/api/v1/academics/buildings/')
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_res.data), 1)
+
+    def test_classes_and_student_actions_api(self):
+        # Create Class
+        res = self.client.post('/api/v1/academics/classes/', {
+            "branch": self.branch.id,
+            "grade_level": "4",
+            "section": "A",
+            "language": "uz",
+            "teacher": self.teacher_user.id,
+            "room": self.room.id,
+            "academic_year": "2026-2027"
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        class_id = res.data['id']
+        self.assertEqual(res.data['name'], "4-A")
+        self.assertEqual(res.data['teacher_name'], "Olim Hasanov")
+
+        # Create target class for transfer
+        res_target = self.client.post('/api/v1/academics/classes/', {
+            "branch": self.branch.id,
+            "grade_level": "4",
+            "section": "B",
+            "language": "uz",
+            "academic_year": "2026-2027"
+        })
+        target_class_id = res_target.data['id']
+
+        # Add students to 4-A
+        add_res = self.client.post(f'/api/v1/academics/classes/{class_id}/add-students/', {
+            "student_ids": [self.student1.id, self.student2.id]
+        }, format='json')
+        self.assertEqual(add_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(add_res.data['added_students']), 2)
+
+        # Get students of 4-A
+        st_res = self.client.get(f'/api/v1/academics/classes/{class_id}/students/')
+        self.assertEqual(st_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(st_res.data), 2)
+        self.assertEqual(st_res.data[0]['full_name'], "Anvar Karimov")
+
+        # Transfer student1 to 4-B
+        transfer_res = self.client.post(f'/api/v1/academics/classes/{class_id}/transfer-student/', {
+            "student_id": self.student1.id,
+            "target_class_id": target_class_id
+        })
+        self.assertEqual(transfer_res.status_code, status.HTTP_200_OK)
+
+        # Verify student counts after transfer
+        st_res_source = self.client.get(f'/api/v1/academics/classes/{class_id}/students/')
+        self.assertEqual(len(st_res_source.data), 1)
+
+        st_res_target = self.client.get(f'/api/v1/academics/classes/{target_class_id}/students/')
+        self.assertEqual(len(st_res_target.data), 1)
+        self.assertEqual(st_res_target.data[0]['student_id'], self.student1.id)
+
+    def test_parents_api(self):
+        # Create parent via /api/v1/students/parents/
+        res = self.client.post('/api/v1/students/parents/', {
+            "student": self.student1.id,
+            "full_name": "Karimov Rustam",
+            "relation": "father",
+            "phone": "+998901234567",
+            "extra_phone": "+998934567890",
+            "workplace": "IT Park",
+            "address": "Yunusobod 14",
+            "comment": "Faol ota-ona"
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['student_name'], "Anvar Karimov")
+
+        # Also list via /api/v1/academics/parents/
+        list_res = self.client.get('/api/v1/academics/parents/')
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_res.data), 1)
+
+    def test_student_address_api(self):
+        # Create address via /api/v1/students/addresses/
+        res = self.client.post('/api/v1/students/addresses/', {
+            "student": self.student1.id,
+            "region": "Toshkent shahri",
+            "district": "Yunusobod tumani",
+            "address": "14-mavze, 22-uy, 45-xonadon",
+            "parent_name": "Karimov Rustam",
+            "parent_phone": "+998901234567",
+            "student_phone": "+998901112233",
+            "notes": "Markazga yaqin"
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['district'], "Yunusobod tumani")
+
+        # List via /api/v1/students/addresses/
+        list_res = self.client.get('/api/v1/students/addresses/')
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_res.data), 1)
+
+    def test_homework_and_courses_api(self):
+        import datetime
+        from django.utils import timezone
+        deadline = timezone.now() + datetime.timedelta(days=2)
+
+        # Create Homework via /api/v1/academics/homework/
+        hw_res = self.client.post('/api/v1/academics/homework/', {
+            "group": self.group.id,
+            "teacher": self.teacher_user.id,
+            "title": "Kvadrat tenglamalar",
+            "description": "1-10 mashqlarni yechish",
+            "deadline": deadline.isoformat()
+        })
+        self.assertEqual(hw_res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(hw_res.data['teacher_name'], "Olim Hasanov")
+        self.assertEqual(hw_res.data['group_name'], "Math-01")
+
+        # Course color and is_active check
+        course_res = self.client.get(f'/api/v1/academics/courses/{self.course.id}/')
+        self.assertEqual(course_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(course_res.data['color'], "#FF5733")
+        self.assertTrue(course_res.data['is_active'])
+
+
+
 
 
 

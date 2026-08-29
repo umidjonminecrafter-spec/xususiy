@@ -40,6 +40,8 @@ class Course(TenantModel):
     code = models.CharField(max_length=50, null=True, blank=True)
     lesson_time = models.CharField(max_length=50, null=True, blank=True)
     image = models.ImageField(upload_to='course_images/', null=True, blank=True)
+    color = models.CharField(max_length=30, blank=True, default="", verbose_name="Fan rangi (HEX/RGB)")
+    is_active = models.BooleanField(default=True, verbose_name="Faol / Nofaol")
 
     def __str__(self):
         return self.name
@@ -513,13 +515,23 @@ class Holiday(TenantModel):
 
 
 class Homework(TenantModel):
-    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="homeworks")
-    title = models.CharField(max_length=255)
-    text = models.TextField(null=True, blank=True)
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="homeworks", verbose_name="Guruh")
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="teaching_homeworks",
+        verbose_name="O'qituvchi"
+    )
+    title = models.CharField(max_length=255, verbose_name="Mavzu")
+    description = models.TextField(null=True, blank=True, verbose_name="Topshiriq tavsifi")
+    text = models.TextField(null=True, blank=True, verbose_name="Topshiriq tavsifi (eski)")
     image = models.ImageField(upload_to='group_homeworks/images/', null=True, blank=True)
     video = models.FileField(upload_to='group_homeworks/videos/', null=True, blank=True)
-    file = models.FileField(upload_to='group_homeworks/files/', null=True, blank=True)
-    due_date = models.DateField(null=True, blank=True)
+    file = models.FileField(upload_to='homeworks/', null=True, blank=True, verbose_name="Biriktirilgan fayl")
+    deadline = models.DateTimeField(null=True, blank=True, verbose_name="Topshirish muddati")
+    due_date = models.DateField(null=True, blank=True, verbose_name="Topshirish sanasi (eski)")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -529,6 +541,28 @@ class Homework(TenantModel):
     )
 
     def save(self, *args, **kwargs):
+        # Sync description and text
+        if self.description and not self.text:
+            self.text = self.description
+        elif self.text and not self.description:
+            self.description = self.text
+
+        # Sync deadline and due_date
+        if self.deadline and not self.due_date:
+            self.due_date = self.deadline.date()
+        elif self.due_date and not self.deadline:
+            import datetime
+            from django.utils import timezone
+            self.deadline = timezone.make_aware(
+                datetime.datetime.combine(self.due_date, datetime.time(23, 59, 59))
+            )
+
+        # Sync teacher and created_by
+        if self.teacher and not self.created_by:
+            self.created_by = self.teacher
+        elif self.created_by and not self.teacher:
+            self.teacher = self.created_by
+
         if self.group:
             if not self.branch_id and self.group.branch_id:
                 self.branch_id = self.group.branch_id
@@ -537,7 +571,7 @@ class Homework(TenantModel):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.group.name} - {self.title}"
+        return f"{self.group.name if self.group else 'Guruh'} - {self.title}"
 
 
 
@@ -1613,4 +1647,154 @@ def notify_new_student_to_report_bot(sender, instance, created, **kwargs):
             send_telegram_payment_notification(instance.organization, text, 'other_payments')
         except Exception as e:
             print(f"Error sending student notification to report bot: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────
+# 1. BINOLAR (BUILDINGS) MODELI
+# ─────────────────────────────────────────────────────────────
+class Building(TenantModel):
+    name = models.CharField(max_length=255, verbose_name="Bino nomi")
+    address = models.CharField(max_length=500, blank=True, null=True, verbose_name="Manzili")
+    capacity = models.PositiveIntegerField(default=0, verbose_name="Sig'imi")
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name = "Bino"
+        verbose_name_plural = "Binolar"
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. SINFLAR (SCHOOL CLASSES) MODELI
+# ─────────────────────────────────────────────────────────────
+class SchoolClass(TenantModel):
+    LANGUAGE_CHOICES = (
+        ('uz', "O'zbek"),
+        ('ru', "Rus"),
+        ('en', "Ingliz"),
+    )
+    grade_level = models.CharField(max_length=10, verbose_name="Sinf darajasi (masalan: 1, 4, 11)")
+    section = models.CharField(max_length=10, verbose_name="Sinf harfi (masalan: A, B, C)")
+    language = models.CharField(max_length=10, choices=LANGUAGE_CHOICES, default='uz', verbose_name="Ta'lim tili")
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='led_classes',
+        verbose_name="Sinf rahbari"
+    )
+    room = models.ForeignKey(
+        'academics.Room',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='classes',
+        verbose_name="Biriktirilgan xona"
+    )
+    academic_year = models.CharField(max_length=20, default="2026-2027", verbose_name="O'quv yili")
+
+    @property
+    def name(self):
+        return f"{self.grade_level}-{self.section}"
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name = "Sinf"
+        verbose_name_plural = "Sinflar"
+        unique_together = ('organization', 'branch', 'grade_level', 'section', 'academic_year')
+
+
+# ─────────────────────────────────────────────────────────────
+# 3. SINF O'QUVCHILARI (CLASS - STUDENT INTERMEDIATE)
+# ─────────────────────────────────────────────────────────────
+class ClassStudent(TenantModel):
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='students')
+    student = models.ForeignKey('academics.Student', on_delete=models.CASCADE, related_name='enrolled_classes')
+    is_active = models.BooleanField(default=True)
+    joined_at = models.DateField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Sinf o'quvchisi"
+        verbose_name_plural = "Sinf o'quvchilari"
+        unique_together = ('school_class', 'student')
+
+    def save(self, *args, **kwargs):
+        if self.school_class:
+            if not self.branch_id and self.school_class.branch_id:
+                self.branch_id = self.school_class.branch_id
+            if not self.organization_id and self.school_class.organization_id:
+                self.organization_id = self.school_class.organization_id
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.student} in {self.school_class}"
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. OTA-ONALAR (PARENTS / GUARDIANS) MODELI
+# ─────────────────────────────────────────────────────────────
+class Parent(TenantModel):
+    RELATION_CHOICES = (
+        ('father', 'Otasi'),
+        ('mother', 'Onasi'),
+        ('guardian', 'Vasiy'),
+        ('other', 'Boshqa'),
+    )
+    student = models.ForeignKey('academics.Student', on_delete=models.CASCADE, related_name='parents', verbose_name="O'quvchisi")
+    full_name = models.CharField(max_length=255, verbose_name="F.I.O")
+    relation = models.CharField(max_length=20, choices=RELATION_CHOICES, default='father', verbose_name="Qarindoshlik darajasi")
+    phone = models.CharField(max_length=30, verbose_name="Asosiy telefon")
+    extra_phone = models.CharField(max_length=30, blank=True, null=True, verbose_name="Qo'shimcha telefon")
+    workplace = models.CharField(max_length=255, blank=True, null=True, verbose_name="Ish joyi / Kasbi")
+    address = models.CharField(max_length=500, blank=True, null=True, verbose_name="Manzili")
+    comment = models.TextField(blank=True, null=True, verbose_name="Izoh")
+
+    class Meta:
+        verbose_name = "Ota-ona"
+        verbose_name_plural = "Ota-onalar"
+
+    def save(self, *args, **kwargs):
+        if self.student:
+            if not self.branch_id and self.student.branch_id:
+                self.branch_id = self.student.branch_id
+            if not self.organization_id and self.student.organization_id:
+                self.organization_id = self.student.organization_id
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.full_name} ({self.get_relation_display()})"
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. O'QUVCHILAR YASHASH MANZILLARI (STUDENT ADDRESSES)
+# ─────────────────────────────────────────────────────────────
+class StudentAddress(TenantModel):
+    student = models.OneToOneField('academics.Student', on_delete=models.CASCADE, related_name='address_info', verbose_name="O'quvchi")
+    region = models.CharField(max_length=100, default="Toshkent shahri", verbose_name="Viloyat / Shahar")
+    district = models.CharField(max_length=100, verbose_name="Tuman / Shahar")
+    address = models.CharField(max_length=500, verbose_name="To'liq manzil (Ko'cha, uy, xonadon)")
+    parent_name = models.CharField(max_length=255, blank=True, null=True, verbose_name="Ota-ona F.I.O")
+    parent_phone = models.CharField(max_length=30, blank=True, null=True, verbose_name="Ota-ona telefoni")
+    student_phone = models.CharField(max_length=30, blank=True, null=True, verbose_name="O'quvchi telefoni")
+    notes = models.TextField(blank=True, null=True, verbose_name="Qo'shimcha izoh")
+
+    class Meta:
+        verbose_name = "O'quvchi manzili"
+        verbose_name_plural = "O'quvchilar manzillari"
+
+    def save(self, *args, **kwargs):
+        if self.student:
+            if not self.branch_id and self.student.branch_id:
+                self.branch_id = self.student.branch_id
+            if not self.organization_id and self.student.organization_id:
+                self.organization_id = self.student.organization_id
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.student} - {self.district}"
+
 
