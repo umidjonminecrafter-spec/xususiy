@@ -205,7 +205,7 @@ student, _ = Student.objects.get_or_create(
         "first_name": "Azizbek",
         "last_name": "Sobirov",
         "email": "azizbek@example.com",
-        "balance": Decimal("600000.00"),
+        "balance": Decimal("0.00"),
         "birth_date": datetime.date(2006, 5, 20),
         "address": "Toshkent sh., Yunusobod 4-mavze"
     }

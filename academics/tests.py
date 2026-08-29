@@ -140,6 +140,27 @@ class AcademicsAPITests(APITestCase):
         self.student1.refresh_from_db()
         self.assertEqual(self.student1.balance, 250.00)
 
+        # Verify students/{id}/ detail endpoint returns updated balance
+        detail_url = reverse('student-detail', kwargs={'pk': self.student1.id})
+        res_detail = self.client.get(f"{detail_url}?org_id={self.org1.id}")
+        self.assertEqual(res_detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(float(res_detail.data['balance']), 250.00)
+
+        # Verify student-balances/?student={id} returns updated balance
+        bal_url = reverse('student-balance-list')
+        res_bal = self.client.get(f"{bal_url}?org_id={self.org1.id}&student={self.student1.id}")
+        self.assertEqual(res_bal.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_bal.data), 1)
+        self.assertEqual(res_bal.data[0]['student'], self.student1.id)
+        self.assertEqual(float(res_bal.data[0]['balance']), 250.00)
+
+        # Verify student-transactions/?student={id} returns payment
+        tx_url = reverse('student-transactions')
+        res_tx = self.client.get(f"{tx_url}?org_id={self.org1.id}&student={self.student1.id}")
+        self.assertEqual(res_tx.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_tx.data), 1)
+        self.assertEqual(float(res_tx.data[0]['amount']), 250.00)
+
     def test_delete_student_creates_archive(self):
         """
         Ensure deleting a student creates an archive entry with the provided reason and comment.

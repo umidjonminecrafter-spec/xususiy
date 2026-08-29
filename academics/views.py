@@ -1307,6 +1307,14 @@ class StudentBalancesViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
         queryset = super().get_queryset()
         from django.db.models import Q
 
+        student_id = (
+            self.request.query_params.get('student') or
+            self.request.query_params.get('student_id') or
+            self.request.query_params.get('id')
+        )
+        if student_id:
+            queryset = queryset.filter(id=student_id)
+
         search = self.request.query_params.get('search')
         if search:
             queryset = queryset.filter(
