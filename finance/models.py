@@ -61,6 +61,81 @@ class Payment(TenantModel):
                                  related_name="payments")
     comment = models.TextField(null=True, blank=True)
 
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        if self.student:
+            if not self.branch_id and self.student.branch_id:
+                self.branch_id = self.student.branch_id
+            if not self.organization_id and self.student.organization_id:
+                self.organization_id = self.student.organization_id
+
+        # 🚀 BIRINCHI: To'lov haqidagi xabar darhol Hisobot botiga yuboriladi
+        if is_new:
+            try:
+                self.notify_report_bot()
+                self._notified_report_bot = True
+            except Exception as e_bot:
+                print(f"[PAYMENT_NOTIFY_REPORT_BOT_ERR]: {e_bot}")
+
+        # 🚀 KEYIN: Bazaga saqlanadi
+        super().save(*args, **kwargs)
+
+    def notify_report_bot(self):
+        organization_name = self.organization.name if self.organization else "Noma'lum"
+        branch_name = self.branch.name if hasattr(self, 'branch') and self.branch else "Asosiy Filial"
+        student_name = f"{self.student.first_name} {self.student.last_name or ''}".strip() if self.student else "Noma'lum"
+        student_phone = getattr(self.student, 'phone', '-') if self.student else '-'
+        employee_name = f"{self.employee.first_name} {self.employee.last_name or ''}".strip() or self.employee.username if self.employee else "Tizim"
+
+        try:
+            amount_formatted = f"{int(self.amount):,}".replace(",", " ")
+        except Exception:
+            amount_formatted = str(self.amount)
+
+        pm = str(self.payment_method or '').lower()
+        if 'naqd' in pm or 'cash' in pm:
+            cash_formatted = amount_formatted
+            card_formatted = "0"
+        elif 'plastik' in pm or 'card' in pm or 'terminal' in pm:
+            cash_formatted = "0"
+            card_formatted = amount_formatted
+        else:
+            cash_formatted = amount_formatted
+            card_formatted = "0"
+
+        courses_count = 0
+        courses_list = []
+        if self.student:
+            active_groups = self.student.student_groups.select_related('group', 'group__course').all()
+            courses_count = active_groups.count()
+            for sg in active_groups:
+                c_name = sg.group.course.name if (sg.group and sg.group.course) else ""
+                courses_list.append(f"  • {sg.group.name}" + (f" ({c_name})" if c_name else ""))
+
+        courses_str = "\n".join(courses_list) if courses_list else "  • Guruhlar biriktirilmagan"
+        cashbox_name = self.cashbox.name if self.cashbox else "Asosiy Kassa"
+        comment_str = f"\n📝 <b>Izoh:</b> {self.comment}" if self.comment else ""
+
+        from django.utils import timezone
+        now_str = timezone.localtime(timezone.now()).strftime("%d.%m.%Y %H:%M")
+
+        text = (
+            f"💰 <b>YANGI TO'LOV QABUL QILINDI!</b> 📥\n\n"
+            f"👤 <b>Talaba:</b> {student_name}\n"
+            f"📞 <b>Telefon:</b> {student_phone}\n"
+            f"💵 <b>To'lov summasi:</b> <b>{amount_formatted} UZS</b>\n"
+            f"💳 <b>To'lov turi:</b> {self.payment_method or 'Naqd'}\n"
+            f"💵 <b>Naqd:</b> {cash_formatted} UZS | 💳 <b>Plastik:</b> {card_formatted} UZS\n"
+            f"🏦 <b>Kassa:</b> {cashbox_name}\n"
+            f"🧑‍💼 <b>Qabul qiluvchi:</b> {employee_name}\n"
+            f"🏢 <b>Tashkilot:</b> {organization_name}\n"
+            f"📍 <b>Filial:</b> {branch_name}\n"
+            f"🕒 <b>Sana va vaqt:</b> {now_str}\n"
+            f"📚 <b>Guruh(lar)i ({courses_count} ta):</b>\n{courses_str}"
+            f"{comment_str}"
+        )
+        send_telegram_payment_notification(self.organization, text, 'student_payments')
+
     def __str__(self):
         student_str = self.student if self.student else "O'chirilgan Talaba"
         return f"{student_str} - {self.amount} ({self.date})"
@@ -237,161 +312,77 @@ from django.dispatch import receiver
 
 # ================= TELEGRAM BOT ORQALI XABARNOMALAR INTEGRATSIYASI =================
 
-def send_telegram_payment_notification(organization, message_text, setting_type):
+def send_telegram_payment_notification(organization, message_text, setting_type='student_payments'):
     """
-    Tezkor operatsion xabarlarni Hisobot botiga yuborish to'xtatilgan.
-    Hisobot botiga faqat har kuni soat 09:00 da kunlik umumiy hisobot boradi.
+    To'lov va moliyaviy amaliyotlar haqida Tashkilot egasi / rahbariga
+    Hisobot boti (@smarttalim_report_bot) orqali darhol avtomatik xabar yuboradi.
+    Boshqa botlarga bormaydi.
     """
-    return
+    if not organization:
+        return
+
+    try:
+        from academics.telegram_bot import get_report_bot_token, send_telegram_message
+        from accounts.models import User
+        from organizations.models import TelegramNotificationSetting
+
+        token = get_report_bot_token(organization)
+        if not token:
+            return
+
+        chat_ids_set = set()
+
+        # 1. Tashkilot egasi (role='owner')
+        owner_users = User.objects.filter(
+            organization=organization,
+            role='owner',
+            telegram_chat_id__isnull=False
+        ).exclude(telegram_chat_id='')
+        for u in owner_users:
+            chat_ids_set.add(str(u.telegram_chat_id).strip())
+
+        # 2. Superuserlar
+        if not chat_ids_set:
+            su_users = User.objects.filter(
+                organization=organization,
+                is_superuser=True,
+                telegram_chat_id__isnull=False
+            ).exclude(telegram_chat_id='')
+            for u in su_users:
+                chat_ids_set.add(str(u.telegram_chat_id).strip())
+
+        # 3. TelegramNotificationSetting dagi chat_ids
+        try:
+            setting = TelegramNotificationSetting.objects.filter(organization=organization).first()
+            if setting and setting.chat_ids:
+                for cid in setting.chat_ids.replace(',', ' ').split():
+                    if cid.strip():
+                        chat_ids_set.add(cid.strip())
+        except Exception:
+            pass
+
+        for cid in chat_ids_set:
+            try:
+                send_telegram_message(token, cid, message_text)
+                print(f"[REPORT_BOT_PAYMENT] Sent to chat_id={cid} org={organization.name}")
+            except Exception as e_send:
+                print(f"[REPORT_BOT_PAYMENT_ERR] chat_id={cid}: {e_send}")
+    except Exception as e:
+        print(f"[REPORT_BOT_PAYMENT_ERR] org={getattr(organization, 'name', '')}: {e}")
 
 
 @receiver(post_save, sender=Payment)
 def payment_telegram_notification(sender, instance, created, **kwargs):
+    # Agar Payment.save() orqali allaqachon Hisobot botiga yuborilgan bo'lsa, qayta yubormaymiz
+    if getattr(instance, '_notified_report_bot', False):
+        return
+
     if created:
-        organization_name = instance.organization.name if instance.organization else "Noma'lum"
-        branch_name = instance.branch.name if hasattr(instance, 'branch') and instance.branch else "Asosiy Filial"
-        student_name = f"{instance.student.first_name} {instance.student.last_name or ''}".strip() if instance.student else "O'chirilgan Talaba"
-        employee_name = f"{instance.employee.first_name} {instance.employee.last_name or ''}".strip() or instance.employee.username if instance.employee else "Tizim"
-
         try:
-            amount_formatted = f"{int(instance.amount):,}".replace(",", " ")
-        except:
-            amount_formatted = str(instance.amount)
-
-        # Cash vs Card/Plastic breakdown
-        pm = str(instance.payment_method).lower()
-        if 'naqd' in pm or 'cash' in pm:
-            cash_formatted = amount_formatted
-            card_formatted = "0"
-        elif 'plastik' in pm or 'card' in pm or 'terminal' in pm:
-            cash_formatted = "0"
-            card_formatted = amount_formatted
-        else:
-            cash_formatted = amount_formatted
-            card_formatted = "0"
-
-        # Courses, prices and discounts calculation
-        courses_count = 0
-        courses_prices_list = []
-        total_discount = 0
-
-        if instance.student:
-            active_groups = instance.student.student_groups.select_related('group__course').all()
-            courses_count = active_groups.count()
-            from decimal import Decimal
-            for sg in active_groups:
-                default_price = sg.group.course.price if (sg.group and sg.group.course) else Decimal('0.00')
-                actual_price = sg.price if sg.price is not None else default_price
-                
-                try:
-                    price_formatted = f"{int(actual_price):,}".replace(",", " ")
-                except:
-                    price_formatted = str(actual_price)
-                
-                courses_prices_list.append(f"  • {sg.group.name}: {price_formatted} UZS")
-                total_discount += max(Decimal('0.00'), default_price - actual_price)
-
-        courses_prices_str = "\n".join(courses_prices_list) if courses_prices_list else "  • Guruhlar mavjud emas"
-        try:
-            discount_formatted = f"{int(total_discount):,}".replace(",", " ")
-        except:
-            discount_formatted = str(total_discount)
-
-        text = (
-            f"<b>To'lov Qabul Qilindi</b> 📥\n\n"
-            f"🛒 <b>Tashkilot:</b> {organization_name}\n"
-            f"📍 <b>Filial:</b> {branch_name}\n\n"
-            f"💸 <b>Batafsil ma'lumotlar:</b>\n"
-            f"👤 <b>Mijoz:</b> {student_name}\n"
-            f"🧑‍💼 <b>Qabul qiluvchi:</b> {employee_name}\n"
-            f"💰 <b>Tranzaksiya summasi:</b> {amount_formatted} UZS\n"
-            f"💳 <b>To'lov usuli:</b> {instance.payment_method}\n"
-            f"💵 <b>Naqd pul:</b> {cash_formatted} UZS\n"
-            f"💳 <b>Plastik/Terminal:</b> {card_formatted} UZS\n"
-            f"📚 <b>Fanga to'lovlar soni:</b> {courses_count} ta\n\n"
-            f"📦 <b>Kurslar va narxlari:</b>\n{courses_prices_str}\n\n"
-            f"🎁 <b>Jami chegirma:</b> {discount_formatted} UZS"
-        )
-        send_telegram_payment_notification(instance.organization, text, 'student_payments')
-
-        # 🚀 TALABA VA OTA-ONA BOTIGA AVTOMATIK PUSH XABARNOMA YUBORISH
-        if instance.student:
-            try:
-                from communication.models import Notification
-                from academics.telegram_bot import send_telegram_message, send_telegram_to_user
-                from organizations.models import TelegramNotificationSetting
-                from accounts.models import User
-                from django.db.models import Q
-
-                student = instance.student
-                setting = TelegramNotificationSetting.objects.filter(organization=instance.organization).first()
-
-                # 1. Talaba foydalanuvchi akkaunti uchun DB Notification yaratamiz
-                student_user = User.objects.filter(Q(phone=student.phone) | Q(username=student.phone), role='student').first()
-                if student_user:
-                    try:
-                        Notification.objects.create(
-                            organization=instance.organization,
-                            user=student_user,
-                            title="💳 To'lov qabul qilindi",
-                            message=f"{amount_formatted} UZS miqdorida to'lov qabul qilindi. Joriy balans: {int(student.balance):,} UZS".replace(",", " "),
-                            type='info'
-                        )
-                    except Exception:
-                        pass
-
-                # 2. Talabaning o'z Telegram botiga (@smarttalim_student_bot) Push xabar
-                student_chat_id = getattr(student, 'telegram_chat_id', None)
-                if not student_chat_id and student.phone:
-                    digits = "".join(c for c in student.phone if c.isdigit())
-                    last_9 = digits[-9:] if len(digits) >= 9 else digits
-                    matched_user = User.objects.filter(
-                        Q(phone=student.phone) | Q(username=student.phone) |
-                        (Q(phone__icontains=last_9) if last_9 else Q()) |
-                        (Q(username__icontains=last_9) if last_9 else Q())
-                    ).filter(role='student', telegram_chat_id__isnull=False).first()
-                    if matched_user:
-                        student_chat_id = matched_user.telegram_chat_id
-
-                if student_chat_id:
-                    from academics.telegram_bot import get_student_bot_token
-                    from django.utils import timezone as django_timezone
-                    student_token = get_student_bot_token(instance.organization)
-                    created_at = getattr(instance, 'created_at', None) or django_timezone.now()
-                    exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
-
-                    st_msg = (
-                        f"<b>💳 To'lovingiz muvaffaqiyatli qabul qilindi!</b>\n\n"
-                        f"💰 <b>To'langan summa:</b> {amount_formatted} UZS\n"
-                        f"💳 <b>To'lov turi:</b> {instance.payment_method}\n"
-                        f"🧑‍💼 <b>Qabul qiluvchi xodim:</b> {employee_name}\n"
-                        f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
-                        f"💵 <b>Yangi balansingiz:</b> {int(student.balance):,} UZS".replace(",", " ")
-                    )
-                    send_telegram_message(student_token, student_chat_id, st_msg)
-
-                # 3. Ota-ona botiga Push xabar (Ota yoki Onasining botiga)
-                parent_token = setting.parent_bot_token or setting.bot_token if setting else None
-                if parent_token:
-                    from django.utils import timezone as django_timezone
-                    created_at = getattr(instance, 'created_at', None) or django_timezone.now()
-                    exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
-                    parent_msg = (
-                        f"<b>💳 Farzandingiz to'lovi qabul qilindi!</b>\n\n"
-                        f"👶 <b>Farzand:</b> {student_name}\n"
-                        f"💰 <b>To'langan summa:</b> {amount_formatted} UZS\n"
-                        f"💳 <b>To'lov turi:</b> {instance.payment_method}\n"
-                        f"🧑‍💼 <b>Qabul qiluvchi xodim:</b> {employee_name}\n"
-                        f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
-                        f"💵 <b>Balans:</b> {int(student.balance):,} UZS".replace(",", " ")
-                    )
-                    if student.father_telegram_chat_id:
-                        send_telegram_message(parent_token, student.father_telegram_chat_id, parent_msg)
-                    if student.mother_telegram_chat_id:
-                        send_telegram_message(parent_token, student.mother_telegram_chat_id, parent_msg)
-
-            except Exception as e:
-                print(f"Error sending student payment telegram notification: {str(e)}")
+            instance.notify_report_bot()
+            instance._notified_report_bot = True
+        except Exception as e:
+            print(f"[POST_SAVE_PAYMENT_NOTIFY_ERR]: {e}")
 
 
 @receiver(post_save, sender=Expense)
@@ -533,6 +524,10 @@ def sale_telegram_notification(sender, instance, created, **kwargs):
 @receiver(post_save, sender=CashTransaction)
 def cashtransaction_telegram_notification(sender, instance, created, **kwargs):
     if created and instance.organization:
+        # Agar to'lov (Payment) bilan bog'liq bo'lsa, Payment.save() orqali allaqachon to'liq xabar yuborilgan
+        if instance.student_id:
+            return
+
         try:
             cashbox_name = instance.cashbox.name if instance.cashbox else "Kassa"
             ttype_str = "Chiqim 📉" if instance.transaction_type == 'chiqim' else "Kirim 📥"

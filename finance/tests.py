@@ -1060,6 +1060,69 @@ class FinanceSettingIntegrationTests(APITestCase):
         self.assertEqual(payment2.student_id, student.id)
 
 
+from unittest.mock import patch
+
+
+class PaymentReportBotNotificationTests(APITestCase):
+    def setUp(self):
+        from organizations.models import Organization
+        from accounts.models import User
+        from finance.models import Cashbox
+        from academics.models import Student
+
+        self.org = Organization.objects.create(name="Smart Academy")
+        self.owner = User.objects.create_user(
+            username="owner_user",
+            role="owner",
+            organization=self.org,
+            telegram_chat_id="999888777"
+        )
+        self.cashbox = Cashbox.objects.create(
+            name="Asosiy Kassa",
+            organization=self.org
+        )
+        self.student = Student.objects.create(
+            organization=self.org,
+            first_name="Temur",
+            last_name="Bekmurodov",
+            phone="+998901112233"
+        )
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_payment_sent_to_report_bot_on_save(self, mock_send):
+        mock_send.return_value = True
+        from finance.models import Payment
+        from datetime import date
+        from decimal import Decimal
+
+        payment = Payment(
+            organization=self.org,
+            student=self.student,
+            amount=Decimal("500000.00"),
+            date=date.today(),
+            cashbox=self.cashbox,
+            payment_method="Naqd",
+            employee=self.owner,
+            comment="1-oylik to'lov"
+        )
+        payment.save()
+
+        self.assertIsNotNone(payment.id)
+        mock_send.assert_called()
+
+        call_args = mock_send.call_args[0]
+        chat_id = call_args[1]
+        text = call_args[2]
+
+        self.assertEqual(chat_id, "999888777")
+        self.assertIn("YANGI TO'LOV QABUL QILINDI", text)
+        self.assertIn("Temur Bekmurodov", text)
+        self.assertIn("500 000 UZS", text)
+        self.assertIn("Asosiy Kassa", text)
+        self.assertIn("1-oylik to'lov", text)
+
+
+
 
 
 
