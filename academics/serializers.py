@@ -186,8 +186,12 @@ class StudentSerializer(serializers.ModelSerializer):
                 if self.instance:
                     student_qs = student_qs.exclude(pk=self.instance.pk)
 
+                allow_shared_phone = self.context.get("allow_shared_phone", False)
                 if student_qs.exists():
-                    errors["phone"] = "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
+                    # Agar allow_shared_phone bo'lsa va ism boshqa bo'lsa (aka-uka/opa-singil), o'tkazamiz
+                    # Agar ism ham bir xil bo'lsa yoki allow_shared_phone ruxsat berilmagan bo'lsa, xatolik beramiz
+                    if not allow_shared_phone or student_qs.filter(first_name__iexact=first_name).exists():
+                        errors["phone"] = "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
                 else:
                     # 2. Xodimlar/Foydalanuvchilar ro'yxatida tekshiramiz (student bo'lmagan xodimlar)
                     user_qs = User.objects.filter(
@@ -280,7 +284,22 @@ class StudentSerializer(serializers.ModelSerializer):
         if phone:
             from accounts.models import User
             existing_user = User.objects.filter(username=phone).first()
-            if existing_user:
+            other_student = Student.objects.filter(phone=phone, organization=student.organization).exclude(id=student.id).first()
+            if existing_user and other_student and existing_user.first_name != student.first_name:
+                # Aka-uka holati: eski talabaning akkauntini buzmay, yangi unikal username bilan yaratamiz
+                unique_username = f"{phone}_{student.id}"
+                User.objects.create_user(
+                    username=unique_username,
+                    password=password or "smarttalim123",
+                    email=student.email or '',
+                    first_name=student.first_name,
+                    last_name=student.last_name or '',
+                    phone=student.phone,
+                    role='student',
+                    organization=student.organization,
+                    branch=student.branch
+                )
+            elif existing_user:
                 # Reactivate and update existing user
                 existing_user.is_active = True
                 existing_user.first_name = student.first_name
@@ -327,10 +346,13 @@ class StudentSerializer(serializers.ModelSerializer):
             ClassStudent.objects.filter(student=student).update(is_active=False)
 
         from accounts.models import User
-        user = User.objects.filter(username=old_phone).first()
+        user = User.objects.filter(username=old_phone).first() or User.objects.filter(username=f"{old_phone}_{instance.id}").first()
         if user:
             if student.phone:
-                user.username = student.phone
+                if User.objects.filter(username=student.phone).exclude(pk=user.pk).exists():
+                    user.username = f"{student.phone}_{instance.id}"
+                else:
+                    user.username = student.phone
                 user.phone = student.phone
             user.first_name = student.first_name
             user.last_name = student.last_name or ''

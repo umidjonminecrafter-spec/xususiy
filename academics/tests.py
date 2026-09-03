@@ -825,6 +825,100 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         self.assertEqual(madina.first_name, "Madina")
         self.assertEqual(madina.birth_date.isoformat(), "2009-08-15")
 
+    def test_import_excel_edge_cases_and_fixes(self):
+        """
+        Verify edge cases:
+        1. Single column 'F.I.SH' with Uzbek full names.
+        2. Siblings sharing parent phone number - both created, neither deleted/overwritten.
+        3. Float phone number and unformatted dates/balance.
+        4. SchoolClass linking from 'Sinf' column (e.g. 5-A).
+        5. Re-importing an archived student restores them (is_archived=False).
+        6. Title row before header row in Excel.
+        """
+        import openpyxl
+        from io import BytesIO
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from academics.models import Student, SchoolClass, ClassStudent
+        from accounts.models import User
+
+        self.client.force_authenticate(user=self.admin1)
+        import_url = reverse('student-import-excel')
+
+        # First, create an archived student to verify unarchiving on re-import
+        archived_student = Student.objects.create(
+            organization=self.org1,
+            first_name="Jasur",
+            last_name="Tursunov",
+            phone="+998903334455",
+            is_archived=True
+        )
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+
+        # Row 1: Document title (title header test)
+        ws.append(["5-A SINF O'QUVCHILARI RO'YXATI", "", "", "", "", ""])
+        # Row 2: Actual column headers
+        ws.append(["T/r", "F.I.SH", "Telefon", "Sinf", "Balans", "Tug'ilgan sana"])
+        # Row 3: Sibling 1 (F.I.SH in 1 column, shared phone as float, class 5-A)
+        ws.append([1, "Qodirov Bobur Rustam o'g'li", 998907778899.0, "5-A", "50 000 so'm", "2011-04-12 00:00:00"])
+        # Row 4: Sibling 2 (Same parent phone 998907778899, different name)
+        ws.append([2, "Qodirova Zilola", 998907778899, "5-A", 0, "15.08.2013"])
+        # Row 5: Re-import of archived student (should unarchive him)
+        ws.append([3, "Tursunov Jasur", "+998903334455", "5-A", "-10000", "2010/06/20"])
+
+        excel_file = BytesIO()
+        wb.save(excel_file)
+        excel_file.seek(0)
+
+        xlsx_file = SimpleUploadedFile(
+            "students_edge_cases.xlsx",
+            excel_file.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        response = self.client.post(
+            f"{import_url}?org_id={self.org1.id}",
+            data={'file': xlsx_file},
+            format='multipart'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['success_count'], 3)
+        self.assertEqual(len(response.data['errors']), 0)
+
+        # 1. Verify Bobur is created
+        bobur = Student.objects.filter(phone="+998907778899", first_name="Bobur", organization=self.org1).first()
+        self.assertIsNotNone(bobur)
+        self.assertEqual(bobur.last_name, "Qodirov")
+        self.assertEqual(bobur.father_name, "Rustam o'g'li")
+        self.assertEqual(float(bobur.balance), 50000.00)
+        self.assertEqual(bobur.birth_date.isoformat(), "2011-04-12")
+
+        # 2. Verify Zilola is ALSO created (not overwriting Bobur!)
+        zilola = Student.objects.filter(phone="+998907778899", first_name="Zilola", organization=self.org1).first()
+        self.assertIsNotNone(zilola)
+        self.assertEqual(zilola.last_name, "Qodirova")
+        self.assertNotEqual(bobur.id, zilola.id)
+
+        # Both user accounts exist
+        u_bobur = User.objects.filter(first_name="Bobur", role='student').first()
+        u_zilola = User.objects.filter(first_name="Zilola", role='student').first()
+        self.assertIsNotNone(u_bobur)
+        self.assertIsNotNone(u_zilola)
+        self.assertNotEqual(u_bobur.id, u_zilola.id)
+
+        # 3. Verify SchoolClass 5-A was created/linked and ClassStudent is active
+        sc_5a = SchoolClass.objects.filter(organization=self.org1, grade_level="5", section="A").first()
+        self.assertIsNotNone(sc_5a)
+        self.assertEqual(bobur.school_class, sc_5a)
+        self.assertEqual(zilola.school_class, sc_5a)
+        self.assertTrue(ClassStudent.objects.filter(student=bobur, school_class=sc_5a, is_active=True).exists())
+
+        # 4. Verify archived student Jasur was restored
+        archived_student.refresh_from_db()
+        self.assertFalse(archived_student.is_archived)
+
     def test_group_attendance_invalid_student(self):
         """
         Verify that posting attendance with a non-existent student ID returns 400 Bad Request

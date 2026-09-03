@@ -548,28 +548,64 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
     @decorators.action(detail=False, methods=['post'], url_path='import-excel')
     def import_excel(self, request):
-        from decimal import Decimal
-        from io import BytesIO
         import csv
-        
+        import datetime
+        from decimal import Decimal, InvalidOperation
+        from io import BytesIO
+        import random
+        import re
+
+        from academics.models import (
+            ClassStudent, Group, Parent, SchoolClass, Student, StudentAddress, StudentGroup
+        )
+
         org_id = self.get_organization_id()
         if not org_id:
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        branch_id = (
+            self.get_branch_id()
+            or request.data.get('branch')
+            or request.data.get('branch_id')
+            or request.query_params.get('branch_id')
+            or request.query_params.get('branch')
+        )
+
+        default_class_id = (
+            request.data.get('school_class')
+            or request.data.get('school_class_id')
+            or request.data.get('class_id')
+            or request.data.get('class')
+            or request.query_params.get('school_class')
+            or request.query_params.get('school_class_id')
+            or request.query_params.get('class_id')
+            or request.query_params.get('class')
+        )
+
+        default_group_id = (
+            request.data.get('group')
+            or request.data.get('group_id')
+            or request.query_params.get('group')
+            or request.query_params.get('group_id')
+        )
+
         file_obj = request.FILES.get('file')
         if not file_obj:
             return Response({"detail": "No file uploaded. Please upload a file with key 'file'."}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         filename = file_obj.name.lower()
-        rows_data = []
-        
+        raw_rows = []
+
+        # -------------------------------------------------------------
+        # 1. READ FILE CONTENT (CSV or XLSX/XLS)
+        # -------------------------------------------------------------
         if filename.endswith('.csv'):
             try:
-                decoded_file = file_obj.read().decode('utf-8-sig').splitlines()
-                reader = csv.DictReader(decoded_file)
-                for row in reader:
-                    cleaned_row = {k.strip().lower() if k else '': v.strip() if v else '' for k, v in row.items()}
-                    rows_data.append(cleaned_row)
+                decoded_file = file_obj.read().decode('utf-8-sig', errors='ignore').splitlines()
+                reader = csv.reader(decoded_file)
+                for r in reader:
+                    if any(cell.strip() for cell in r if cell):
+                        raw_rows.append([str(c).strip() for c in r])
             except Exception as e:
                 return Response({"detail": f"CSV faylni o'qishda xatolik: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
         elif filename.endswith(('.xlsx', '.xls')):
@@ -577,126 +613,518 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 import openpyxl
                 wb = openpyxl.load_workbook(filename=BytesIO(file_obj.read()), data_only=True)
                 sheet = wb.active
-                
-                headers = []
-                for cell in sheet[1]:
-                    if cell.value is not None:
-                        headers.append(str(cell.value).strip().lower())
-                    else:
-                        headers.append('')
-                
-                for r in range(2, sheet.max_row + 1):
-                    row_data = {}
-                    has_data = False
-                    for c, header in enumerate(headers):
-                        if not header:
-                            continue
-                        val = sheet.cell(row=r, column=c+1).value
+                for r in range(1, sheet.max_row + 1):
+                    row_cells = []
+                    has_val = False
+                    for c in range(1, sheet.max_column + 1):
+                        val = sheet.cell(row=r, column=c).value
                         if val is not None:
-                            has_data = True
-                            row_data[header] = str(val).strip()
+                            has_val = True
+                            row_cells.append(val)
                         else:
-                            row_data[header] = ''
-                    if has_data:
-                        rows_data.append(row_data)
+                            row_cells.append('')
+                    if has_val:
+                        raw_rows.append(row_cells)
             except Exception as e:
                 return Response({"detail": f"Excel faylni o'qishda xatolik: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
         else:
             return Response({"detail": "Faqat .xlsx, .xls yoki .csv fayllar qo'llab-quvvatlanadi."}, status=status.HTTP_400_BAD_REQUEST)
-            
-        field_mapping = {
-            'first_name': ['ism', 'first name', 'name', 'first_name'],
-            'last_name': ['familiya', 'last name', 'surname', 'last_name'],
-            'phone': ['telefon', 'phone', 'phone number', 'phone_number'],
-            'email': ['email', 'e-mail'],
-            'birth_date': ['tug\'ilgan sana', 'birth date', 'birthday', 'birth_date', 'tugilgan sana'],
-            'gender': ['jins', 'gender', 'sex'],
-            'balance': ['balans', 'balance'],
-            'father_name': ['ota ismi', 'father name', 'father_name'],
-            'father_phone': ['ota telefoni', 'father phone', 'father_phone'],
-            'mother_name': ['ona ismi', 'mother name', 'mother_name'],
-            'mother_phone': ['ona telefoni', 'mother phone', 'mother_phone'],
-            'telegram_chat_id': ['telegram', 'telegram chat id', 'telegram_chat_id']
+
+        if not raw_rows:
+            return Response({"detail": "Fayl bo'sh yoki unda ma'lumot topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # -------------------------------------------------------------
+        # 2. INTELLIGENT HEADER DETECTION (within first 10 rows)
+        # -------------------------------------------------------------
+        header_keywords = {
+            'ism', 'name', 'first', 'familiya', 'surname', 'last', 'fio', 'fish', 'f.i.sh', 'f.i.o',
+            'telefon', 'phone', 'tel', 'aloqa', 'sinf', 'class', 'guruh', 'group', 'balans', 'balance',
+            'sana', 'birth', 'tugilgan', "tug'ilgan", 'ota', 'ona', 'manzil', 'address', 'talaba', "o'quvchi",
+            'фио', 'ф.и.о', 'исм', 'фамилия', 'телефон', 'синф', 'класс', 'гуруҳ'
         }
-        
+
+        def normalize_header(h):
+            s = str(h).strip().lower()
+            s = re.sub(r'[\r\n\t]+', ' ', s)
+            s = re.sub(r'[^a-z0-9а-яёўқғҳ\'_ ]', '', s)
+            return re.sub(r'\s+', ' ', s).strip()
+
+        header_row_idx = 0
+        best_score = -1
+
+        for idx, row in enumerate(raw_rows[:10]):
+            score = 0
+            for cell in row:
+                norm = normalize_header(cell)
+                for kw in header_keywords:
+                    if kw in norm:
+                        score += 1
+                        break
+            if score > best_score:
+                best_score = score
+                header_row_idx = idx
+
+        if best_score <= 0:
+            header_row_idx = 0
+
+        raw_headers = raw_rows[header_row_idx]
+        headers = [normalize_header(h) for h in raw_headers]
+        data_rows = raw_rows[header_row_idx + 1:]
+
+        # -------------------------------------------------------------
+        # 3. FIELD MAPPING WITH EXPANDED SYNONYMS
+        # -------------------------------------------------------------
+        field_mapping = {
+            'full_name': [
+                'fish', 'fio', 'f i sh', 'f i o', 'ism sharifi', 'ismsharifi',
+                "to'liq ism", "to'liq ismi", 'toliq ism', 'toliq ismi',
+                'talaba', 'talaba fish', 'talabaning fish',
+                "o'quvchi", "o'quvchi fish", "o'quvchining fish",
+                'oquvchi', 'oquvchi fish', 'oquvchining fish',
+                'full name', 'fullname', 'student name', 'fio toliq',
+                'фио', 'ф и о', 'исми шарифи', 'ўқувчи', 'ўқувчининг фиш', 'талаба'
+            ],
+            'first_name': [
+                'ism', 'ismi', 'first name', 'firstname', 'first_name', 'name', 'student first name',
+                'исм', 'исми', 'имя'
+            ],
+            'last_name': [
+                'familiya', 'familiyasi', 'last name', 'lastname', 'last_name', 'surname',
+                'фамилия', 'фамилияси'
+            ],
+            'father_name': [
+                'otasining ismi', 'ota ismi', 'sharifi', 'otasi', 'father name', 'father_name',
+                'patronymic', 'middle name', 'middle_name', 'отасининг исми', 'шарифи', 'отчество'
+            ],
+            'phone': [
+                'telefon', 'telefoni', 'telefon raqami', 'telefon raqam', 'phone', 'phone number',
+                'phone_number', 'mobile', 'tel', 'aloqa', 'telefon nomer', 'nomer',
+                'телефон', 'тел', 'номер телефона', 'номер', 'телефон рақами'
+            ],
+            'father_phone': [
+                'ota telefoni', 'otasining telefoni', 'otasining telefon raqami', 'father phone',
+                'father_phone', "father phone", 'ота телефони', 'отасининг телефони', 'телефон отца'
+            ],
+            'mother_name': [
+                'ona ismi', 'onasi', 'onasining ismi', 'mother name', 'mother_name', "mother name",
+                'она исми', 'онасининг исми', 'имя матери'
+            ],
+            'mother_phone': [
+                'ona telefoni', 'onasining telefoni', 'onasining telefon raqami', 'mother phone',
+                'mother_phone', "mother phone", 'она телефони', 'онасининг телефони', 'телефон матери'
+            ],
+            'school_class': [
+                'sinf', 'sinfi', 'class', 'school_class', 'school class', 'grade', 'grade_level', 'klass',
+                'синф', 'синфи', 'класс'
+            ],
+            'group': [
+                'guruh', 'guruhi', 'group', 'group_name', 'kurs', 'course',
+                'гуруҳ', 'гуруҳи', 'группа', 'курс'
+            ],
+            'birth_date': [
+                "tug'ilgan sana", "tug'ilgan sanasi", "tug'ilgan kun", "tug'ilgan kuni",
+                "tugilgan sana", "tugilgan sanasi", "tugilgan kun", "tugilgan kuni",
+                'birth date', 'birth_date', 'birthday', 'dob', 'date of birth',
+                'туғилган сана', 'туғилган кун', 'тугилган сана', 'тугилган кун', 'дата рождения', 'др'
+            ],
+            'gender': [
+                'jins', 'jinsi', 'gender', 'sex', 'жинси', 'жинс', 'пол'
+            ],
+            'balance': [
+                'balans', 'balansi', 'hisob', 'balance', 'баланс'
+            ],
+            'address': [
+                'manzil', 'manzili', 'yashash manzili', 'uy manzili', 'address', 'residential address',
+                'манзил', 'манзили', 'яшаш манзили', 'адрес'
+            ],
+            'email': [
+                'email', 'e-mail', 'pochta', 'elektron pochta', 'электронная почта', 'почта'
+            ],
+            'telegram_chat_id': [
+                'telegram', 'telegram chat id', 'telegram_chat_id', 'telegram id', 'телеграм'
+            ]
+        }
+
+        def clean_phone(val):
+            """Normalize phone values including floats like 998901234567.0 to +998XXXXXXXXX format."""
+            if val is None or val == '':
+                return None
+            if isinstance(val, (int, float)):
+                try:
+                    val = str(int(val))
+                except (ValueError, OverflowError):
+                    val = str(val)
+            else:
+                val = str(val).strip()
+                if val.endswith('.0'):
+                    val = val[:-2]
+
+            digits = ''.join(c for c in val if c.isdigit())
+            if not digits:
+                return None
+
+            # 9-digit local format: 901234567 -> 998901234567
+            if len(digits) == 9:
+                digits = '998' + digits
+            # 13-digit float artifact: 9989012345670 -> 998901234567
+            elif len(digits) == 13 and digits.startswith('998') and digits.endswith('0'):
+                digits = digits[:12]
+
+            if len(digits) == 12 and digits.startswith('998'):
+                return '+' + digits
+            elif len(digits) == 12:
+                return '+' + digits
+            elif len(digits) > 7:
+                return '+' + digits
+            return None
+
+        def clean_date(val):
+            """Parse Excel datetime objects, strings, and timestamps safely."""
+            if val is None or val == '':
+                return None
+            if isinstance(val, (datetime.datetime, datetime.date)):
+                return val.strftime('%Y-%m-%d')
+            s_val = str(val).strip()
+            # If datetime string like "2010-05-10 00:00:00", take date part
+            if ' ' in s_val:
+                s_val = s_val.split(' ')[0].strip()
+            if 'T' in s_val:
+                s_val = s_val.split('T')[0].strip()
+
+            date_formats = (
+                '%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y', '%d-%m-%Y',
+                '%Y/%m/%d', '%Y.%m.%d', '%d.%m.%y', '%d/%m/%y'
+            )
+            for fmt in date_formats:
+                try:
+                    return datetime.datetime.strptime(s_val, fmt).date().isoformat()
+                except ValueError:
+                    pass
+            return None
+
+        def clean_balance(val):
+            """Clean string balance to valid Decimal or default 0.00."""
+            if val is None or val == '':
+                return Decimal('0.00')
+            if isinstance(val, (int, float)):
+                return Decimal(str(val))
+            cleaned = str(val).replace(' ', '').replace("so'm", "").replace("som", "").replace("$", "").strip()
+            if ',' in cleaned and '.' not in cleaned:
+                cleaned = cleaned.replace(',', '.')
+            elif ',' in cleaned and '.' in cleaned:
+                cleaned = cleaned.replace(',', '')
+            try:
+                return Decimal(cleaned)
+            except InvalidOperation:
+                return Decimal('0.00')
+
         success_count = 0
         error_logs = []
-        
-        for idx, row in enumerate(rows_data):
-            row_num = idx + 2
-            student_data = {
-                'organization': org_id,
-                'branch': self.get_branch_id()
-            }
-            
-            for field, synonyms in field_mapping.items():
-                found_val = None
-                for synonym in synonyms:
-                    if synonym in row:
-                        found_val = row[synonym]
-                        break
-                if found_val:
-                    student_data[field] = found_val
-            
-            first_name = student_data.get('first_name')
-            if not first_name:
-                error_logs.append(f"{row_num}-qatorda 'Ism' (first_name) ustuni bo'sh yoki topilmadi.")
+
+        # -------------------------------------------------------------
+        # 4. ROW-BY-ROW IMPORT LOOP
+        # -------------------------------------------------------------
+        for idx, row in enumerate(data_rows):
+            row_num = header_row_idx + idx + 2
+
+            # Check if row has any non-empty content
+            if not any(str(c).strip() for c in row if c is not None):
                 continue
-                
-            phone = student_data.get('phone')
-            if phone:
-                phone = ''.join(c for c in str(phone) if c.isdigit())
-                if phone:
-                    if not phone.startswith('+'):
-                        phone = '+' + phone
-                    student_data['phone'] = phone
-            
-            # Format date of birth safely
-            birth_date = student_data.get('birth_date')
-            if birth_date:
-                import datetime
-                parsed_date = None
-                for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d'):
-                    try:
-                        parsed_date = datetime.datetime.strptime(str(birth_date), fmt).date()
-                        break
-                    except ValueError:
-                        pass
-                if parsed_date:
-                    student_data['birth_date'] = parsed_date.isoformat()
+
+            extracted_fields = {}
+            for col_idx, h in enumerate(headers):
+                if col_idx >= len(row):
+                    continue
+                cell_val = row[col_idx]
+                if cell_val is None or str(cell_val).strip() == '':
+                    continue
+
+                for field, synonyms in field_mapping.items():
+                    if field in extracted_fields:
+                        continue
+                    for syn in synonyms:
+                        if syn == h or syn in h:
+                            extracted_fields[field] = cell_val
+                            break
+
+            # ---------------------------------------------------------
+            # Full Name / First Name / Last Name parsing
+            # ---------------------------------------------------------
+            full_name_val = extracted_fields.get('full_name')
+            first_name = extracted_fields.get('first_name')
+            last_name = extracted_fields.get('last_name')
+            father_name = extracted_fields.get('father_name')
+
+            if full_name_val and (not first_name or not last_name):
+                fn_str = str(full_name_val).strip()
+                # Remove leading numbers like "1. Aliyev Vali" or "1) Aliyev Vali"
+                fn_str = re.sub(r'^\d+[\.\)\- ]+', '', fn_str).strip()
+                parts = fn_str.split()
+                if len(parts) == 1:
+                    if not first_name:
+                        first_name = parts[0]
+                elif len(parts) == 2:
+                    if not last_name:
+                        last_name = parts[0]
+                    if not first_name:
+                        first_name = parts[1]
+                elif len(parts) >= 3:
+                    if not last_name:
+                        last_name = parts[0]
+                    if not first_name:
+                        first_name = parts[1]
+                    if not father_name:
+                        father_name = ' '.join(parts[2:])
+
+            if not first_name:
+                # If only last_name exists or full_name couldn't be parsed
+                if last_name:
+                    first_name = last_name
+                    last_name = ''
                 else:
-                    # Clear it if it could not be parsed to prevent serializer errors
-                    student_data.pop('birth_date')
-            
+                    error_logs.append(f"{row_num}-qatorda 'Ism' yoki 'F.I.SH' ustuni bo'sh yoki topilmadi.")
+                    continue
+
+            # ---------------------------------------------------------
+            # Phone & Contact handling
+            # ---------------------------------------------------------
+            raw_phone = clean_phone(extracted_fields.get('phone'))
+            father_phone = clean_phone(extracted_fields.get('father_phone'))
+            mother_phone = clean_phone(extracted_fields.get('mother_phone'))
+
+            # Fallbacks if student phone is empty
+            phone = raw_phone or father_phone or mother_phone
+            if not phone:
+                # Auto-generate a valid unique placeholder phone for student
+                rand_digits = f"{random.randint(1000000, 9999999)}"
+                phone = f"+99800{rand_digits}"
+
+            student_data = {
+                'first_name': str(first_name).strip(),
+                'last_name': str(last_name).strip() if last_name else '',
+                'phone': phone,
+                'balance': clean_balance(extracted_fields.get('balance'))
+            }
+
+            if father_name:
+                student_data['father_name'] = str(father_name).strip()
+            if father_phone:
+                student_data['father_phone'] = father_phone
+            if extracted_fields.get('mother_name'):
+                student_data['mother_name'] = str(extracted_fields.get('mother_name')).strip()
+            if mother_phone:
+                student_data['mother_phone'] = mother_phone
+
+            if extracted_fields.get('email'):
+                student_data['email'] = str(extracted_fields.get('email')).strip()
+            if extracted_fields.get('telegram_chat_id'):
+                student_data['telegram_chat_id'] = str(extracted_fields.get('telegram_chat_id')).strip()
+            if extracted_fields.get('address'):
+                student_data['address'] = str(extracted_fields.get('address')).strip()
+
+            # Birth date
+            parsed_bdate = clean_date(extracted_fields.get('birth_date'))
+            if parsed_bdate:
+                student_data['birth_date'] = parsed_bdate
+
+            # Gender
+            raw_gender = str(extracted_fields.get('gender', '')).lower().strip()
+            if raw_gender:
+                if raw_gender in ['o', "o'g'il", 'ogil', 'erkak', 'm', 'male', 'мужик', 'муж', 'мужской']:
+                    student_data['gender'] = 'male'
+                elif raw_gender in ['q', 'qiz', 'ayol', 'f', 'female', 'жен', 'женский']:
+                    student_data['gender'] = 'female'
+
+            # ---------------------------------------------------------
+            # SchoolClass (Sinf) resolution
+            # ---------------------------------------------------------
+            assigned_class = None
+            class_field_val = extracted_fields.get('school_class')
+
+            if class_field_val:
+                raw_class_str = str(class_field_val).strip()
+                # 1. If numeric ID
+                if raw_class_str.isdigit():
+                    assigned_class = SchoolClass.objects.filter(id=int(raw_class_str), organization_id=org_id).first()
+                # 2. If format like "5-A", "5 A", "5A", "10-B"
+                if not assigned_class:
+                    m = re.match(r'^(\d+)\s*[-_ ]?\s*([A-Za-zА-Яа-яЎўҚқҒғҲҳ]?)$', raw_class_str)
+                    if m:
+                        g_lvl = m.group(1)
+                        sec = (m.group(2) or 'A').upper()
+                        assigned_class = SchoolClass.objects.filter(
+                            organization_id=org_id,
+                            grade_level=g_lvl,
+                            section__iexact=sec
+                        ).first()
+                        if not assigned_class:
+                            try:
+                                assigned_class = SchoolClass.objects.create(
+                                    organization_id=org_id,
+                                    branch_id=branch_id,
+                                    grade_level=g_lvl,
+                                    section=sec,
+                                    academic_year="2026-2027",
+                                    language="uz"
+                                )
+                            except Exception:
+                                pass
+                # 3. Fallback name search
+                if not assigned_class:
+                    for sc in SchoolClass.objects.filter(organization_id=org_id):
+                        if sc.name.lower() == raw_class_str.lower() or f"{sc.grade_level}{sc.section}".lower() == raw_class_str.lower():
+                            assigned_class = sc
+                            break
+
+            # If no row class, use request default class
+            if not assigned_class and default_class_id:
+                try:
+                    assigned_class = SchoolClass.objects.filter(id=int(default_class_id), organization_id=org_id).first()
+                except (ValueError, TypeError):
+                    pass
+
+            if assigned_class:
+                student_data['school_class'] = assigned_class.id
+
+            # ---------------------------------------------------------
+            # Safe Matching for Existing Student vs Creating New
+            # (Prevents overwriting/deleting students sharing a phone)
+            # ---------------------------------------------------------
             existing_student = None
+            first_name_str = student_data['first_name'].strip()
+            last_name_str = student_data.get('last_name', '').strip()
+
+            # A. Match by phone AND matching first_name
             if phone:
-                existing_student = Student.objects.filter(phone=phone, organization_id=org_id).first()
-                
+                existing_student = Student.objects.filter(
+                    phone=phone,
+                    organization_id=org_id,
+                    first_name__iexact=first_name_str
+                ).first()
+
+            # B. Match by first_name AND last_name in same organization
+            if not existing_student and first_name_str and last_name_str:
+                existing_student = Student.objects.filter(
+                    organization_id=org_id,
+                    first_name__iexact=first_name_str,
+                    last_name__iexact=last_name_str
+                ).first()
+
+            # If student was previously archived, unarchive upon re-import
+            if existing_student and existing_student.is_archived:
+                existing_student.is_archived = False
+                existing_student.save(update_fields=['is_archived'])
+
             if not existing_student and 'password' not in student_data:
-                if phone:
-                    raw_phone = ''.join(c for c in phone if c.isdigit())
-                    if len(raw_phone) >= 6:
-                        student_data['password'] = raw_phone
-                    else:
-                        student_data['password'] = "smarttalim123"
-                else:
-                    student_data['password'] = "smarttalim123"
-                
+                raw_pwd = ''.join(c for c in phone if c.isdigit())
+                student_data['password'] = raw_pwd if len(raw_pwd) >= 6 else "smarttalim123"
+
             try:
                 if existing_student:
-                    serializer = StudentSerializer(existing_student, data=student_data, partial=True)
+                    serializer = StudentSerializer(
+                        existing_student,
+                        data=student_data,
+                        partial=True,
+                        context={'request': request, 'allow_shared_phone': True}
+                    )
                 else:
-                    serializer = StudentSerializer(data=student_data)
-                    
+                    serializer = StudentSerializer(
+                        data=student_data,
+                        context={'request': request, 'allow_shared_phone': True}
+                    )
+
                 if serializer.is_valid():
-                    serializer.save(organization_id=org_id, branch_id=self.get_branch_id())
+                    student_instance = serializer.save(
+                        organization_id=org_id,
+                        branch_id=branch_id
+                    )
                     success_count += 1
+
+                    # -------------------------------------------------
+                    # Post-save: Link SchoolClass, Group, Parent, Address
+                    # -------------------------------------------------
+                    if assigned_class:
+                        ClassStudent.objects.update_or_create(
+                            student=student_instance,
+                            school_class=assigned_class,
+                            defaults={
+                                'is_active': True,
+                                'organization_id': org_id,
+                                'branch_id': branch_id
+                            }
+                        )
+
+                    # Group resolution
+                    target_group = None
+                    group_field_val = extracted_fields.get('group')
+                    if group_field_val:
+                        g_str = str(group_field_val).strip()
+                        if g_str.isdigit():
+                            target_group = Group.objects.filter(id=int(g_str), organization_id=org_id).first()
+                        if not target_group:
+                            target_group = Group.objects.filter(name__iexact=g_str, organization_id=org_id).first()
+                    elif default_group_id:
+                        try:
+                            target_group = Group.objects.filter(id=int(default_group_id), organization_id=org_id).first()
+                        except (ValueError, TypeError):
+                            pass
+
+                    if target_group:
+                        StudentGroup.objects.get_or_create(
+                            organization_id=org_id,
+                            branch_id=branch_id or target_group.branch_id,
+                            student=student_instance,
+                            group=target_group
+                        )
+
+                    # Parent info
+                    father_n = student_data.get('father_name')
+                    father_p = student_data.get('father_phone')
+                    if father_n or father_p:
+                        Parent.objects.update_or_create(
+                            student=student_instance,
+                            relation='father',
+                            defaults={
+                                'full_name': father_n or "Otasi",
+                                'phone': father_p or student_instance.phone or '',
+                                'organization_id': org_id,
+                                'branch_id': branch_id
+                            }
+                        )
+
+                    mother_n = student_data.get('mother_name')
+                    mother_p = student_data.get('mother_phone')
+                    if mother_n or mother_p:
+                        Parent.objects.update_or_create(
+                            student=student_instance,
+                            relation='mother',
+                            defaults={
+                                'full_name': mother_n or "Onasi",
+                                'phone': mother_p or student_instance.phone or '',
+                                'organization_id': org_id,
+                                'branch_id': branch_id
+                            }
+                        )
+
+                    # Address info
+                    addr_val = student_data.get('address')
+                    if addr_val:
+                        StudentAddress.objects.update_or_create(
+                            student=student_instance,
+                            defaults={
+                                'organization_id': org_id,
+                                'branch_id': branch_id,
+                                'address': addr_val,
+                                'district': addr_val[:100],
+                                'student_phone': student_instance.phone or ''
+                            }
+                        )
                 else:
                     errors_str = ", ".join([f"{k}: {v[0]}" for k, v in serializer.errors.items()])
                     error_logs.append(f"{row_num}-qatorda xatolik: {errors_str}")
             except Exception as e:
                 error_logs.append(f"{row_num}-qatorda kutilmagan xatolik: {str(e)}")
-                
+
         return Response({
             "message": f"Excel import tugallandi. {success_count} ta talaba muvaffaqiyatli saqlandi/yangilandi.",
             "success_count": success_count,
