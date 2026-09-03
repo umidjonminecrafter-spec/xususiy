@@ -1807,3 +1807,71 @@ class StudentAddress(TenantModel):
         return f"{self.student} - {self.district}"
 
 
+class StudentAppeal(TenantModel):
+    STATUS_CHOICES = (
+        ('pending', 'Kutilmoqda (Qabul qilinmagan)'),
+        ('in_progress', 'Ko\'rib chiqilmoqda (Qabul qilingan)'),
+        ('resolved', 'Hal etildi'),
+        ('rejected', 'Rad etildi'),
+    )
+    APPEAL_TYPES = (
+        ('complaint', 'Shikoyat'),
+        ('suggestion', 'Taklif'),
+        ('request', 'Talab / Ariza'),
+        ('other', 'Boshqa'),
+    )
+
+    student = models.ForeignKey(
+        'academics.Student',
+        on_delete=models.CASCADE,
+        related_name='appeals',
+        verbose_name="O'quvchi"
+    )
+    appeal_type = models.CharField(
+        max_length=50,
+        choices=APPEAL_TYPES,
+        default='complaint',
+        verbose_name="Murojaat turi"
+    )
+    message = models.TextField(verbose_name="Murojaat matni")
+    status = models.CharField(
+        max_length=50,
+        choices=STATUS_CHOICES,
+        default='pending',
+        verbose_name="Holati"
+    )
+    response = models.TextField(null=True, blank=True, verbose_name="Ma'muriyat javobi")
+    responded_by = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='responded_appeals',
+        verbose_name="Javob bergan xodim"
+    )
+    responded_at = models.DateTimeField(null=True, blank=True, verbose_name="Javob berilgan vaqt")
+    
+    is_escalated_to_owner = models.BooleanField(
+        default=False,
+        verbose_name="Tashkilot egasiga hisobot bot orqali yuborilgan"
+    )
+    escalated_at = models.DateTimeField(null=True, blank=True, verbose_name="Egasiga yuborilgan vaqt")
+
+    class Meta:
+        verbose_name = "O'quvchi murojaati"
+        verbose_name_plural = "O'quvchilar murojaatlari"
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if self.student:
+            if not self.branch_id and self.student.branch_id:
+                self.branch_id = self.student.branch_id
+            if not self.organization_id and self.student.organization_id:
+                self.organization_id = self.student.organization_id
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.student.first_name} - {self.get_appeal_type_display()} ({self.status})"
+
+
+

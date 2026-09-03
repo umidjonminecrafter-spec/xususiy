@@ -1,8 +1,9 @@
+from unittest.mock import patch
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 from django.contrib.auth import get_user_model
-from organizations.models import Organization
+from organizations.models import Organization, Branch
 from academics.models import Course, Student, Group
 
 User = get_user_model()
@@ -1430,6 +1431,201 @@ class NewAcademicsAndStudentsAPITests(APITestCase):
         self.assertTrue(
             ClassStudent.objects.filter(student_id=student_id, school_class=school_class, is_active=False).exists()
         )
+
+
+class StudentAppealTests(APITestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Appeal Test Org", subdomain="appeal-org")
+        self.branch = Branch.objects.create(name="Main Branch", organization=self.org)
+        self.owner = User.objects.create_user(
+            username="appeal_owner",
+            password="password123",
+            role="owner",
+            organization=self.org,
+            telegram_chat_id="999888777"
+        )
+        self.student = Student.objects.create(
+            first_name="Ali",
+            last_name="Valiyev",
+            phone="+998901112233",
+            telegram_chat_id="123456789",
+            organization=self.org,
+            branch=self.branch
+        )
+        self.client.force_authenticate(user=self.owner)
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_student_submits_appeal_via_telegram_bot(self, mock_send):
+        mock_send.return_value = True
+        from academics.telegram_bot import handle_telegram_update, STUDENT_BOT_TOKEN
+        from academics.models import StudentAppeal
+        from communication.models import Notification
+
+        # 1. Student taps '✍️ Murojaat yuborish'
+        update_start = {
+            "message": {
+                "chat": {"id": 123456789},
+                "text": "✍️ Murojaat yuborish"
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, update_start)
+        mock_send.assert_called()
+
+        # 2. Student selects '🔴 Shikoyat'
+        update_type = {
+            "message": {
+                "chat": {"id": 123456789},
+                "text": "🔴 Shikoyat"
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, update_type)
+
+        # 3. Student sends the complaint text
+        complaint_text = "Dars xonalarida konditsioner ishlamayapti, juda issiq!"
+        update_text = {
+            "message": {
+                "chat": {"id": 123456789},
+                "text": complaint_text
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, update_text)
+
+        # Verify StudentAppeal created
+        appeal = StudentAppeal.objects.filter(student=self.student).first()
+        self.assertIsNotNone(appeal)
+        self.assertEqual(appeal.appeal_type, 'complaint')
+        self.assertEqual(appeal.message, complaint_text)
+        self.assertEqual(appeal.status, 'pending')
+        self.assertFalse(appeal.is_escalated_to_owner)
+
+        # Verify Notification created in CRM
+        notif = Notification.objects.filter(organization=self.org, type='student_appeal').first()
+        self.assertIsNotNone(notif)
+        self.assertIn("Ali", notif.title)
+        self.assertIn(complaint_text, notif.message)
+
+        # 4. Student checks '📋 Murojaatlarim'
+        update_check = {
+            "message": {
+                "chat": {"id": 123456789},
+                "text": "📋 Murojaatlarim"
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, update_check)
+        self.assertIn("Kutilmoqda", mock_send.call_args[0][2])
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_7_day_escalation_to_owner(self, mock_send):
+        mock_send.return_value = True
+        from academics.tasks import check_and_escalate_unresolved_appeals
+        from academics.models import StudentAppeal
+        from datetime import timedelta
+        from django.utils import timezone
+
+        # 1. Create an appeal that was submitted 8 days ago (overdue)
+        overdue_appeal = StudentAppeal.objects.create(
+            student=self.student,
+            organization=self.org,
+            branch=self.branch,
+            appeal_type='complaint',
+            message="Kutubxona kitoblari yetishmayapti",
+            status='pending',
+            is_escalated_to_owner=False
+        )
+        StudentAppeal.objects.filter(id=overdue_appeal.id).update(
+            created_at=timezone.now() - timedelta(days=8)
+        )
+
+        # 2. Create another recent appeal (2 days ago, not overdue)
+        recent_appeal = StudentAppeal.objects.create(
+            student=self.student,
+            organization=self.org,
+            branch=self.branch,
+            appeal_type='suggestion',
+            message="Yangi shaxmat to'garagi ochilsa yaxshi bo'lardi",
+            status='pending',
+            is_escalated_to_owner=False
+        )
+        StudentAppeal.objects.filter(id=recent_appeal.id).update(
+            created_at=timezone.now() - timedelta(days=2)
+        )
+
+        # 3. Create a resolved appeal (8 days ago, but already resolved so no escalation)
+        resolved_appeal = StudentAppeal.objects.create(
+            student=self.student,
+            organization=self.org,
+            branch=self.branch,
+            appeal_type='request',
+            message="Sertifikat olishim kerak edi",
+            status='resolved',
+            is_escalated_to_owner=False
+        )
+        StudentAppeal.objects.filter(id=resolved_appeal.id).update(
+            created_at=timezone.now() - timedelta(days=8)
+        )
+
+        # Run the escalation task
+        escalated_count = check_and_escalate_unresolved_appeals()
+        self.assertEqual(escalated_count, 1)
+
+        # Verify overdue appeal is marked escalated
+        overdue_appeal.refresh_from_db()
+        self.assertTrue(overdue_appeal.is_escalated_to_owner)
+        self.assertIsNotNone(overdue_appeal.escalated_at)
+
+        # Verify telegram message was sent to owner's chat_id
+        mock_send.assert_called()
+        call_args = mock_send.call_args[0]
+        self.assertEqual(call_args[1], "999888777")  # owner's chat_id
+        self.assertIn("7 KUNDAN BUYON QABUL QILINMAGAN MUROJAAT", call_args[2])
+        self.assertIn("Kutubxona kitoblari yetishmayapti", call_args[2])
+
+        # Recent and resolved should NOT be escalated
+        recent_appeal.refresh_from_db()
+        self.assertFalse(recent_appeal.is_escalated_to_owner)
+        resolved_appeal.refresh_from_db()
+        self.assertFalse(resolved_appeal.is_escalated_to_owner)
+
+        # Running again shouldn't re-send already escalated appeals
+        second_run_count = check_and_escalate_unresolved_appeals()
+        self.assertEqual(second_run_count, 0)
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_student_appeal_api_accept_and_resolve(self, mock_send):
+        mock_send.return_value = True
+        from academics.models import StudentAppeal
+
+        appeal = StudentAppeal.objects.create(
+            student=self.student,
+            organization=self.org,
+            branch=self.branch,
+            appeal_type='complaint',
+            message="O'qituvchi darsga kechikib keldi",
+            status='pending'
+        )
+
+        # 1. List appeals
+        res = self.client.get('/api/v1/academics/student-appeals/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+
+        # 2. Accept appeal
+        accept_res = self.client.post(f'/api/v1/academics/student-appeals/{appeal.id}/accept/')
+        self.assertEqual(accept_res.status_code, status.HTTP_200_OK)
+        appeal.refresh_from_db()
+        self.assertEqual(appeal.status, 'in_progress')
+        self.assertEqual(appeal.responded_by, self.owner)
+
+        # 3. Resolve appeal
+        resolve_res = self.client.post(
+            f'/api/v1/academics/student-appeals/{appeal.id}/resolve/',
+            {'response': "O'qituvchi bilan tushuntirish ishlari olib borildi.", 'status': 'resolved'}
+        )
+        self.assertEqual(resolve_res.status_code, status.HTTP_200_OK)
+        appeal.refresh_from_db()
+        self.assertEqual(appeal.status, 'resolved')
+        self.assertEqual(appeal.response, "O'qituvchi bilan tushuntirish ishlari olib borildi.")
+
 
 
 

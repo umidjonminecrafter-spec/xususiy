@@ -5,7 +5,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter
+from rest_framework.filters import SearchFilter, OrderingFilter
 from organizations.mixins import TenantViewSetMixin
 from .models import StudentFieldSetting, GroupLesson
 from .serializers import StudentFieldSettingSerializer, StudentProfileSerializer, RescheduleLessonSerializer, \
@@ -15,7 +15,7 @@ from academics.models import (
     BalanceHistory, Exam, ExamResult, LeaveReason, LessonTime, OnlineLesson, StudentGroupLeave, StudentPricing,
     StudentArchive, Holiday, Homework,
     BotMessageTemplate, CourseMaterial,
-    Building, SchoolClass, ClassStudent, Parent, StudentAddress
+    Building, SchoolClass, ClassStudent, Parent, StudentAddress, StudentAppeal
 )
 from organizations.mixins import TenantViewSetMixin
 from organizations.permissions import (
@@ -28,7 +28,8 @@ from academics.serializers import (
     ExamResultSerializer, LeaveReasonSerializer, LessonTimeSerializer, OnlineLessonSerializer,
     StudentGroupLeaveSerializer, StudentPricingSerializer, StudentArchiveSerializer, HolidaySerializer,
     HomeworkSerializer, BotMessageTemplateSerializer, CourseMaterialSerializer,
-    BuildingSerializer, SchoolClassSerializer, ClassStudentSerializer, ParentSerializer, StudentAddressSerializer
+    BuildingSerializer, SchoolClassSerializer, ClassStudentSerializer, ParentSerializer, StudentAddressSerializer,
+    StudentAppealSerializer
 )
 
 from .models import TelegramVerification, Student
@@ -2978,3 +2979,84 @@ class StudentAddressViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     filterset_fields = ['region', 'district', 'student', 'branch']
     search_fields = ['student__first_name', 'student__last_name', 'address', 'district', 'parent_name', 'parent_phone']
     pagination_class = None
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. O'QUVCHI MUROJAATLARI VIEWSET
+# ─────────────────────────────────────────────────────────────
+class StudentAppealViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    queryset = StudentAppeal.objects.all().select_related('student', 'responded_by')
+    serializer_class = StudentAppealSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'appeal_type', 'student', 'is_escalated_to_owner', 'branch']
+    search_fields = ['student__first_name', 'student__last_name', 'student__phone', 'message', 'response']
+    ordering_fields = ['created_at', 'status', 'appeal_type']
+    ordering = ['-created_at']
+
+    @decorators.action(detail=True, methods=['post'])
+    def accept(self, request, pk=None):
+        """Murojaatni ma'muriyat tomonidan qabul qilish / ko'rib chiqishga o'tkazish"""
+        appeal = self.get_object()
+        appeal.status = 'in_progress'
+        appeal.responded_by = request.user
+        appeal.responded_at = timezone.now()
+        appeal.save(update_fields=['status', 'responded_by', 'responded_at'])
+
+        # Talabaga xabar berish
+        if appeal.student and appeal.student.telegram_chat_id:
+            try:
+                from academics.telegram_bot import send_telegram_message, get_student_bot_token
+                token = get_student_bot_token(appeal.organization)
+                if token:
+                    msg = (
+                        f"📢 <b>Murojaatingiz holati yangilandi!</b>\n\n"
+                        f"Murojaat raqami: <b>#{appeal.id}</b>\n"
+                        f"Turi: <b>{appeal.get_appeal_type_display()}</b>\n"
+                        f"Yangi holati: <b>Ko'rib chiqilmoqda 🔄</b>\n\n"
+                        f"Sizning murojaatingiz ma'muriyat tomonidan qabul qilindi va mutaxassislarimiz tomonidan o'rganilmoqda."
+                    )
+                    send_telegram_message(token, appeal.student.telegram_chat_id, msg)
+            except Exception as e_tg:
+                print(f"[ACCEPT_APPEAL_TG_ERR]: {e_tg}")
+
+        serializer = self.get_serializer(appeal)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=True, methods=['post'])
+    def resolve(self, request, pk=None):
+        """Murojaatni hal etish va talabaga javob qaytarish"""
+        appeal = self.get_object()
+        response_text = request.data.get('response', '').strip()
+        status_val = request.data.get('status', 'resolved')
+        if status_val not in ['resolved', 'rejected']:
+            status_val = 'resolved'
+
+        appeal.status = status_val
+        appeal.response = response_text
+        appeal.responded_by = request.user
+        appeal.responded_at = timezone.now()
+        appeal.save(update_fields=['status', 'response', 'responded_by', 'responded_at'])
+
+        # Talabaga javob xabari yuborish
+        if appeal.student and appeal.student.telegram_chat_id:
+            try:
+                from academics.telegram_bot import send_telegram_message, get_student_bot_token
+                token = get_student_bot_token(appeal.organization)
+                if token:
+                    status_text = "Hal etildi / Bajarildi ✅" if status_val == 'resolved' else "Ko'rib chiqildi 📋"
+                    msg = (
+                        f"📢 <b>Murojaatingizga javob berildi!</b>\n\n"
+                        f"Murojaat raqami: <b>#{appeal.id}</b>\n"
+                        f"Turi: <b>{appeal.get_appeal_type_display()}</b>\n"
+                        f"Holati: <b>{status_text}</b>\n\n"
+                    )
+                    if response_text:
+                        msg += f"✍️ <b>Ma'muriyat javobi:</b>\n<i>\"{response_text}\"</i>\n\n"
+                    msg += "SmartTalim tizimi orqali faol ishtirokingiz uchun minnatdormiz!"
+                    send_telegram_message(token, appeal.student.telegram_chat_id, msg)
+            except Exception as e_tg:
+                print(f"[RESOLVE_APPEAL_TG_ERR]: {e_tg}")
+
+        serializer = self.get_serializer(appeal)
+        return Response(serializer.data, status=status.HTTP_200_OK)

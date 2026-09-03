@@ -74,6 +74,18 @@ def start_bot_and_scheduler():
         except Exception as es:
             print(f"[XATO] Kunlik hisobot schedulerini sozlashda xatolik: {str(es)}")
 
+        # Har 1 soatda 7 kundan buyon qabul qilinmagan murojaatlarni tekshiradi
+        try:
+            from academics.tasks import check_and_escalate_unresolved_appeals
+            scheduler.add_job(
+                check_and_escalate_unresolved_appeals,
+                'interval',
+                hours=1
+            )
+            print("[OK] Murojaatlar eskalatsiyasi jadvali qo'shildi!")
+        except Exception as ea:
+            print(f"[XATO] Murojaatlar eskalatsiyasi schedulerini sozlashda xatolik: {str(ea)}")
+
         scheduler.start()
         print("[OK] Telegram Bot scheduler-i muvaffaqiyatli yurib ketdi!")
     except Exception as e:

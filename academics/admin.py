@@ -1,7 +1,7 @@
 from django.contrib import admin
 from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, Homework,
-    StudentFieldSetting, CourseMaterial, Building, SchoolClass, ClassStudent, Parent, StudentAddress
+    StudentFieldSetting, CourseMaterial, Building, SchoolClass, ClassStudent, Parent, StudentAddress, StudentAppeal
 )
 from .models import BotMessageTemplate, LessonSchedule
 
@@ -110,5 +110,14 @@ class StudentAddressAdmin(admin.ModelAdmin):
     list_display = ('id', 'student', 'region', 'district', 'parent_name', 'parent_phone', 'organization')
     search_fields = ('student__first_name', 'student__last_name', 'district', 'address')
     list_filter = ('region', 'organization')
+
+
+@admin.register(StudentAppeal)
+class StudentAppealAdmin(admin.ModelAdmin):
+    list_display = ('id', 'student', 'appeal_type', 'status', 'is_escalated_to_owner', 'created_at', 'organization')
+    search_fields = ('student__first_name', 'student__last_name', 'student__phone', 'message', 'response')
+    list_filter = ('appeal_type', 'status', 'is_escalated_to_owner', 'organization', 'branch')
+    readonly_fields = ('created_at', 'updated_at', 'is_escalated_to_owner', 'escalated_at')
+
 
 

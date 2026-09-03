@@ -3,7 +3,7 @@ from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, LessonSchedule,
     BalanceHistory, Exam, ExamResult, LeaveReason, LessonTime, OnlineLesson, StudentGroupLeave, StudentPricing,
     StudentArchive, Holiday, Homework, StudentEvaluationLevel, CourseMaterial,
-    Building, SchoolClass, ClassStudent, Parent, StudentAddress
+    Building, SchoolClass, ClassStudent, Parent, StudentAddress, StudentAppeal
 )
 from accounts.serializers import UserSerializer
 from .models import StudentFieldSetting, GroupLesson
@@ -1091,3 +1091,31 @@ class StudentAddressSerializer(serializers.ModelSerializer):
         model = StudentAddress
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
+
+
+# ─────────────────────────────────────────────────────────────
+# 6. O'QUVCHI MUROJAATI SERIALIZER
+# ─────────────────────────────────────────────────────────────
+class StudentAppealSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='student.full_name', read_only=True)
+    student_phone = serializers.CharField(source='student.phone', read_only=True)
+    appeal_type_display = serializers.CharField(source='get_appeal_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    responded_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentAppeal
+        fields = [
+            'id', 'student', 'student_name', 'student_phone',
+            'appeal_type', 'appeal_type_display',
+            'message', 'status', 'status_display',
+            'response', 'responded_by', 'responded_by_name', 'responded_at',
+            'is_escalated_to_owner', 'escalated_at',
+            'organization', 'branch', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ('organization', 'created_at', 'updated_at', 'is_escalated_to_owner', 'escalated_at')
+
+    def get_responded_by_name(self, obj):
+        if obj.responded_by:
+            return obj.responded_by.get_full_name() or obj.responded_by.username
+        return None

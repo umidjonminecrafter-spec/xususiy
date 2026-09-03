@@ -11,7 +11,7 @@ from .views import (
     StaffProfileAPIView, StaffScheduleAPIView, BotMessageTemplateViewSet, TelegramWebhookView, SetLessonTopicAPIView,
     CancelOrRestoreLessonAPIView, RescheduleLessonAPIView, GroupLessonListAPIView, BirthdayCalendarAPIView,
     StudentEvaluationLevelViewSet, CourseMaterialViewSet, CheckBotRegistrationAPIView,
-    BuildingViewSet, SchoolClassViewSet, ParentViewSet, StudentAddressViewSet
+    BuildingViewSet, SchoolClassViewSet, ParentViewSet, StudentAddressViewSet, StudentAppealViewSet
 )
 from .views import StudentFieldSettingViewSet
 from finance.views import TeacherSalaryCalculationViewSet, TeacherSalaryRuleViewSet
@@ -44,6 +44,7 @@ router.register(r'buildings', BuildingViewSet, basename='building')
 router.register(r'classes', SchoolClassViewSet, basename='school-class')
 router.register(r'parents', ParentViewSet, basename='parent')
 router.register(r'addresses', StudentAddressViewSet, basename='student-address')
+router.register(r'student-appeals', StudentAppealViewSet, basename='student-appeal')
 router.register(r'holidays', HolidayViewSet, basename='holiday')
 router.register(r'balance-history', BalanceHistoryViewSet, basename='balance-history')
 router.register(r'exams', ExamViewSet, basename='exam')

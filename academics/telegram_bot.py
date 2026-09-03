@@ -555,7 +555,8 @@ def handle_telegram_update(bot_type, token, update_data):
                     ["💳 Oxirgi to'lovlar", "🧾 Oxirgi to'lov cheki"],
                     ["📅 Dars jadvalim", "📊 Davomatlarim"],
                     ["🏆 Imtihon baholari", "📝 Uy vazifalarim"],
-                    ["✉️ Kelgan xabarlar"]
+                    ["✉️ Kelgan xabarlar", "✍️ Murojaat yuborish"],
+                    ["📋 Murojaatlarim"]
                 ])
                 send_telegram_message(token, chat_id, msg, menu)
             else:
@@ -688,7 +689,8 @@ def handle_telegram_update(bot_type, token, update_data):
                 ["💳 Oxirgi to'lovlar", "🧾 Oxirgi to'lov cheki"],
                 ["📅 Dars jadvalim", "📊 Davomatlarim"],
                 ["🏆 Imtihon baholari", "📝 Uy vazifalarim"],
-                ["✉️ Kelgan xabarlar"]
+                ["✉️ Kelgan xabarlar", "✍️ Murojaat yuborish"],
+                ["📋 Murojaatlarim"]
             ])
             send_telegram_message(token, chat_id, msg, menu)
             return
@@ -851,8 +853,126 @@ def handle_telegram_update(bot_type, token, update_data):
             ["💳 Oxirgi to'lovlar", "🧾 Oxirgi to'lov cheki"],
             ["📅 Dars jadvalim", "📊 Davomatlarim"],
             ["🏆 Imtihon baholari", "📝 Uy vazifalarim"],
-            ["✉️ Kelgan xabarlar"]
+            ["✉️ Kelgan xabarlar", "✍️ Murojaat yuborish"],
+            ["📋 Murojaatlarim"]
         ])
+
+        from django.core.cache import cache
+        state_key = f"student_appeal_state_{chat_id}"
+        data_key = f"student_appeal_data_{chat_id}"
+        current_state = cache.get(state_key)
+
+        # Bekor qilish tugmasi
+        if text in ["⬅️ Bekor qilish", "/cancel"]:
+            cache.delete(state_key)
+            cache.delete(data_key)
+            send_telegram_message(token, chat_id, "Murojaat yuborish bekor qilindi.", menu)
+            return
+
+        # Asosiy menyu tugmalaridan biri bosilsa, har doim oldingi holatni tozalaymiz
+        main_buttons = [
+            "👤 Profilim", "💰 Balansim", "💰 Balans & Qarz", "💳 Oxirgi to'lovlar",
+            "🧾 Oxirgi to'lov cheki", "📅 Dars jadvalim", "📊 Davomatlarim",
+            "🏆 Imtihon baholari", "📝 Uy vazifalarim", "✉️ Kelgan xabarlar", "📋 Murojaatlarim"
+        ]
+        if text in main_buttons:
+            cache.delete(state_key)
+            cache.delete(data_key)
+            current_state = None
+
+        # 1-qadam: Murojaat turini tanlash holati
+        if current_state == "waiting_appeal_type":
+            type_mapping = {
+                "🔴 Shikoyat": ("complaint", "Shikoyat"),
+                "💡 Taklif": ("suggestion", "Taklif"),
+                "📝 Talab / Ariza": ("request", "Talab / Ariza"),
+                "📝 Talab": ("request", "Talab / Ariza"),
+                "❓ Boshqa": ("other", "Boshqa murojaat"),
+            }
+            if text in type_mapping:
+                appeal_code, appeal_name = type_mapping[text]
+                cache.set(data_key, {"appeal_type": appeal_code, "appeal_name": appeal_name}, 600)
+                cache.set(state_key, "waiting_appeal_text", 600)
+                cancel_keyboard = get_reply_keyboard([["⬅️ Bekor qilish"]])
+                msg = (
+                    f"✍️ <b>{appeal_name} matnini yozing:</b>\n\n"
+                    f"Iltimos, o'z fikringiz, taklifingiz yoki shikoyatingizni bitta xabarda batafsil bayon eting.\n"
+                    f"Ushbu xabar to'g'ridan-to'g'ri o'quv markazi ma'muriyatiga yetkaziladi.\n\n"
+                    f"<i>Bekor qilish uchun '⬅️ Bekor qilish' tugmasini bosing.</i>"
+                )
+                send_telegram_message(token, chat_id, msg, cancel_keyboard)
+                return
+            else:
+                type_keyboard = get_reply_keyboard([
+                    ["🔴 Shikoyat", "💡 Taklif"],
+                    ["📝 Talab / Ariza", "❓ Boshqa"],
+                    ["⬅️ Bekor qilish"]
+                ])
+                send_telegram_message(token, chat_id, "Iltimos, quyidagi tugmalardan birini tanlang yoki '⬅️ Bekor qilish'ni bosing:", type_keyboard)
+                return
+
+        # 2-qadam: Murojaat matnini qabul qilish
+        elif current_state == "waiting_appeal_text":
+            appeal_info = cache.get(data_key) or {}
+            appeal_type = appeal_info.get("appeal_type", "complaint")
+            appeal_name = appeal_info.get("appeal_name", "Murojaat")
+
+            from academics.models import StudentAppeal
+            from communication.models import Notification
+
+            appeal = StudentAppeal.objects.create(
+                organization=student.organization,
+                branch=student.branch,
+                student=student,
+                appeal_type=appeal_type,
+                message=text,
+                status='pending'
+            )
+
+            # CRM tizimiga Notification yaratish
+            try:
+                Notification.objects.create(
+                    organization=student.organization,
+                    user=None,
+                    title=f"Yangi {appeal_name.lower()}: {student.first_name} {student.last_name or ''}".strip(),
+                    message=(
+                        f"Talaba {student.first_name} {student.last_name or ''} ({student.phone}) dan yangi {appeal_name.lower()} keldi:\n\n"
+                        f"\"{text}\""
+                    ),
+                    type='student_appeal'
+                )
+            except Exception as e_notif:
+                print(f"[ERROR] Notification yaratishda xato: {e_notif}")
+
+            cache.delete(state_key)
+            cache.delete(data_key)
+
+            confirm_msg = (
+                f"✅ <b>Murojaatingiz muvaffaqiyatli qabul qilindi!</b>\n\n"
+                f"Murojaat raqami: <b>#{appeal.id}</b>\n"
+                f"Turi: <b>{appeal_name}</b>\n\n"
+                f"Sizning murojaatingiz o'quv markazi ma'muriyatiga yetkazildi va tez orada ko'rib chiqiladi.\n"
+                f"E'tiboringiz va taklifingiz uchun rahmat!"
+            )
+            send_telegram_message(token, chat_id, confirm_msg, menu)
+            return
+
+        # Yangi murojaat boshlash
+        if text in ["✍️ Murojaat yuborish", "✍️ Murojaat", "/murojaat"]:
+            cache.set(state_key, "waiting_appeal_type", 600)
+            type_keyboard = get_reply_keyboard([
+                ["🔴 Shikoyat", "💡 Taklif"],
+                ["📝 Talab / Ariza", "❓ Boshqa"],
+                ["⬅️ Bekor qilish"]
+            ])
+            msg = (
+                "✍️ <b>Murojaat turini tanlang:</b>\n\n"
+                "O'quv markazimiz faoliyati, darslar, xizmatlar yoki boshqa masalalar bo'yicha "
+                "o'z taklif, talab yoki shikoyatingizni yuborishingiz mumkin.\n\n"
+                "Iltimos, quyidagi tugmalardan birini tanlang:"
+            )
+            send_telegram_message(token, chat_id, msg, type_keyboard)
+            return
 
         if text == "👤 Profilim":
             active_groups = StudentGroup.objects.filter(student=student, group__status='active')
@@ -979,6 +1099,32 @@ def handle_telegram_update(bot_type, token, update_data):
                     date_str = sms.sent_at.strftime("%d.%m.%Y %H:%M")
                     res += f"📅 {date_str}\n💬 {sms.message}\n\n"
             send_telegram_message(token, chat_id, res, menu)
+
+        elif text in ["📋 Murojaatlarim", "📋 Murojaatlar"]:
+            from academics.models import StudentAppeal
+            appeals = StudentAppeal.objects.filter(student=student).order_by('-created_at')[:5]
+            if not appeals.exists():
+                send_telegram_message(token, chat_id, "Siz hali murojaat yubormagansiz.", menu)
+            else:
+                res = "<b>📋 Sizning oxirgi 5 ta murojaatingiz:</b>\n\n"
+                for ap in appeals:
+                    date_str = ap.created_at.strftime("%d.%m.%Y %H:%M") if ap.created_at else ""
+                    status_text = {
+                        'pending': "Kutilmoqda ⏳",
+                        'in_progress': "Ko'rib chiqilmoqda 🔄",
+                        'resolved': "Hal etildi ✅",
+                        'rejected': "Rad etildi ❌"
+                    }.get(ap.status, ap.status)
+                    res += (
+                        f"📌 <b>Murojaat #{ap.id} ({ap.get_appeal_type_display()})</b>\n"
+                        f"📅 Sana: {date_str}\n"
+                        f"📊 Holati: <b>{status_text}</b>\n"
+                        f"💬 Matn: <i>{ap.message[:100]}</i>\n"
+                    )
+                    if ap.response:
+                        res += f"✍️ <b>Ma'muriyat javobi:</b> <i>{ap.response}</i>\n"
+                    res += "\n"
+                send_telegram_message(token, chat_id, res, menu)
 
         else:
             send_telegram_message(token, chat_id, "Noma'lum buyruq. Iltimos menyudan foydalaning.", menu)

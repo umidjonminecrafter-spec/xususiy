@@ -160,6 +160,7 @@ class Notification(models.Model):
         ('balance_low', 'Balance kam'),
         ('info', 'Umumiy xabar'),
         ('birthday_reminder', 'Tug\'ilgan kun eslatmasi'),
+        ('student_appeal', 'O\'quvchi murojaati / shikoyati'),
     ]
     organization = models.ForeignKey(
         Organization,
