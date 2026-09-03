@@ -456,6 +456,17 @@ homework, _ = Homework.objects.get_or_create(
 )
 print(f"Uyga vazifa: {homework.title} ({group.name})")
 
+# 16. Talabalarni avtomatik to'ldirish (agar talabalar 100 dan kam bo'lsa)
+try:
+    current_count = Student.objects.filter(organization=org).count()
+    if current_count < 100:
+        print(f"Bazadagi talabalar soni ({current_count}) 100 dan kam. 114 ta talaba avtomatik kiritilmoqda...")
+        from seed_114_students import seed_students
+        seed_students(114)
+        print(f"Baza muvaffaqiyatli to'ldirildi! Jami talabalar: {Student.objects.filter(organization=org).count()} ta.")
+except Exception as e_seed:
+    print(f"[XATO] Talabalarni to'ldirishda xatolik: {e_seed}")
+
 print("=" * 60)
 print("Barcha ma'lumotlar muvaffaqiyatli tayyorlandi!")
 print("=" * 60)

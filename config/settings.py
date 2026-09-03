@@ -132,7 +132,16 @@ DATABASES = {
 # Faqatgina DATABASE_URL bor bo'lsa VA u postgres:// yoki postgresql:// bilan boshlansa ishlatamiz
 db_url = os.getenv('DATABASE_URL')
 if db_url and (db_url.startswith('postgres://') or db_url.startswith('postgresql://')):
-    DATABASES['default'] = dj_database_url.config(conn_max_age=600, ssl_require=True)
+    is_render_internal = 'dpg-' in db_url and '.render.com' not in db_url
+    use_ssl = False if is_render_internal else ('render.com' in db_url or 'neon.tech' in db_url or 'supabase.co' in db_url)
+    DATABASES['default'] = dj_database_url.config(
+        default=db_url,
+        conn_max_age=600,
+        ssl_require=use_ssl
+    )
+    print(f"[DATABASE] PostgreSQL muvaffaqiyatli ulandi! (SSL={use_ssl})")
+else:
+    print("[DATABASE] DIQQAT: DATABASE_URL mavjud emas yoki SQLite ishlatilmoqda. Render-da ma'lumotlar saqlanib qolishi uchun PostgreSQL ulang!")
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
