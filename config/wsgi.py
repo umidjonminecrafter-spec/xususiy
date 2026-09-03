@@ -86,6 +86,18 @@ def start_bot_and_scheduler():
         except Exception as ea:
             print(f"[XATO] Murojaatlar eskalatsiyasi schedulerini sozlashda xatolik: {str(ea)}")
 
+        # Har 1 soatda 3 kundan oshgan murojaatlar bo'yicha talabalarga qoniqish so'rovini yuboradi
+        try:
+            from academics.tasks import check_and_send_appeal_satisfaction_polls
+            scheduler.add_job(
+                check_and_send_appeal_satisfaction_polls,
+                'interval',
+                hours=1
+            )
+            print("[OK] Murojaatlar qoniqish so'rovi jadvali qo'shildi!")
+        except Exception as ep:
+            print(f"[XATO] Qoniqish so'rovi schedulerini sozlashda xatolik: {str(ep)}")
+
         scheduler.start()
         print("[OK] Telegram Bot scheduler-i muvaffaqiyatli yurib ketdi!")
     except Exception as e:

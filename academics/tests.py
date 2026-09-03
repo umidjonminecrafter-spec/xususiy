@@ -1626,6 +1626,141 @@ class StudentAppealTests(APITestCase):
         self.assertEqual(appeal.status, 'resolved')
         self.assertEqual(appeal.response, "O'qituvchi bilan tushuntirish ishlari olib borildi.")
 
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_3_day_satisfaction_poll_sent_to_student(self, mock_send):
+        mock_send.return_value = True
+        from academics.tasks import check_and_send_appeal_satisfaction_polls
+        from academics.models import StudentAppeal
+        from datetime import timedelta
+        from django.utils import timezone
+
+        # Create appeal from 4 days ago
+        appeal = StudentAppeal.objects.create(
+            student=self.student,
+            organization=self.org,
+            branch=self.branch,
+            appeal_type='complaint',
+            message="Xonada partalar yetarli emas",
+            status='in_progress',
+            satisfaction_poll_sent=False
+        )
+        StudentAppeal.objects.filter(id=appeal.id).update(
+            created_at=timezone.now() - timedelta(days=4)
+        )
+
+        sent_count = check_and_send_appeal_satisfaction_polls()
+        self.assertEqual(sent_count, 1)
+
+        appeal.refresh_from_db()
+        self.assertTrue(appeal.satisfaction_poll_sent)
+        self.assertIsNotNone(appeal.satisfaction_poll_sent_at)
+
+        # Verify telegram message sent to student
+        mock_send.assert_called()
+        call_args = mock_send.call_args[0]
+        self.assertEqual(call_args[1], "123456789")  # student's telegram chat_id
+        self.assertIn("muammoingiz ma'muriyat tomonidan ko'rib chiqildimi / hal qilindimi", call_args[2])
+
+        # Check inline keyboard has yes/no callbacks
+        kwargs = mock_send.call_args[1]
+        inline_markup = kwargs.get('reply_markup')
+        self.assertIsNotNone(inline_markup)
+        buttons = inline_markup['inline_keyboard'][0]
+        self.assertEqual(buttons[0]['callback_data'], f"appeal_satisfaction_yes_{appeal.id}")
+        self.assertEqual(buttons[1]['callback_data'], f"appeal_satisfaction_no_{appeal.id}")
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_student_confirms_resolved_yes(self, mock_send):
+        mock_send.return_value = True
+        from academics.telegram_bot import handle_telegram_update, STUDENT_BOT_TOKEN
+        from academics.models import StudentAppeal
+
+        appeal = StudentAppeal.objects.create(
+            student=self.student,
+            organization=self.org,
+            branch=self.branch,
+            appeal_type='complaint',
+            message="Konditsioner pulti yo'q",
+            status='in_progress'
+        )
+
+        # Simulate student clicking '✅ Ha, hal bo'ldi'
+        callback_update = {
+            "callback_query": {
+                "id": "cb_111",
+                "from": {"id": 123456789},
+                "data": f"appeal_satisfaction_yes_{appeal.id}",
+                "message": {"chat": {"id": 123456789}}
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, callback_update)
+
+        appeal.refresh_from_db()
+        self.assertTrue(appeal.student_satisfied)
+        self.assertEqual(appeal.status, 'resolved')
+        self.assertIsNotNone(appeal.satisfaction_responded_at)
+        self.assertFalse(appeal.is_escalated_to_owner)
+
+        # Student gets thank you message
+        mock_send.assert_called()
+        self.assertIn("hal bo'lganidan juda xursandmiz", mock_send.call_args[0][2])
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_student_confirms_not_resolved_no_escalates_to_owner_with_teacher_and_group(self, mock_send):
+        mock_send.return_value = True
+        from academics.telegram_bot import handle_telegram_update, STUDENT_BOT_TOKEN
+        from academics.models import StudentAppeal, Course, Group, StudentGroup
+
+        # Create teacher, course and group for the student
+        teacher = User.objects.create_user(
+            username="math_teacher",
+            first_name="Sardor",
+            last_name="Rahimov",
+            role="teacher",
+            organization=self.org
+        )
+        course = Course.objects.create(name="Algebra", organization=self.org, price=100.0)
+        group = Group.objects.create(name="Algebra 101", course=course, teacher=teacher, organization=self.org, status='active')
+        StudentGroup.objects.create(student=self.student, group=group, organization=self.org)
+
+        appeal = StudentAppeal.objects.create(
+            student=self.student,
+            organization=self.org,
+            branch=self.branch,
+            appeal_type='complaint',
+            message="O'qituvchi dars mavzusini tushuntirib bermadi",
+            status='in_progress'
+        )
+
+        # Simulate student clicking '❌ Yo'q, hal bo'lmadi'
+        callback_update = {
+            "callback_query": {
+                "id": "cb_222",
+                "from": {"id": 123456789},
+                "data": f"appeal_satisfaction_no_{appeal.id}",
+                "message": {"chat": {"id": 123456789}}
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, callback_update)
+
+        appeal.refresh_from_db()
+        self.assertFalse(appeal.student_satisfied)
+        self.assertTrue(appeal.is_escalated_to_owner)
+        self.assertIsNotNone(appeal.escalated_at)
+
+        # Verify alert was sent to organization owner
+        self.assertGreaterEqual(mock_send.call_count, 2)  # student ack + owner alert
+        owner_call = [call for call in mock_send.call_args_list if call[0][1] == "999888777"][0]
+        owner_alert_text = owner_call[0][2]
+
+        self.assertIn("HAL QILINMAGAN TALABA SHIKOYATI", owner_alert_text)
+        self.assertIn("Ali Valiyev", owner_alert_text)
+        self.assertIn("Sardor Rahimov", owner_alert_text)  # Teacher name
+        self.assertIn("Algebra 101", owner_alert_text)     # Group name
+        self.assertIn("O'qituvchi dars mavzusini tushuntirib bermadi", owner_alert_text)
+        self.assertIn("Muammo hal bo'lmadi", owner_alert_text)
+
+
 
 
 

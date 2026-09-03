@@ -454,6 +454,12 @@ def send_daily_telegram_reports():
     except Exception as e_appeal:
         print(f"[DAILY_REPORT_APPEAL_ERR]: {e_appeal}")
 
+    # Har kuni ertalab 3 kundan oshgan murojaatlar bo'yicha talabalarga qoniqish so'rovini yuboramiz
+    try:
+        check_and_send_appeal_satisfaction_polls()
+    except Exception as e_poll:
+        print(f"[DAILY_REPORT_POLL_ERR]: {e_poll}")
+
 
 def check_and_escalate_unresolved_appeals():
     """
@@ -555,5 +561,66 @@ def check_and_escalate_unresolved_appeals():
             escalated_count += 1
 
     return escalated_count
+
+
+def check_and_send_appeal_satisfaction_polls():
+    """
+    3 kundan oshgan, talabaning telegram chat_id si mavjud bo'lgan,
+    hali qoniqish so'rovi yuborilmagan (satisfaction_poll_sent=False)
+    murojaatlar bo'yicha talabaga 'Muammoingiz hal qilindimi?' deb
+    Inline tugmali so'rov yuboradi.
+    """
+    from django.db import connection
+    connection.close()
+
+    from django.utils import timezone
+    from datetime import timedelta
+    from academics.models import StudentAppeal
+    from academics.telegram_bot import send_telegram_message, get_student_bot_token, get_inline_keyboard
+
+    three_days_ago = timezone.now() - timedelta(days=3)
+    pending_polls = StudentAppeal.objects.filter(
+        created_at__lte=three_days_ago,
+        satisfaction_poll_sent=False,
+        student__telegram_chat_id__isnull=False
+    ).exclude(student__telegram_chat_id='').select_related('student', 'organization')
+
+    sent_count = 0
+    for appeal in pending_polls:
+        org = appeal.organization
+        token = get_student_bot_token(org)
+        if not token:
+            continue
+
+        chat_id = appeal.student.telegram_chat_id
+        type_display = appeal.get_appeal_type_display()
+
+        poll_msg = (
+            f"🔔 <b>Hurmatli {appeal.student.first_name}!</b>\n\n"
+            f"Siz 3 kun oldin #{appeal.id} raqamli <b>{type_display.lower()}</b> yuborgan edingiz:\n"
+            f"<i>\"{appeal.message[:120]}{'...' if len(appeal.message) > 120 else ''}\"</i>\n\n"
+            f"❓ <b>Ushbu muammoingiz ma'muriyat tomonidan ko'rib chiqildimi / hal qilindimi?</b>\n\n"
+            f"Iltimos, quyidagi tugmalardan birini tanlang:"
+        )
+
+        inline_markup = get_inline_keyboard([
+            [
+                ("✅ Ha, hal bo'ldi", f"appeal_satisfaction_yes_{appeal.id}"),
+                ("❌ Yo'q, hal bo'lmadi", f"appeal_satisfaction_no_{appeal.id}")
+            ]
+        ])
+
+        try:
+            if send_telegram_message(token, chat_id, poll_msg, reply_markup=inline_markup):
+                appeal.satisfaction_poll_sent = True
+                appeal.satisfaction_poll_sent_at = timezone.now()
+                appeal.save(update_fields=['satisfaction_poll_sent', 'satisfaction_poll_sent_at'])
+                sent_count += 1
+                print(f"[APPEAL_POLL_SENT] Appeal #{appeal.id} poll sent to chat_id={chat_id}")
+        except Exception as e_poll:
+            print(f"[APPEAL_POLL_ERR] Appeal #{appeal.id}: {e_poll}")
+
+    return sent_count
+
 
 

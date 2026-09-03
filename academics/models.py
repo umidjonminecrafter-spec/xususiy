@@ -1857,6 +1857,27 @@ class StudentAppeal(TenantModel):
     )
     escalated_at = models.DateTimeField(null=True, blank=True, verbose_name="Egasiga yuborilgan vaqt")
 
+    # 3 kunlik qayta aloqa so'rovi (Satisfaction poll)
+    satisfaction_poll_sent = models.BooleanField(
+        default=False,
+        verbose_name="3 kunlik qoniqish so'rovi talabaga yuborilgan"
+    )
+    satisfaction_poll_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Qoniqish so'rovi yuborilgan vaqt"
+    )
+    student_satisfied = models.BooleanField(
+        null=True,
+        blank=True,
+        verbose_name="Talaba muammo hal bo'lganini tasdiqladi (True=Ha, False=Yo'q)"
+    )
+    satisfaction_responded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Talaba javob bergan vaqt"
+    )
+
     class Meta:
         verbose_name = "O'quvchi murojaati"
         verbose_name_plural = "O'quvchilar murojaatlari"

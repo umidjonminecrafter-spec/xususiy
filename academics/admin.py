@@ -114,10 +114,10 @@ class StudentAddressAdmin(admin.ModelAdmin):
 
 @admin.register(StudentAppeal)
 class StudentAppealAdmin(admin.ModelAdmin):
-    list_display = ('id', 'student', 'appeal_type', 'status', 'is_escalated_to_owner', 'created_at', 'organization')
+    list_display = ('id', 'student', 'appeal_type', 'status', 'satisfaction_poll_sent', 'student_satisfied', 'is_escalated_to_owner', 'created_at', 'organization')
     search_fields = ('student__first_name', 'student__last_name', 'student__phone', 'message', 'response')
-    list_filter = ('appeal_type', 'status', 'is_escalated_to_owner', 'organization', 'branch')
-    readonly_fields = ('created_at', 'updated_at', 'is_escalated_to_owner', 'escalated_at')
+    list_filter = ('appeal_type', 'status', 'satisfaction_poll_sent', 'student_satisfied', 'is_escalated_to_owner', 'organization', 'branch')
+    readonly_fields = ('created_at', 'updated_at', 'is_escalated_to_owner', 'escalated_at', 'satisfaction_poll_sent', 'satisfaction_poll_sent_at', 'student_satisfied', 'satisfaction_responded_at')
 
 
 

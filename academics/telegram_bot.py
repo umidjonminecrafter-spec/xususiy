@@ -204,6 +204,24 @@ def get_reply_keyboard(buttons):
     }
 
 
+def get_inline_keyboard(rows):
+    """
+    rows: [
+        [("Tugma matni", "callback_data"), ...],
+        ...
+    ]
+    """
+    inline_keyboard = []
+    for row in rows:
+        row_buttons = []
+        for btn_text, data in row:
+            row_buttons.append({"text": btn_text, "callback_data": data})
+        inline_keyboard.append(row_buttons)
+    return {
+        "inline_keyboard": inline_keyboard
+    }
+
+
 def seed_default_faqs(org_id):
     try:
         from support.models import FAQCategory, FAQItem
@@ -476,6 +494,130 @@ def find_parents_by_phone(phone_raw):
     return Student.objects.filter(id__in=f_ids), Student.objects.filter(id__in=m_ids)
 
 
+def handle_appeal_satisfaction_callback(token, chat_id, callback_data):
+    from django.utils import timezone
+    from academics.models import StudentAppeal, StudentGroup
+    from accounts.models import User
+    from organizations.models import TelegramNotificationSetting
+
+    parts = callback_data.split("_")
+    if len(parts) < 4:
+        return
+
+    answer = parts[2]  # 'yes' or 'no'
+    try:
+        appeal_id = int(parts[3])
+    except ValueError:
+        return
+
+    appeal = StudentAppeal.objects.filter(id=appeal_id).select_related('student', 'organization').first()
+    if not appeal:
+        send_telegram_message(token, chat_id, "Murojaat topilmadi.")
+        return
+
+    if answer == 'yes':
+        appeal.student_satisfied = True
+        appeal.satisfaction_responded_at = timezone.now()
+        appeal.status = 'resolved'
+        appeal.save(update_fields=['student_satisfied', 'satisfaction_responded_at', 'status'])
+
+        msg = (
+            "✅ <b>Katta rahmat!</b>\n\n"
+            "Sizning muammoingiz hal bo'lganidan juda xursandmiz. "
+            "SmartTalim tizimi sizga sifatli ta'lim olishingizda eng yaxshi sharoitlarni yaratishdan mamnun!"
+        )
+        send_telegram_message(token, chat_id, msg)
+
+    elif answer == 'no':
+        appeal.student_satisfied = False
+        appeal.satisfaction_responded_at = timezone.now()
+        appeal.is_escalated_to_owner = True
+        appeal.escalated_at = timezone.now()
+        appeal.save(update_fields=['student_satisfied', 'satisfaction_responded_at', 'is_escalated_to_owner', 'escalated_at'])
+
+        # Talabaga xabar
+        student_ack = (
+            "⚠️ <b>Kechirasiz!</b>\n\n"
+            "Sizning shikoyatingiz va muammoingiz hal etilmagani haqidagi ma'lumot "
+            "<b>to'g'ridan-to'g'ri tashkilot rahbariga</b> yetkazildi. "
+            "Rahbariyat ushbu masalani shaxsan nazoratga oladi."
+        )
+        send_telegram_message(token, chat_id, student_ack)
+
+        # Tashkilot egasiga ogohlantirish yuborish
+        org = appeal.organization
+        report_token = get_report_bot_token(org)
+        if report_token:
+            owner_chat_ids = set()
+            owner_users = User.objects.filter(organization=org, role='owner', telegram_chat_id__isnull=False).exclude(telegram_chat_id='')
+            for u in owner_users:
+                owner_chat_ids.add(str(u.telegram_chat_id).strip())
+
+            if not owner_chat_ids:
+                admin_users = User.objects.filter(organization=org, is_superuser=True, telegram_chat_id__isnull=False).exclude(telegram_chat_id='')
+                for u in admin_users:
+                    owner_chat_ids.add(str(u.telegram_chat_id).strip())
+
+            try:
+                setting = TelegramNotificationSetting.objects.filter(organization=org).first()
+                if setting and setting.chat_ids:
+                    for cid in setting.chat_ids.replace(',', ' ').split():
+                        if cid.strip():
+                            owner_chat_ids.add(cid.strip())
+            except Exception:
+                pass
+
+            if owner_chat_ids:
+                # O'quvchining guruhlari va o'qituvchilari
+                group_infos = []
+                teachers_set = set()
+
+                active_sgs = StudentGroup.objects.filter(
+                    student=appeal.student,
+                    group__status='active'
+                ).select_related('group', 'group__teacher', 'group__course')
+
+                for sg in active_sgs:
+                    g_name = sg.group.name
+                    c_name = sg.group.course.name if sg.group.course else ""
+                    group_infos.append(f"{g_name} ({c_name})" if c_name else g_name)
+                    if sg.group.teacher:
+                        teachers_set.add(sg.group.teacher.get_full_name() or sg.group.teacher.username)
+
+                if appeal.student.school_class:
+                    sc = appeal.student.school_class
+                    group_infos.append(f"Sinf: {sc.name}")
+                    if sc.teacher:
+                        teachers_set.add(sc.teacher.get_full_name() or sc.teacher.username)
+
+                groups_str = ", ".join(group_infos) if group_infos else "Biriktirilmagan"
+                teachers_str = ", ".join(teachers_set) if teachers_set else "Biriktirilmagan"
+                student_name = f"{appeal.student.first_name} {appeal.student.last_name or ''}".strip()
+                created_str = appeal.created_at.strftime("%d.%m.%Y %H:%M") if appeal.created_at else "Noma'lum"
+
+                owner_alert = (
+                    f"🚨 <b>DIQQAT: HAL QILINMAGAN TALABA SHIKOYATI!</b>\n\n"
+                    f"Hurmatli rahbar, talaba 3 kun oldin shikoyat yuborgan edi, ammo bugungi so'rovda "
+                    f"<b>muammosi hal qilinmaganligini</b> tasdiqladi!\n\n"
+                    f"👤 <b>Talaba:</b> {student_name}\n"
+                    f"📞 <b>Telefon:</b> {appeal.student.phone}\n"
+                    f"🏢 <b>Tashkilot:</b> {org.name}\n"
+                    f"👨‍🏫 <b>O'qituvchi(lar)i:</b> <b>{teachers_str}</b>\n"
+                    f"📚 <b>Guruh(lar)i:</b> <b>{groups_str}</b>\n"
+                    f"📅 <b>Yuborilgan sana:</b> {created_str}\n\n"
+                    f"💬 <b>Shikoyat matni:</b>\n"
+                    f"<i>\"{appeal.message}\"</i>\n\n"
+                    f"⚠️ <b>Talaba holati:</b> <i>'Muammo hal bo'lmadi'</i>\n"
+                    f"Iltimos, zudlik bilan ushbu o'qituvchi va guruh bo'yicha shaxsan chora ko'ring!"
+                )
+
+                for o_cid in owner_chat_ids:
+                    try:
+                        send_telegram_message(report_token, o_cid, owner_alert)
+                    except Exception as e_alert:
+                        print(f"[APPEAL_SATISFACTION_ALERT_ERR] {o_cid}: {e_alert}")
+
+
 def handle_telegram_update(bot_type, token, update_data):
     """
     Stateless telegram update handler
@@ -487,6 +629,12 @@ def handle_telegram_update(bot_type, token, update_data):
     # Callback query yoki oddiy message ni ajratib olamiz
     callback_query = update_data.get("callback_query")
     if callback_query:
+        callback_id = callback_query.get("id")
+        if callback_id:
+            try:
+                requests.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery", json={"callback_query_id": callback_id}, timeout=4)
+            except Exception:
+                pass
         message = callback_query.get("message") or {}
         chat_id = message.get("chat", {}).get("id") or callback_query.get("from", {}).get("id")
         text = callback_query.get("data", "").strip()
@@ -500,6 +648,11 @@ def handle_telegram_update(bot_type, token, update_data):
         contact = message.get("contact")
 
     if not chat_id:
+        return
+
+    # Qayta aloqa (shikoyat tasdiqlanishi) inline tugmalari bosilganda
+    if text and text.startswith("appeal_satisfaction_"):
+        handle_appeal_satisfaction_callback(token, chat_id, text)
         return
 
     # 1. Telefon raqam yuborilganda (kontakt yoki matn ko'rinishida) bog'lash

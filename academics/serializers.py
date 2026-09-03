@@ -1111,9 +1111,16 @@ class StudentAppealSerializer(serializers.ModelSerializer):
             'message', 'status', 'status_display',
             'response', 'responded_by', 'responded_by_name', 'responded_at',
             'is_escalated_to_owner', 'escalated_at',
+            'satisfaction_poll_sent', 'satisfaction_poll_sent_at',
+            'student_satisfied', 'satisfaction_responded_at',
             'organization', 'branch', 'created_at', 'updated_at'
         ]
-        read_only_fields = ('organization', 'created_at', 'updated_at', 'is_escalated_to_owner', 'escalated_at')
+        read_only_fields = (
+            'organization', 'created_at', 'updated_at',
+            'is_escalated_to_owner', 'escalated_at',
+            'satisfaction_poll_sent', 'satisfaction_poll_sent_at',
+            'student_satisfied', 'satisfaction_responded_at'
+        )
 
     def get_responded_by_name(self, obj):
         if obj.responded_by:
