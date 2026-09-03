@@ -129,9 +129,9 @@ DATABASES = {
     }
 }
 
-# Faqatgina DATABASE_URL bor bo'lsa VA u postgres:// bilan boshlansa ishlatamiz
+# Faqatgina DATABASE_URL bor bo'lsa VA u postgres:// yoki postgresql:// bilan boshlansa ishlatamiz
 db_url = os.getenv('DATABASE_URL')
-if db_url and db_url.startswith('postgres://'):
+if db_url and (db_url.startswith('postgres://') or db_url.startswith('postgresql://')):
     DATABASES['default'] = dj_database_url.config(conn_max_age=600, ssl_require=True)
 
 # Password validation
