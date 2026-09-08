@@ -21,6 +21,6 @@ urlpatterns = [
     path('billing/', include('billing.urls')),
     path('sms/send/', send_register_code, name='send_sms_code'),
     path('sms/verify/', verify_register_code, name='verify_sms_code'),
-    path('', include(router.urls)),
     path('global-search/', GlobalSearchAPIView.as_view(), name='global-search'),
+    path('', include(router.urls)),
 ]

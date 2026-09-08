@@ -83,7 +83,7 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             kwargs['created_by'] = self.request.user
 
         branch_id = self.get_branch_id()
-        if branch_id:
+        if branch_id and 'branch' not in serializer.validated_data and 'branch_id' not in serializer.validated_data:
             kwargs['branch_id'] = branch_id
 
         serializer.save(**kwargs)
@@ -103,7 +103,7 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
         # Branch filtri
         if branch_id:
-            queryset = queryset.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
+            queryset = queryset.filter(branch_id=branch_id)
 
         if self.action == 'archived':
             return queryset.filter(is_archived=True)
@@ -171,7 +171,7 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                     kwargs = {'organization_id': org_id}
                     if request.user and request.user.is_authenticated:
                         kwargs['created_by'] = request.user
-                    if branch_id:
+                    if branch_id and 'branch' not in serializer.validated_data and 'branch_id' not in serializer.validated_data:
                         kwargs['branch_id'] = branch_id
                     serializer.save(**kwargs)
                     success_count += 1

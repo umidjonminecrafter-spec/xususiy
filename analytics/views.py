@@ -39,7 +39,14 @@ class GlobalAttendanceAPIView(APIView):
         attendance_status = request.query_params.get('attendance_status')  # present, absent, excused
         group_id = request.query_params.get('group_id')
         teacher_id = request.query_params.get('teacher_id')
-        branch_id = request.query_params.get('branch_id') or request.query_params.get('branch')
+        branch_id = (
+            request.query_params.get('branch_id') or
+            request.query_params.get('branch') or
+            request.headers.get('x-branch-id') or
+            request.headers.get('X-Branch-ID') or
+            request.META.get('HTTP_X_BRANCH_ID') or
+            getattr(request.user, 'branch_id', None)
+        )
 
         # 🚀 Lead (CRM) bilan bog'liq filterlar
         pipeline_id = request.query_params.get('pipeline_id')  # Ranglar/Bosqichlar filtri (Lead Pipeline)
@@ -82,6 +89,8 @@ class GlobalAttendanceAPIView(APIView):
         if pipeline_id or lead_status:
             # Mos keladigan lidlarning telefon raqamlarini olamiz
             lead_filters = Q(organization_id=org_id)
+            if branch_id:
+                lead_filters &= Q(branch_id=branch_id)
             if pipeline_id:
                 lead_filters &= Q(pipeline_id=pipeline_id)
             if lead_status:
@@ -123,8 +132,21 @@ class AttendanceAnalyticsAPIView(APIView):
         date_from = normalize_date(date_from_param or date_param)
         date_to = normalize_date(date_to_param)
 
+        branch_id = (
+            request.query_params.get('branch_id') or
+            request.query_params.get('branch') or
+            request.headers.get('x-branch-id') or
+            request.headers.get('X-Branch-ID') or
+            request.META.get('HTTP_X_BRANCH_ID') or
+            getattr(request.user, 'branch_id', None)
+        )
+
         attendance_query = Attendance.objects.filter(organization_id=org_id)
         lesson_query = GroupLesson.objects.filter(organization_id=org_id)
+
+        if branch_id:
+            attendance_query = attendance_query.filter(branch_id=branch_id)
+            lesson_query = lesson_query.filter(branch_id=branch_id)
 
         if date_from and date_to:
             attendance_query = attendance_query.filter(date__range=[date_from, date_to])
@@ -145,8 +167,10 @@ class AttendanceAnalyticsAPIView(APIView):
         )
 
         # 🚀 Lead modelidan "Birinchi darsga yozilganlar" sonini hisoblash
-        first_lesson_count = Lead.objects.filter(organization_id=org_id, status='first_lesson',
-                                                 is_archived=False).count()
+        first_lesson_qs = Lead.objects.filter(organization_id=org_id, status='first_lesson', is_archived=False)
+        if branch_id:
+            first_lesson_qs = first_lesson_qs.filter(branch_id=branch_id)
+        first_lesson_count = first_lesson_qs.count()
 
         # Davomat qilinmagan guruhlar soni
         davomat_qilinmagan_guruhlar = 0
@@ -194,7 +218,19 @@ class UnmarkedGroupsAPIView(APIView):
         date_from = normalize_date(date_from_param or date_param)
         date_to = normalize_date(date_to_param)
 
+        branch_id = (
+            request.query_params.get('branch_id') or
+            request.query_params.get('branch') or
+            request.headers.get('x-branch-id') or
+            request.headers.get('X-Branch-ID') or
+            request.META.get('HTTP_X_BRANCH_ID') or
+            getattr(request.user, 'branch_id', None)
+        )
+
         lesson_query = GroupLesson.objects.filter(organization_id=org_id)
+        if branch_id:
+            lesson_query = lesson_query.filter(branch_id=branch_id)
+
         if date_from and date_to:
             lesson_query = lesson_query.filter(date__range=[date_from, date_to])
         elif date_from:
@@ -232,59 +268,101 @@ class BranchStatusAPIView(APIView):
         if not org_id:
             return Response({"detail": "Tashkilot aniqlanmadi"}, status=400)
 
-        # 1. CRM Lead modeli statistikasi (Faollar va Arxivlanganlarni hisobga olgan holda)
-        leads_stats = Lead.objects.filter(organization_id=org_id).aggregate(
-            # Faol buyurtmalar (Arxivda bo'lmagan va lost bo'lmaganlar)
-            buyurtma_soni=Count('id', filter=Q(is_archived=False) & ~Q(status='lost')),
-            # Birinchi darsga yozilganlar
-            birinchi_dars=Count('id', filter=Q(status='first_lesson', is_archived=False)),
-            # Buyurtmadan ketganlar (Lost statusidagilar yoki is_archived=True bo'lgan lidlar)
-            buyurtmadan_ketgan=Count('id', filter=Q(status='lost') | Q(is_archived=True))
+        from organizations.models import Branch
+        branch_id = (
+            request.query_params.get('branch_id') or
+            request.query_params.get('branch') or
+            request.headers.get('x-branch-id') or
+            request.headers.get('X-Branch-ID') or
+            request.META.get('HTTP_X_BRANCH_ID') or
+            getattr(request.user, 'branch_id', None)
         )
 
-        # 2. Real O'quvchilar (Student) soni
-        total_students = Student.objects.filter(organization_id=org_id).count()
+        branches_qs = Branch.objects.filter(organization_id=org_id)
+        if branch_id:
+            branches_qs = branches_qs.filter(id=branch_id)
 
-        # 3. CRM dagi muvaffaqiyatli yakunlanganlar (Won statusidagi lidlar)
-        won_leads_count = Lead.objects.filter(organization_id=org_id, status='won').count()
+        branch_report = []
 
-        # Jami real o'quvchilar soni (Student modelida bo'lsa shuni, bo'lmasa Won lidlarni oladi)
-        real_active_count = total_students if total_students > 0 else won_leads_count
+        if branches_qs.exists():
+            for b in branches_qs:
+                leads_stats = Lead.objects.filter(organization_id=org_id, branch=b).aggregate(
+                    buyurtma_soni=Count('id', filter=Q(is_archived=False) & ~Q(status='lost')),
+                    birinchi_dars=Count('id', filter=Q(status='first_lesson', is_archived=False)),
+                    buyurtmadan_ketgan=Count('id', filter=Q(status='lost') | Q(is_archived=True))
+                )
+                total_students = Student.objects.filter(organization_id=org_id, branch=b).count()
+                won_leads_count = Lead.objects.filter(organization_id=org_id, branch=b, status='won').count()
+                real_active_count = total_students if total_students > 0 else won_leads_count
 
-        # 4. Qarzdorlar filtri (Student balansi yoki Lead debt_limit orqali)
-        student_debtors = Student.objects.filter(organization_id=org_id, balance__lt=0.00).count()
-        lead_debtors = Lead.objects.filter(organization_id=org_id, status='won', debt_limit__gt=0.00).count()
-        total_debtors = student_debtors if student_debtors > 0 else lead_debtors
+                student_debtors = Student.objects.filter(organization_id=org_id, branch=b, balance__lt=0.00).count()
+                lead_debtors = Lead.objects.filter(organization_id=org_id, branch=b, status='won', debt_limit__gt=0.00).count()
+                total_debtors = student_debtors if student_debtors > 0 else lead_debtors
 
-        # 5. Aktiv guruhlar soni
-        active_groups_count = Group.objects.filter(organization_id=org_id, status='active').count()
+                active_groups_count = Group.objects.filter(organization_id=org_id, branch=b, status='active').count()
 
-        # Qarzdorlik foizini hisoblash
-        debt_percentage = 0.0
-        if real_active_count > 0:
-            debt_percentage = round((total_debtors / real_active_count) * 100, 1)
+                debt_percentage = 0.0
+                if real_active_count > 0:
+                    debt_percentage = round((total_debtors / real_active_count) * 100, 1)
 
-        # Frontend jadvali uchun moslashtirilgan ma'lumotlar
-        branch_report = [{
-            "id": org_id,
-            "filial": getattr(request.user.organization, 'name', "Asosiy Filial"),
-            "buyurtma": leads_stats['buyurtma_soni'] or 0,
-            "birinchi_darsga_keladiganlar": leads_stats['birinchi_dars'] or 0,
-            "yangi_oquvchi": real_active_count,
-            "aktiv_oquvchilar": real_active_count,
-            "jami_real_bor": real_active_count,
-            "guruh_oquvchilari": real_active_count,
-            # "Buyurtmadan ketganlar" qatoriga endi arxiv oynasidagi ma'lumotlar ham qo'shildi!
-            "buyurtmadan_ketganlar": leads_stats['buyurtmadan_ketgan'] or 0,
-            "yangi_oquvchidan_ketganlar": 0,
-            "aktiv_oquvchidan_ketganlar": 0,
-            "qarzdorlar": total_debtors,
-            "guruh": active_groups_count,
-            "birinchi_tolovni_qilganlar": 0,
-            "jami_oquvchi": real_active_count,
-            "jami_aktiv": real_active_count,
-            "qarzdorlarning_aktivga_nisbatan_foizi": f"{debt_percentage}%"
-        }]
+                branch_report.append({
+                    "id": b.id,
+                    "filial": b.name,
+                    "buyurtma": leads_stats['buyurtma_soni'] or 0,
+                    "birinchi_darsga_keladiganlar": leads_stats['birinchi_dars'] or 0,
+                    "yangi_oquvchi": real_active_count,
+                    "aktiv_oquvchilar": real_active_count,
+                    "jami_real_bor": real_active_count,
+                    "guruh_oquvchilari": real_active_count,
+                    "buyurtmadan_ketganlar": leads_stats['buyurtmadan_ketgan'] or 0,
+                    "yangi_oquvchidan_ketganlar": 0,
+                    "aktiv_oquvchidan_ketganlar": 0,
+                    "qarzdorlar": total_debtors,
+                    "guruh": active_groups_count,
+                    "birinchi_tolovni_qilganlar": 0,
+                    "jami_oquvchi": real_active_count,
+                    "jami_aktiv": real_active_count,
+                    "qarzdorlarning_aktivga_nisbatan_foizi": f"{debt_percentage}%"
+                })
+        else:
+            leads_stats = Lead.objects.filter(organization_id=org_id).aggregate(
+                buyurtma_soni=Count('id', filter=Q(is_archived=False) & ~Q(status='lost')),
+                birinchi_dars=Count('id', filter=Q(status='first_lesson', is_archived=False)),
+                buyurtmadan_ketgan=Count('id', filter=Q(status='lost') | Q(is_archived=True))
+            )
+            total_students = Student.objects.filter(organization_id=org_id).count()
+            won_leads_count = Lead.objects.filter(organization_id=org_id, status='won').count()
+            real_active_count = total_students if total_students > 0 else won_leads_count
+
+            student_debtors = Student.objects.filter(organization_id=org_id, balance__lt=0.00).count()
+            lead_debtors = Lead.objects.filter(organization_id=org_id, status='won', debt_limit__gt=0.00).count()
+            total_debtors = student_debtors if student_debtors > 0 else lead_debtors
+
+            active_groups_count = Group.objects.filter(organization_id=org_id, status='active').count()
+
+            debt_percentage = 0.0
+            if real_active_count > 0:
+                debt_percentage = round((total_debtors / real_active_count) * 100, 1)
+
+            branch_report.append({
+                "id": org_id,
+                "filial": getattr(request.user.organization, 'name', "Asosiy Filial"),
+                "buyurtma": leads_stats['buyurtma_soni'] or 0,
+                "birinchi_darsga_keladiganlar": leads_stats['birinchi_dars'] or 0,
+                "yangi_oquvchi": real_active_count,
+                "aktiv_oquvchilar": real_active_count,
+                "jami_real_bor": real_active_count,
+                "guruh_oquvchilari": real_active_count,
+                "buyurtmadan_ketganlar": leads_stats['buyurtmadan_ketgan'] or 0,
+                "yangi_oquvchidan_ketganlar": 0,
+                "aktiv_oquvchidan_ketganlar": 0,
+                "qarzdorlar": total_debtors,
+                "guruh": active_groups_count,
+                "birinchi_tolovni_qilganlar": 0,
+                "jami_oquvchi": real_active_count,
+                "jami_aktiv": real_active_count,
+                "qarzdorlarning_aktivga_nisbatan_foizi": f"{debt_percentage}%"
+            })
 
         return Response(branch_report)
 

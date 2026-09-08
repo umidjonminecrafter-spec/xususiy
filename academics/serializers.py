@@ -112,11 +112,12 @@ class RoomSerializer(serializers.ModelSerializer):
 
 class StudentSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='')
 
     class Meta:
         model = Student
         fields = [
-            'id', 'first_name', 'last_name', 'phone', 'email', 'balance',
+            'id', 'branch', 'branch_name', 'first_name', 'last_name', 'phone', 'email', 'balance',
             'school_class',
             'referred_by', 'moderator', 'debt_limit',
             'student_login', 'parent_login', 'password',

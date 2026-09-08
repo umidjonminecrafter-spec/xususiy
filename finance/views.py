@@ -40,14 +40,27 @@ User = get_user_model()
 
 def get_active_branch_id(request):
     branch_id = request.query_params.get('branch') or request.query_params.get('branch_id')
-    if branch_id:
-        return branch_id
-    branch_id = request.META.get('HTTP_X_BRANCH_ID') or request.headers.get('x-branch-id')
-    if branch_id:
-        return branch_id
-    if request.user and request.user.is_authenticated:
-        return getattr(request.user, 'branch_id', None)
-    return None
+    if not branch_id and hasattr(request, 'data') and isinstance(request.data, dict):
+        branch_id = request.data.get('branch') or request.data.get('branch_id')
+    if not branch_id:
+        branch_id = (
+            request.META.get('HTTP_X_BRANCH_ID') or
+            request.headers.get('x-branch-id') or
+            request.headers.get('X-Branch-ID')
+        )
+    if not branch_id and request.user and request.user.is_authenticated:
+        branch_id = getattr(request.user, 'branch_id', None)
+
+    if branch_id and request.user and request.user.is_authenticated:
+        user_role = getattr(request.user, 'role', '')
+        if user_role not in ['owner', 'admin'] and not request.user.is_superuser:
+            user_branches = set(request.user.branches.values_list('id', flat=True))
+            if request.user.branch_id:
+                user_branches.add(request.user.branch_id)
+            if user_branches and int(branch_id) not in user_branches:
+                return None
+
+    return branch_id
 
 
 class ExpenseCategoryViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
@@ -200,9 +213,11 @@ class ExpenseViewSet(TenantViewSetMixin,
         if not org_id:
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Faqat joriy tashkilot xarajatlari
-        expenses = Expense.objects.filter(cashbox__tenant_id=org_id) if hasattr(Cashbox,
-                                                                                'tenant') else Expense.objects.all()
+        # Faqat joriy tashkilot va filial xarajatlari
+        expenses = Expense.objects.filter(organization_id=org_id)
+        branch_id = self.get_branch_id()
+        if branch_id:
+            expenses = expenses.filter(branch_id=branch_id)
 
         summary = {}
         for exp in expenses:
@@ -229,6 +244,9 @@ class DetailedExpenseViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         expenses = Expense.objects.filter(organization_id=org_id)
+        branch_id = self.get_branch_id()
+        if branch_id:
+            expenses = expenses.filter(branch_id=branch_id)
         by_category = {}
         by_month = {}
 
@@ -995,7 +1013,10 @@ class TeacherSalaryCalculateView(TenantViewSetMixin, APIView):
         except ValueError:
             return Response({"detail": "Invalid period format. Use YYYY-MM."}, status=status.HTTP_400_BAD_REQUEST)
 
+        branch_id = self.get_branch_id()
         teachers = User.objects.filter(organization_id=org_id, role='teacher')
+        if branch_id:
+            teachers = teachers.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id)).distinct()
         calcs = []
 
         # Get subscription/account settings for salary rules
@@ -1219,11 +1240,12 @@ class TeacherSalaryCalculateView(TenantViewSetMixin, APIView):
                 if holiday_days_count > 0:
                     details['holiday_days_deducted'] = holiday_days_count
 
+            calc_branch_id = branch_id or getattr(teacher, 'branch_id', None)
             calc, created = TeacherSalaryCalculation.objects.update_or_create(
                 organization_id=org_id,
                 teacher=teacher,
                 period=period,
-                defaults={'calculated_amount': calculated_amount, 'details': details}
+                defaults={'calculated_amount': calculated_amount, 'details': details, 'branch_id': calc_branch_id}
             )
             calcs.append(calc)
 
@@ -1272,6 +1294,9 @@ class TeacherSalaryPaymentsView(TenantViewSetMixin, viewsets.ModelViewSet):
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         payments = TeacherSalaryPayment.objects.filter(organization_id=org_id)
+        branch_id = self.get_branch_id()
+        if branch_id:
+            payments = payments.filter(branch_id=branch_id)
         total = payments.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
         count = payments.count()
         return Response({
@@ -1293,7 +1318,7 @@ class StudentDebtsView(TenantViewSetMixin, generics.ListAPIView):
         qs = Student.objects.filter(organization_id=org_id, balance__lt=0)
         branch_id = self.get_branch_id()
         if branch_id:
-            qs = qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
+            qs = qs.filter(branch_id=branch_id)
         return qs
 
 
@@ -1310,7 +1335,7 @@ class StudentDebtsSummaryView(TenantViewSetMixin, APIView):
         branch_id = self.get_branch_id()
         base_filter = Q(organization_id=org_id, balance__lt=0) & ~Q(is_archived=True)
         if branch_id:
-            base_filter &= (Q(branch_id=branch_id) | Q(branch__isnull=True))
+            base_filter &= Q(branch_id=branch_id)
 
         total_debt = Student.objects.filter(base_filter).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
         return Response({
@@ -1330,7 +1355,7 @@ class StudentDebtDetailView(TenantViewSetMixin, generics.RetrieveAPIView):
         qs = Student.objects.filter(organization_id=org_id, balance__lt=0)
         branch_id = self.get_branch_id()
         if branch_id:
-            qs = qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
+            qs = qs.filter(branch_id=branch_id)
         return qs
 
 
@@ -1343,17 +1368,20 @@ class TeacherDebtsView(TenantViewSetMixin, APIView):
         if not org_id:
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Teachers whose calculations are greater than payments made to them
+        branch_id = self.get_branch_id()
         teachers = User.objects.filter(organization_id=org_id, role='teacher')
+        if branch_id:
+            teachers = teachers.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id)).distinct()
         debts = []
 
         for t in teachers:
-            # Get total calculated amount
-            total_calc = TeacherSalaryCalculation.objects.filter(teacher=t).aggregate(total=Sum('calculated_amount'))[
-                             'total'] or Decimal('0.00')
-            # Get total paid amount
-            total_paid = TeacherSalaryPayment.objects.filter(teacher=t).aggregate(total=Sum('amount'))[
-                             'total'] or Decimal('0.00')
+            calc_qs = TeacherSalaryCalculation.objects.filter(teacher=t)
+            paid_qs = TeacherSalaryPayment.objects.filter(teacher=t)
+            if branch_id:
+                calc_qs = calc_qs.filter(branch_id=branch_id)
+                paid_qs = paid_qs.filter(branch_id=branch_id)
+            total_calc = calc_qs.aggregate(total=Sum('calculated_amount'))['total'] or Decimal('0.00')
+            total_paid = paid_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
             diff = total_calc - total_paid
             if diff > 0:
@@ -1377,15 +1405,20 @@ class TeacherDebtsSummaryView(TenantViewSetMixin, APIView):
         if not org_id:
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Sum outstanding calculations
+        branch_id = self.get_branch_id()
         teachers = User.objects.filter(organization_id=org_id, role='teacher')
+        if branch_id:
+            teachers = teachers.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id)).distinct()
         total_teacher_debt = Decimal('0.00')
         count = 0
         for t in teachers:
-            total_calc = TeacherSalaryCalculation.objects.filter(teacher=t).aggregate(total=Sum('calculated_amount'))[
-                             'total'] or Decimal('0.00')
-            total_paid = TeacherSalaryPayment.objects.filter(teacher=t).aggregate(total=Sum('amount'))[
-                             'total'] or Decimal('0.00')
+            calc_qs = TeacherSalaryCalculation.objects.filter(teacher=t)
+            paid_qs = TeacherSalaryPayment.objects.filter(teacher=t)
+            if branch_id:
+                calc_qs = calc_qs.filter(branch_id=branch_id)
+                paid_qs = paid_qs.filter(branch_id=branch_id)
+            total_calc = calc_qs.aggregate(total=Sum('calculated_amount'))['total'] or Decimal('0.00')
+            total_paid = paid_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
             diff = total_calc - total_paid
             if diff > 0:
                 total_teacher_debt += diff
@@ -1406,19 +1439,25 @@ class AllDebtsView(TenantViewSetMixin, APIView):
         if not org_id:
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Combined student and teacher debts
-        student_debt = Student.objects.filter(organization_id=org_id, balance__lt=0).aggregate(total=Sum('balance'))[
-                           'total'] or Decimal('0.00')
+        branch_id = self.get_branch_id()
+        student_filter = Q(organization_id=org_id, balance__lt=0)
+        if branch_id:
+            student_filter &= Q(branch_id=branch_id)
+        student_debt = Student.objects.filter(student_filter).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
         student_debt_abs = abs(student_debt)
 
-        # Teacher debts calculation
         teachers = User.objects.filter(organization_id=org_id, role='teacher')
+        if branch_id:
+            teachers = teachers.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id)).distinct()
         teacher_debt_val = Decimal('0.00')
         for t in teachers:
-            total_calc = TeacherSalaryCalculation.objects.filter(teacher=t).aggregate(total=Sum('calculated_amount'))[
-                             'total'] or Decimal('0.00')
-            total_paid = TeacherSalaryPayment.objects.filter(teacher=t).aggregate(total=Sum('amount'))[
-                             'total'] or Decimal('0.00')
+            calc_qs = TeacherSalaryCalculation.objects.filter(teacher=t)
+            paid_qs = TeacherSalaryPayment.objects.filter(teacher=t)
+            if branch_id:
+                calc_qs = calc_qs.filter(branch_id=branch_id)
+                paid_qs = paid_qs.filter(branch_id=branch_id)
+            total_calc = calc_qs.aggregate(total=Sum('calculated_amount'))['total'] or Decimal('0.00')
+            total_paid = paid_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
             diff = total_calc - total_paid
             if diff > 0:
                 teacher_debt_val += diff
@@ -1450,8 +1489,8 @@ class FinanceReportView(TenantViewSetMixin, APIView):
         branch_id = self.get_branch_id()
         if branch_id:
             from django.db.models import Q
-            payment_filter = Q(organization_id=org_id) & (Q(branch_id=branch_id) | Q(branch__isnull=True))
-            expense_filter = Q(organization_id=org_id) & (Q(branch_id=branch_id) | Q(branch__isnull=True))
+            payment_filter = Q(organization_id=org_id, branch_id=branch_id)
+            expense_filter = Q(organization_id=org_id, branch_id=branch_id)
             payments_sum = Payment.objects.filter(payment_filter).aggregate(total=Sum('amount'))['total'] or Decimal(
                 '0.00')
             expenses_sum = Expense.objects.filter(expense_filter).aggregate(total=Sum('amount'))['total'] or Decimal(
@@ -1551,7 +1590,7 @@ class WithdrawalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         qs = Payment.objects.filter(organization_id=org_id, amount__lt=0)
         branch_id = self.get_branch_id()
         if branch_id:
-            qs = qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
+            qs = qs.filter(branch_id=branch_id)
         return qs
 
     def perform_create(self, serializer):
@@ -1610,6 +1649,9 @@ class ConversionReportsFunnelView(TenantViewSetMixin, APIView):
 
         # Baza filterlash uchun umumiy query yaratamiz
         base_filter = Q(organization_id=org_id, is_archived=False)
+        branch_id = self.get_branch_id()
+        if branch_id:
+            base_filter &= Q(branch_id=branch_id)
 
         if start_date:
             base_filter &= Q(created_at__date__gte=start_date)
@@ -1732,7 +1774,7 @@ class CRMLeadsListView(TenantViewSetMixin, generics.ListAPIView):
         leads_qs = Lead.objects.filter(organization_id=org_id, is_archived=False)
         branch_id = self.get_branch_id()
         if branch_id:
-            leads_qs = leads_qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
+            leads_qs = leads_qs.filter(branch_id=branch_id)
 
         if pipeline_name:
             leads_qs = leads_qs.filter(pipeline__name=pipeline_name)
@@ -1787,6 +1829,9 @@ class LeadsReportPieChartView(TenantViewSetMixin, APIView):
 
         from crm.models import Lead
         leads_qs = Lead.objects.filter(organization_id=org_id)
+        branch_id = self.get_branch_id()
+        if branch_id:
+            leads_qs = leads_qs.filter(branch_id=branch_id)
 
         if start_date:
             leads_qs = leads_qs.filter(created_at__date__gte=start_date)
@@ -1824,6 +1869,9 @@ class LeadsReportBarChartView(TenantViewSetMixin, APIView):
 
         from crm.models import Lead
         leads_qs = Lead.objects.filter(organization_id=org_id)
+        branch_id = self.get_branch_id()
+        if branch_id:
+            leads_qs = leads_qs.filter(branch_id=branch_id)
 
         if start_date:
             leads_qs = leads_qs.filter(created_at__date__gte=start_date)
@@ -1862,6 +1910,9 @@ class LeadsReportStatisticsView(TenantViewSetMixin, APIView):
 
         from crm.models import Lead
         leads_qs = Lead.objects.filter(organization_id=org_id)
+        branch_id = self.get_branch_id()
+        if branch_id:
+            leads_qs = leads_qs.filter(branch_id=branch_id)
 
         if start_date:
             leads_qs = leads_qs.filter(created_at__date__gte=start_date)
@@ -2306,7 +2357,7 @@ class FinancialReportsView(APIView):
         branch_id = get_active_branch_id(request)
         tx_filters = Q(organization_id=org_id) if org_id else Q()
         if branch_id:
-            tx_filters &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True) | Q(cashbox__branch_id=branch_id))
+            tx_filters &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
 
         queryset = Transaction.objects.filter(tx_filters)
 
@@ -2341,10 +2392,10 @@ class FinancialReportsView(APIView):
             t_filter = Q(organization_id=org_id)
 
             if branch_id:
-                p_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
-                e_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
-                s_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
-                t_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
+                p_filter &= Q(branch_id=branch_id)
+                e_filter &= Q(branch_id=branch_id)
+                s_filter &= Q(branch_id=branch_id)
+                t_filter &= Q(branch_id=branch_id)
 
             if start_date_str:
                 p_filter &= Q(date__gte=start_date_str)
@@ -2431,7 +2482,7 @@ class CashFlowReportView(APIView):
         branch_id = get_active_branch_id(request)
         tx_filters = Q(organization_id=org_id) if org_id else Q()
         if branch_id:
-            tx_filters &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True) | Q(cashbox__branch_id=branch_id))
+            tx_filters &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
 
         queryset = Transaction.objects.filter(tx_filters)
 
@@ -2464,8 +2515,8 @@ class CashFlowReportView(APIView):
             p_filter = Q(organization_id=org_id)
             e_filter = Q(organization_id=org_id)
             if branch_id:
-                p_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
-                e_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
+                p_filter &= Q(branch_id=branch_id)
+                e_filter &= Q(branch_id=branch_id)
             if from_date:
                 p_filter &= Q(date__gte=from_date)
                 e_filter &= Q(date__gte=from_date)
@@ -2512,7 +2563,7 @@ class PnLReportView(APIView):
         # 1. Total income (Student payments)
         p_filter = Q(organization_id=org_id)
         if branch_id:
-            p_filter &= (Q(branch_id=branch_id) | Q(branch__isnull=True))
+            p_filter &= Q(branch_id=branch_id)
         if from_date:
             p_filter &= Q(date__gte=from_date)
         if to_date:
@@ -2523,7 +2574,7 @@ class PnLReportView(APIView):
         if total_income == 0 and org_id:
             tx_inc_filter = Q(organization_id=org_id, type='INCOME')
             if branch_id:
-                tx_inc_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
+                tx_inc_filter &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
             if from_date:
                 tx_inc_filter &= Q(created_at__gte=from_date)
             if to_date:
@@ -2536,9 +2587,9 @@ class PnLReportView(APIView):
         calc_filter = Q(organization_id=org_id)
 
         if branch_id:
-            e_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
-            t_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
-            calc_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
+            e_filter &= Q(branch_id=branch_id)
+            t_filter &= Q(branch_id=branch_id)
+            calc_filter &= Q(branch_id=branch_id)
 
         if from_date:
             e_filter &= Q(date__gte=from_date)
@@ -2601,7 +2652,7 @@ class EmployeeFinanceBalanceReportView(APIView):
 
         employees_qs = User.objects.filter(organization_id=org_id, is_staff=True)
         if branch_id:
-            employees_qs = employees_qs.filter(branch_id=branch_id)
+            employees_qs = employees_qs.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id) | Q(role='owner')).distinct()
 
         rows = []
         total_salary = 0
@@ -3161,7 +3212,7 @@ class StudentLeaversReasonsReportView(APIView):
         branch_id = get_active_branch_id(request)
         filters = Q(organization=org) | Q(student__organization=org)
         if branch_id:
-            filters &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
+            filters &= Q(branch_id=branch_id)
 
         if from_date:
             filters &= (Q(leave_date__gte=from_date) | Q(created_at__date__gte=from_date))

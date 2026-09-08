@@ -824,6 +824,7 @@ def sync_group_lesson_with_lms(sender, instance, created, **kwargs):
     if not online_lesson:
         OnlineLesson.objects.create(
             organization=instance.organization,
+            branch=instance.branch,
             group=instance.group,
             title=instance.title,
             is_published=True
@@ -831,52 +832,6 @@ def sync_group_lesson_with_lms(sender, instance, created, **kwargs):
 
 
 import datetime
-
-
-def generate_group_lessons(group_instance):
-    """Guruhning boshlanish va tugash sanasi oralig'idagi dars kunlarini yaratadi"""
-    if not group_instance.start_date or not group_instance.end_date:
-        return
-
-    current_date = group_instance.start_date
-    delta = datetime.timedelta(days=1)
-
-    # Guruhning dars kunlari turi (Juft / Toq / Har kuni)
-    # Kodingizdagi day_type qiymatlariga qarab moslashtiring (masalan: 'even', 'odd')
-    day_type = getattr(group_instance, 'day_type', '').lower()
-
-    lessons_to_create = []
-
-    while current_date <= group_instance.end_date:
-        # Hafta kuni indeksi: 0=Dushanba, 1=Seshanba, 2=Chorshanba, 3=Payshanba, 4=Juma, 5=Shanba, 6=Yakshanba
-        weekday = current_date.weekday()
-
-        should_create = False
-        if 'even' in day_type or 'juft' in day_type:  # Se-Pay-Sha
-            if weekday in [1, 3, 5]:
-                should_create = True
-        elif 'odd' in day_type or 'toq' in day_type:  # Du-Chor-Ju
-            if weekday in [0, 2, 4]:
-                should_create = True
-        else:  # Agar aniq belgilanmagan bo'lsa, Yakshanbadan tashqari hamma kunlar
-            if weekday != 6:
-                should_create = True
-
-        if should_create:
-            # Agar bu sana uchun dars allaqachon yaratilmagan bo'lsa
-            if not GroupLesson.objects.filter(group=group_instance, date=current_date).exists():
-                lessons_to_create.append(
-                    GroupLesson(
-                        organization=group_instance.organization,
-                        group=group_instance,
-                        date=current_date
-                    )
-                )
-
-        current_date += delta
-
-    if lessons_to_create:
-        GroupLesson.objects.bulk_create(lessons_to_create)
 
 
 def generate_group_lessons(group_instance):
@@ -920,6 +875,7 @@ def generate_group_lessons(group_instance):
                 lessons_to_create.append(
                     GroupLesson(
                         organization=group_instance.organization,
+                        branch=group_instance.branch,
                         group=group_instance,
                         date=current_date
                     )

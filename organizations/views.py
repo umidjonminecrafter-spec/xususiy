@@ -542,16 +542,47 @@ class GlobalSearchAPIView(APIView):
         user_org = request.user.organization
         results = []
 
+        branch_id = (
+            request.query_params.get('branch') or
+            request.query_params.get('branch_id') or
+            request.headers.get('x-branch-id') or
+            request.headers.get('X-Branch-ID') or
+            request.META.get('HTTP_X_BRANCH_ID') or
+            getattr(request.user, 'branch_id', None)
+        )
+        if branch_id:
+            try:
+                branch_id = int(branch_id)
+            except (ValueError, TypeError):
+                branch_id = None
+
+        if branch_id and request.user and request.user.is_authenticated:
+            user_role = getattr(request.user, 'role', '')
+            if user_role not in ['owner', 'admin'] and not request.user.is_superuser:
+                user_branches = set(request.user.branches.values_list('id', flat=True))
+                if request.user.branch_id:
+                    user_branches.add(request.user.branch_id)
+                if user_branches and branch_id not in user_branches:
+                    branch_id = None
+
+        students_qs = Student.objects.filter(organization=user_org)
+        users_qs = User.objects.filter(organization=user_org)
+        groups_qs = Group.objects.filter(organization=user_org)
+
+        if branch_id:
+            students_qs = students_qs.filter(branch_id=branch_id)
+            groups_qs = groups_qs.filter(branch_id=branch_id)
+            users_qs = users_qs.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id) | Q(role='owner')).distinct()
+
         # =========================================================================
         # 1. O'QUVCHILAR (Student) QIDIRUVI
         # =========================================================================
-        students = Student.objects.filter(organization=user_org).filter(
+        students = students_qs.filter(
             Q(first_name__icontains=query) |
             Q(last_name__icontains=query) |
             Q(phone__icontains=query) |
             Q(address__icontains=query) |
-            Q(passport_series__icontains=query) |
-            Q(notes__icontains=query)
+            Q(email__icontains=query)
         )[:15]
 
         for s in students:
@@ -571,7 +602,7 @@ class GlobalSearchAPIView(APIView):
         # =========================================================================
         # 2. XODIMLAR VA O'QITUVCHILAR (User) QIDIRUVI
         # =========================================================================
-        users = User.objects.filter(organization=user_org).filter(
+        users = users_qs.filter(
             Q(first_name__icontains=query) |
             Q(last_name__icontains=query) |
             Q(username__icontains=query) |
@@ -598,7 +629,7 @@ class GlobalSearchAPIView(APIView):
         # =========================================================================
         # 3. GURUHLAR (Group) QIDIRUVI
         # =========================================================================
-        groups = Group.objects.filter(organization=user_org).filter(
+        groups = groups_qs.filter(
             Q(name__icontains=query) |
             Q(room__name__icontains=query)
         )[:15]

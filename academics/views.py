@@ -1531,7 +1531,7 @@ class StudentTransactionsView(TenantViewSetMixin, generics.ListAPIView):
         # Branch filtering
         branch_id = self.get_branch_id()
         if branch_id:
-            queryset = queryset.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
+            queryset = queryset.filter(branch_id=branch_id)
 
         student_id = (
             self.request.query_params.get('student') or
@@ -1939,7 +1939,7 @@ class StudentGroupLeaveViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         # Branch filtering
         branch_id = self.get_branch_id()
         if branch_id:
-            qs = qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
+            qs = qs.filter(branch_id=branch_id)
 
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')
@@ -2630,6 +2630,20 @@ class BirthdayCalendarAPIView(APIView):
 
         user_organization = request.user.organization
 
+        from django.db.models import Q
+        branch_id = (
+            request.query_params.get('branch') or
+            request.query_params.get('branch_id') or
+            request.headers.get('x-branch-id') or
+            request.headers.get('X-Branch-ID') or
+            getattr(request.user, 'branch_id', None)
+        )
+        if branch_id:
+            try:
+                branch_id = int(branch_id)
+            except (ValueError, TypeError):
+                branch_id = None
+
         # 1. O'quvchilarni (Student) filterlash
         students = Student.objects.filter(
             organization=user_organization,
@@ -2641,6 +2655,10 @@ class BirthdayCalendarAPIView(APIView):
             organization=user_organization,
             birth_date__month=month
         )
+
+        if branch_id:
+            students = students.filter(branch_id=branch_id)
+            users = users.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id) | Q(role='owner')).distinct()
 
         birthday_list = []
 
