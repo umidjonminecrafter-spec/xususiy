@@ -1,7 +1,8 @@
 from django.contrib import admin
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
-    Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, StaffSalaryPercent
+    Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, StaffSalaryPercent,
+    TeacherWorkLog
 )
 
 
@@ -96,3 +97,10 @@ class TeacherSalaryRuleAdmin(admin.ModelAdmin):
 class TeacherSalaryCalculationAdmin(admin.ModelAdmin):
     list_display = ('id', 'teacher', 'calculated_amount', 'period', 'organization')
     list_filter = ('period',)
+
+
+@admin.register(TeacherWorkLog)
+class TeacherWorkLogAdmin(admin.ModelAdmin):
+    list_display = ('id', 'date', 'teacher', 'branch', 'group', 'hours', 'hourly_rate', 'total_amount', 'is_substitution', 'original_teacher')
+    list_filter = ('date', 'branch', 'is_substitution')
+    search_fields = ('teacher__first_name', 'teacher__last_name', 'note', 'substitution_reason')

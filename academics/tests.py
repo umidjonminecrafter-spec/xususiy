@@ -296,10 +296,10 @@ class AcademicsAPITests(APITestCase):
         self.student1.refresh_from_db()
         self.assertEqual(self.student1.balance, Decimal("-10000.00"))
 
-        # Check Cashbox balance (should be 10,000.00)
+        # Check Cashbox exists and remains 0 (cashbox only updates on actual payments)
         cashbox = Cashbox.objects.filter(organization=self.org1).first()
         self.assertIsNotNone(cashbox)
-        self.assertEqual(cashbox.balance, Decimal("10000.00"))
+        self.assertEqual(cashbox.balance, Decimal("0.00"))
 
         # Check Transaction was created
         tx = Transaction.objects.filter(description__startswith=f"Davomat #{att.id}:").first()

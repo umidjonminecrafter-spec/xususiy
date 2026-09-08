@@ -587,24 +587,26 @@ class FinanceSettingIntegrationTests(APITestCase):
         StudentGroup.objects.create(organization=self.org, student=student, group=group2)
 
         # Charge attendance for group1 (monthly price: 300,000 UZS)
-        # Lessons count in month (e.g. 27 days excluding Sundays)
-        # Cost per lesson without discount: 300,000 / 27 = 11111.11 UZS
-        # Cost with 10% discount: 11111.11 * 0.9 = 10000.00 UZS
+        # Lessons count in month
+        from academics.models import get_lessons_in_month
+        test_date = timezone.now().date()
+        lessons_in_month = get_lessons_in_month(group1, test_date.year, test_date.month)
+        expected_amount = round(Decimal('270000.00') / Decimal(lessons_in_month), 2)
         
         attendance = Attendance.objects.create(
             organization=self.org,
             group=group1,
             student=student,
-            date=timezone.now().date(),
+            date=test_date,
             status="present"
         )
         
-        charge_attendance(student, group1, timezone.now().date(), attendance.id, self.org)
+        charge_attendance(student, group1, test_date, attendance.id, self.org)
         
-        # Verify transaction created with 10,000 UZS
+        # Verify transaction created with expected discounted amount
         tx = Transaction.objects.filter(student=student, description__contains="Davomat").first()
         self.assertIsNotNone(tx)
-        self.assertEqual(float(tx.amount), 10000.00)
+        self.assertEqual(float(tx.amount), float(expected_amount))
 
     def test_teacher_salary_percentage_fallback(self):
         from finance.models import StaffSalaryPercent, TeacherSalaryCalculation
@@ -1120,6 +1122,722 @@ class PaymentReportBotNotificationTests(APITestCase):
         self.assertIn("500 000 UZS", text)
         self.assertIn("Asosiy Kassa", text)
         self.assertIn("1-oylik to'lov", text)
+
+
+class TeacherHourlyWorkLogTests(APITestCase):
+    def setUp(self):
+        from organizations.models import Organization, Branch
+        from accounts.models import User
+        from finance.models import TeacherWorkLog, Cashbox
+
+        self.org = Organization.objects.create(
+            name="Test Edu Org",
+            role_permissions={
+                "manager": {
+                    "pages": {
+                        "Ish haqi": {
+                            "view": True,
+                            "create": True,
+                            "edit": True,
+                            "delete": True
+                        }
+                    }
+                }
+            }
+        )
+        self.branch1 = Branch.objects.create(organization=self.org, name="Chilonzor")
+        self.branch2 = Branch.objects.create(organization=self.org, name="Yunusobod")
+
+        self.owner = User.objects.create_user(
+            username="owner_user",
+            phone="+998901112233",
+            role="owner",
+            organization=self.org
+        )
+
+        self.manager1 = User.objects.create_user(
+            username="manager1_user",
+            phone="+998902223344",
+            role="manager",
+            organization=self.org,
+            branch=self.branch1
+        )
+        self.manager1.branches.add(self.branch1)
+
+        # Teacher 1: Soatbay (Hourly 50,000 UZS)
+        self.teacher1 = User.objects.create_user(
+            username="teacher1_user",
+            phone="+998903334455",
+            role="teacher",
+            organization=self.org,
+            branch=self.branch1,
+            salary_type="hourly",
+            hourly_rate=Decimal("50000.00")
+        )
+        self.teacher1.branches.add(self.branch1)
+
+        # Teacher 2: Soatbay (Hourly 60,000 UZS)
+        self.teacher2 = User.objects.create_user(
+            username="teacher2_user",
+            phone="+998904445566",
+            role="teacher",
+            organization=self.org,
+            branch=self.branch1,
+            salary_type="hourly",
+            hourly_rate=Decimal("60000.00")
+        )
+        self.teacher2.branches.add(self.branch1)
+
+        self.cashbox1 = Cashbox.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            name="Chilonzor Kassa",
+            balance=Decimal("10000000.00")
+        )
+
+    def test_hourly_teacher_validation(self):
+        from accounts.models import User
+        from django.core.exceptions import ValidationError
+
+        # Invalid: hourly with 0 rate
+        user_invalid = User(
+            username="test_bad_hourly",
+            phone="+998905556677",
+            role="teacher",
+            organization=self.org,
+            salary_type="hourly",
+            hourly_rate=Decimal("0.00")
+        )
+        with self.assertRaises(ValidationError):
+            user_invalid.clean()
+
+    def test_daily_work_log_creation(self):
+        from finance.models import TeacherWorkLog
+        from datetime import date
+
+        self.client.force_authenticate(user=self.manager1)
+        url = "/api/v1/finance/teacher-work-logs/"
+        data = {
+            "date": "2026-09-08",
+            "teacher": self.teacher1.id,
+            "hours": "6.00",
+            "hourly_rate": "50000.00",
+            "note": "Kunda 6 soat dars o'tdi"
+        }
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Decimal(str(response.data['total_amount'])), Decimal("300000.00"))
+        self.assertEqual(response.data['branch'], self.branch1.id)
+
+    def test_quick_substitution_scenario(self):
+        """
+        O'qituvchi 1 (50,000 stavka) 6 soatdan 4 soatini o'tdi,
+        Qolgan 2 soatini O'qituvchi 2 (60,000 stavka) zamen o'tdi.
+        """
+        from finance.models import TeacherWorkLog
+
+        self.client.force_authenticate(user=self.manager1)
+        url = "/api/v1/finance/teacher-work-logs/quick-substitution/"
+        payload = {
+            "date": "2026-09-08",
+            "original_teacher_id": self.teacher1.id,
+            "original_hours": "4.00",
+            "original_hourly_rate": "50000.00",
+            "substitute_teacher_id": self.teacher2.id,
+            "substitute_hours": "2.00",
+            "substitute_hourly_rate": "60000.00",
+            "reason": "O'qituvchi 1 ning zarur ishi chiqib ketgani sababli",
+            "note": "6 soatlik dars taqsimoti"
+        }
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # 1-o'qituvchi logini tekshiramiz: 4 soat * 50,000 = 200,000
+        orig_data = response.data['original_teacher_log']
+        self.assertEqual(Decimal(str(orig_data['hours'])), Decimal("4.00"))
+        self.assertEqual(Decimal(str(orig_data['total_amount'])), Decimal("200000.00"))
+        self.assertFalse(orig_data['is_substitution'])
+
+        # 2-o'qituvchi (zamen) logini tekshiramiz: 2 soat * 60,000 = 120,000
+        sub_data = response.data['substitute_teacher_log']
+        self.assertEqual(Decimal(str(sub_data['hours'])), Decimal("2.00"))
+        self.assertEqual(Decimal(str(sub_data['total_amount'])), Decimal("120000.00"))
+        self.assertTrue(sub_data['is_substitution'])
+        self.assertEqual(sub_data['original_teacher'], self.teacher1.id)
+
+    def test_monthly_salary_calculate_with_work_logs(self):
+        """
+        Oylik hisoblashda work loglar asosida to'liq hisob-kitobni tekshiramiz:
+        Teacher 1: 6 soat (300,000) + 4 soat (200,000) = 500,000 UZS.
+        Teacher 2: 2 soat zamen (120,000) = 120,000 UZS.
+        """
+        from finance.models import TeacherWorkLog, TeacherSalaryCalculation
+
+        # Teacher 1 ga 1-kun 6 soat dars
+        TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            date="2026-09-01",
+            teacher=self.teacher1,
+            hours=Decimal("6.00"),
+            hourly_rate=Decimal("50000.00"),
+            is_substitution=False
+        )
+
+        # Teacher 1 ga 2-kun 4 soat dars
+        TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            date="2026-09-02",
+            teacher=self.teacher1,
+            hours=Decimal("4.00"),
+            hourly_rate=Decimal("50000.00"),
+            is_substitution=False
+        )
+
+        # Teacher 2 ga 2-kun 2 soat zamen dars
+        TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            date="2026-09-02",
+            teacher=self.teacher2,
+            hours=Decimal("2.00"),
+            hourly_rate=Decimal("60000.00"),
+            is_substitution=True,
+            original_teacher=self.teacher1
+        )
+
+        # Oylikni hisoblaymiz (Chilonzor filiali uchun)
+        self.client.force_authenticate(user=self.manager1)
+        url = f"/api/v1/finance/teacher-salary/calculate/?branch={self.branch1.id}"
+        payload = {"period": "2026-09"}
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # Teacher 1 calculation tekshiramiz
+        calc1 = TeacherSalaryCalculation.objects.filter(
+            organization=self.org,
+            teacher=self.teacher1,
+            period="2026-09",
+            branch=self.branch1
+        ).first()
+        self.assertIsNotNone(calc1)
+        self.assertEqual(calc1.calculated_amount, Decimal("500000.00"))
+        self.assertEqual(calc1.details.get('hours_taught'), "10.00")
+        self.assertEqual(calc1.details.get('regular_hours'), "10.00")
+        self.assertEqual(calc1.details.get('substitution_hours'), "0.00")
+
+        # Teacher 2 calculation tekshiramiz (Zamen uchun olgan oyligi)
+        calc2 = TeacherSalaryCalculation.objects.filter(
+            organization=self.org,
+            teacher=self.teacher2,
+            period="2026-09",
+            branch=self.branch1
+        ).first()
+        self.assertIsNotNone(calc2)
+        self.assertEqual(calc2.calculated_amount, Decimal("120000.00"))
+        self.assertEqual(calc2.details.get('hours_taught'), "2.00")
+        self.assertEqual(calc2.details.get('substitution_hours'), "2.00")
+
+    def test_work_log_branch_isolation(self):
+        from accounts.models import User
+        from finance.models import TeacherWorkLog
+
+        manager2 = User.objects.create_user(
+            username="manager2_user",
+            phone="+998909998877",
+            role="manager",
+            organization=self.org,
+            branch=self.branch2
+        )
+        manager2.branches.add(self.branch2)
+
+        # 1. Filial 1 uchun log yaratildi
+        log1 = TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            date="2026-09-08",
+            teacher=self.teacher1,
+            hours=Decimal("4.00"),
+            hourly_rate=Decimal("50000.00")
+        )
+
+        # 2. Manager 2 (Filial 2 rahbari) ro'yxatni ochganda Filial 1 logini ko'rmasligi kerak
+        self.client.force_authenticate(user=manager2)
+        response = self.client.get("/api/v1/finance/teacher-work-logs/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get('results', response.data)
+        self.assertEqual(len(results), 0)
+
+        # 3. Manager 2 Filial 1 ni so'rasa ham, unga faqat o'z filiali (0 ta yozuv) qaytadi, Filial 1 ko'rinmaydi
+        res_other = self.client.get(f"/api/v1/finance/teacher-work-logs/?branch={self.branch1.id}")
+        self.assertEqual(res_other.status_code, status.HTTP_200_OK)
+        results_other = res_other.data.get('results', res_other.data)
+        self.assertEqual(len(results_other), 0)
+
+        # 4. Manager 2 yangi log yaratganda, u majburan o'z filialiga (Filial 2) saqlanadi
+        create_res = self.client.post("/api/v1/finance/teacher-work-logs/", {
+            "date": "2026-09-08",
+            "teacher": self.teacher1.id,
+            "branch": self.branch1.id,  # Filial 1 ni berishga ursa ham
+            "hours": "2.00",
+            "hourly_rate": "50000.00"
+        })
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_res.data['branch'], self.branch2.id)  # Manager 2 filiali bo'lib tushadi
+
+    def test_multi_branch_salary_calculation_isolation(self):
+        """
+        O'qituvchi bir nechta filialda dars o'tganda (masalan Filial 1 va Filial 2),
+        har bir filial bo'yicha oylik hisoblanganda yozuvlar bir-birini ezib (overwrite) yubormasligi kerak.
+        """
+        from finance.models import TeacherWorkLog, TeacherSalaryCalculation
+
+        self.teacher1.branches.add(self.branch2)
+
+        # Filial 1 uchun 10 soat dars (500,000 UZS)
+        TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            date="2026-09-05",
+            teacher=self.teacher1,
+            hours=Decimal("10.00"),
+            hourly_rate=Decimal("50000.00")
+        )
+
+        # Filial 2 uchun 6 soat dars (300,000 UZS)
+        TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            date="2026-09-06",
+            teacher=self.teacher1,
+            hours=Decimal("6.00"),
+            hourly_rate=Decimal("50000.00")
+        )
+
+        # 1. Filial 1 bo'yicha oylik hisoblash (Manager 1)
+        self.client.force_authenticate(user=self.manager1)
+        res1 = self.client.post(
+            f"/api/v1/finance/teacher-salary/calculate/?branch={self.branch1.id}",
+            {"period": "2026-09"},
+            format='json'
+        )
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+
+        # 2. Filial 2 bo'yicha oylik hisoblash (Manager 2 yoki Owner)
+        from accounts.models import User
+        manager2 = User.objects.filter(username="manager2_user").first()
+        if not manager2:
+            manager2 = User.objects.create_user(
+                username="manager2_salary_calc",
+                phone="+998909871122",
+                role="manager",
+                organization=self.org,
+                branch=self.branch2
+            )
+            manager2.branches.add(self.branch2)
+        self.client.force_authenticate(user=manager2)
+        res2 = self.client.post(
+            f"/api/v1/finance/teacher-salary/calculate/?branch={self.branch2.id}",
+            {"period": "2026-09"},
+            format='json'
+        )
+        self.assertEqual(res2.status_code, status.HTTP_201_CREATED)
+
+        # 3. Har ikkala hisob-kitob alohida saqlanganini tekshiramiz
+        calc_b1 = TeacherSalaryCalculation.objects.filter(
+            organization=self.org,
+            teacher=self.teacher1,
+            period="2026-09",
+            branch=self.branch1
+        ).first()
+        calc_b2 = TeacherSalaryCalculation.objects.filter(
+            organization=self.org,
+            teacher=self.teacher1,
+            period="2026-09",
+            branch=self.branch2
+        ).first()
+
+        self.assertIsNotNone(calc_b1, "Filial 1 hisob-kitobi mavjud bo'lishi kerak")
+        self.assertIsNotNone(calc_b2, "Filial 2 hisob-kitobi mavjud bo'lishi kerak")
+        self.assertEqual(calc_b1.calculated_amount, Decimal("500000.00"))
+        self.assertEqual(calc_b2.calculated_amount, Decimal("300000.00"))
+
+    def test_multi_branch_teacher_balance_and_payout(self):
+        """
+        O'qituvchining har bir filialdagi alohida balansi va yagona umumiy balansi
+        hisob-kitobi hamda filial kassasidan to'lov qilingandagi o'zgarishini tekshirish.
+        """
+        from finance.models import TeacherWorkLog, TeacherSalaryCalculation, Cashbox
+        from academics.models import TeacherSalaryPayment
+
+        self.teacher1.branches.add(self.branch2)
+
+        # Filial 1 hisoblangan: 500,000 UZS
+        TeacherSalaryCalculation.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            teacher=self.teacher1,
+            period="2026-09",
+            calculated_amount=Decimal("500000.00")
+        )
+
+        # Filial 2 hisoblangan: 300,000 UZS
+        TeacherSalaryCalculation.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            teacher=self.teacher1,
+            period="2026-09",
+            calculated_amount=Decimal("300000.00")
+        )
+
+        # Filial 1 kassasidan 200,000 UZS to'lov qilamiz
+        TeacherSalaryPayment.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            teacher=self.teacher1,
+            period="2026-09",
+            amount=Decimal("200000.00")
+        )
+
+        self.client.force_authenticate(user=self.manager1)
+
+        # 1. Filial 1 rahbari ko'zi bilan teacher-balance endpointini tekshiramiz
+        url_bal = f"/api/v1/finance/teacher-work-logs/teacher-balance/?teacher={self.teacher1.id}&branch={self.branch1.id}"
+        res_bal = self.client.get(url_bal)
+        self.assertEqual(res_bal.status_code, status.HTTP_200_OK)
+
+        data = res_bal.data
+        # Joriy filial (Chilonzor) balansi: 500,000 - 200,000 = 300,000 UZS
+        self.assertEqual(Decimal(str(data['current_branch_balance'])), Decimal("300000.00"))
+        # Barcha filiallar bo'yicha umumiy balans: 300,000 (Filial 1) + 300,000 (Filial 2) = 600,000 UZS
+        self.assertEqual(Decimal(str(data['overall_balance'])), Decimal("600000.00"))
+        self.assertEqual(data['current_branch_id'], self.branch1.id)
+
+        # Filiallar ro'yxatini tekshiramiz
+        branches_res = data['branches']
+        b1_data = next((b for b in branches_res if b['branch_id'] == self.branch1.id), None)
+        b2_data = next((b for b in branches_res if b['branch_id'] == self.branch2.id), None)
+        self.assertIsNotNone(b1_data)
+        self.assertIsNotNone(b2_data)
+        self.assertEqual(Decimal(str(b1_data['balance'])), Decimal("300000.00"))
+        self.assertEqual(Decimal(str(b1_data['paid_amount'])), Decimal("200000.00"))
+        self.assertEqual(Decimal(str(b2_data['balance'])), Decimal("300000.00"))
+        self.assertEqual(Decimal(str(b2_data['paid_amount'])), Decimal("0.00"))
+
+        # 2. Kundalik dars kiritish oynasidagi o'qituvchilar ro'yxati (teachers endpoint)
+        url_teachers = f"/api/v1/finance/teacher-work-logs/teachers/?branch={self.branch1.id}"
+        res_t = self.client.get(url_teachers)
+        self.assertEqual(res_t.status_code, status.HTTP_200_OK)
+        t_entry = next((item for item in res_t.data if item['id'] == self.teacher1.id), None)
+        self.assertIsNotNone(t_entry)
+        self.assertEqual(Decimal(str(t_entry['current_branch_balance'])), Decimal("300000.00"))
+        self.assertEqual(Decimal(str(t_entry['overall_balance'])), Decimal("600000.00"))
+        self.assertIn("Chilonzor", t_entry['branches_summary'])
+
+
+class BranchFinanceNetProfitTests(APITestCase):
+    def setUp(self):
+        from organizations.models import Organization, Branch
+        from accounts.models import User
+        from finance.models import Cashbox, ExpenseCategory
+        from academics.models import Student
+
+        self.org = Organization.objects.create(
+            name="Net Profit Test Org",
+            role_permissions={
+                "manager": {
+                    "pages": {
+                        "Xarajatlar": {"view": True, "create": True, "edit": True, "delete": True},
+                        "Kassa": {"view": True, "create": True, "edit": True, "delete": True},
+                        "Hisobotlar": {"view": True, "create": True, "edit": True, "delete": True},
+                    }
+                }
+            }
+        )
+        self.branch1 = Branch.objects.create(organization=self.org, name="Chilonzor")
+        self.branch2 = Branch.objects.create(organization=self.org, name="Yunusobod")
+
+        self.owner = User.objects.create_user(
+            username="np_owner",
+            phone="+998901110001",
+            role="owner",
+            organization=self.org
+        )
+
+        self.manager1 = User.objects.create_user(
+            username="np_manager1",
+            phone="+998901110002",
+            role="manager",
+            organization=self.org,
+            branch=self.branch1
+        )
+        self.manager1.branches.add(self.branch1)
+
+        self.manager2 = User.objects.create_user(
+            username="np_manager2",
+            phone="+998901110003",
+            role="manager",
+            organization=self.org,
+            branch=self.branch2
+        )
+        self.manager2.branches.add(self.branch2)
+
+        self.cashbox1 = Cashbox.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            name="Chilonzor Kassa",
+            balance=Decimal("2000000.00")
+        )
+
+        self.cashbox2 = Cashbox.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            name="Yunusobod Kassa",
+            balance=Decimal("5000000.00")
+        )
+
+        self.category = ExpenseCategory.objects.create(
+            organization=self.org,
+            name="Ijara"
+        )
+
+        self.student1 = Student.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            first_name="Ali",
+            phone="+998901234567"
+        )
+        self.student2 = Student.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            first_name="Vali",
+            phone="+998907654321"
+        )
+
+    def test_expense_insufficient_balance_blocked(self):
+        """Kassa balansidan ortiqcha xarajat qilish 400 xatosi bilan to'xtatilishi kerak."""
+        self.client.force_authenticate(user=self.manager1)
+        data = {
+            "category": self.category.id,
+            "amount": "3000000.00",  # Kassa balansida bor-yo'g'i 2,000,000 UZS bor
+            "cashbox": self.cashbox1.id,
+            "date": "2026-09-08",
+            "payment_method": "naqd",
+            "description": "Katta xarajat"
+        }
+        response = self.client.post("/api/v1/finance/expenses/", data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        error_text = str(response.data).lower()
+        self.assertTrue("yetarli emas" in error_text or "mablag" in error_text)
+
+    def test_expense_branch_manager_isolation(self):
+        """1-filial rahbari 2-filial kassasidan xarajat qila olmasligi kerak."""
+        self.client.force_authenticate(user=self.manager1)
+        data = {
+            "category": self.category.id,
+            "amount": "500000.00",
+            "cashbox": self.cashbox2.id,  # 2-filial kassasi
+            "date": "2026-09-08",
+            "payment_method": "naqd",
+            "description": "Begona filial kassasidan xarajat"
+        }
+        response = self.client.post("/api/v1/finance/expenses/", data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        error_text = str(response.data).lower()
+        self.assertTrue("boshqa filial" in error_text or "kassa" in error_text or "huquq" in error_text)
+
+    def test_expense_branch_attribution_and_cashbox_balance_deduction(self):
+        """Xarajat to'g'ri filialga biriktirilishi, to'lov turi va kassa balansi aniq kamayishi kerak."""
+        self.client.force_authenticate(user=self.manager1)
+        data = {
+            "category": self.category.id,
+            "amount": "500000.00",
+            "cashbox": self.cashbox1.id,
+            "date": "2026-09-08",
+            "payment_method": "plastik",
+            "description": "Ofis mebellari"
+        }
+        response = self.client.post("/api/v1/finance/expenses/", data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['branch_id'], self.branch1.id)
+        self.assertEqual(response.data['payment_method'], 'plastik')
+
+        from finance.models import Expense, Transaction
+        exp = Expense.objects.get(id=response.data['id'])
+        self.assertEqual(exp.branch_id, self.branch1.id)
+        self.assertEqual(exp.payment_method, 'plastik')
+
+        tx = Transaction.objects.filter(source_expense=exp).first()
+        self.assertIsNotNone(tx)
+        self.assertEqual(tx.branch_id, self.branch1.id)
+        self.assertEqual(tx.payment_method, 'plastik')
+
+    def test_three_payment_methods_normalization(self):
+        """3 xil to'lov turi (naqd, plastik, bank) to'g'ri normallashishi kerak."""
+        from finance.models import normalize_payment_method
+        self.assertEqual(normalize_payment_method("Cash"), "naqd")
+        self.assertEqual(normalize_payment_method("card"), "plastik")
+        self.assertEqual(normalize_payment_method("terminal"), "plastik")
+        self.assertEqual(normalize_payment_method("click"), "plastik")
+        self.assertEqual(normalize_payment_method("transfer"), "bank")
+        self.assertEqual(normalize_payment_method("hisob"), "bank")
+        self.assertEqual(normalize_payment_method("bank"), "bank")
+
+    def test_pnl_per_branch_and_overall(self):
+        """
+        Filiallar bo'yicha sof foyda alohida hisoblanishi,
+        har bir to'lov turi bo'yicha kirim/chiqim/sof foyda aniq ko'rinishi
+        va Owner uchun umumiy + barcha filiallar alohida chiqishi kerak.
+        """
+        from finance.models import Payment, Expense
+        today = timezone.now().date()
+
+        # Filial 1:
+        # Kirim: 7,000,000 (naqd) + 3,000,000 (plastik) = 10,000,000 UZS
+        # Chiqim: 3,000,000 (naqd) + 1,000,000 (plastik) = 4,000,000 UZS
+        # Sof Foyda (Net Profit): 6,000,000 UZS
+        Payment.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            student=self.student1,
+            cashbox=self.cashbox1,
+            amount=Decimal("7000000.00"),
+            date=today,
+            payment_method="naqd"
+        )
+        Payment.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            student=self.student1,
+            cashbox=self.cashbox1,
+            amount=Decimal("3000000.00"),
+            date=today,
+            payment_method="plastik"
+        )
+        Expense.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            category=self.category,
+            cashbox=self.cashbox1,
+            amount=Decimal("3000000.00"),
+            date=today,
+            payment_method="naqd",
+            description="Chilonzor naqd xarajat"
+        )
+        Expense.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            category=self.category,
+            cashbox=self.cashbox1,
+            amount=Decimal("1000000.00"),
+            date=today,
+            payment_method="plastik",
+            description="Chilonzor plastik xarajat"
+        )
+
+        # Filial 2:
+        # Kirim: 4,000,000 (naqd) + 2,000,000 (bank) = 6,000,000 UZS
+        # Chiqim: 1,000,000 (naqd) + 1,000,000 (bank) = 2,000,000 UZS
+        # Sof Foyda (Net Profit): 4,000,000 UZS
+        Payment.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            student=self.student2,
+            cashbox=self.cashbox2,
+            amount=Decimal("4000000.00"),
+            date=today,
+            payment_method="naqd"
+        )
+        Payment.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            student=self.student2,
+            cashbox=self.cashbox2,
+            amount=Decimal("2000000.00"),
+            date=today,
+            payment_method="bank"
+        )
+        Expense.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            category=self.category,
+            cashbox=self.cashbox2,
+            amount=Decimal("1000000.00"),
+            date=today,
+            payment_method="naqd",
+            description="Yunusobod naqd xarajat"
+        )
+        Expense.objects.create(
+            organization=self.org,
+            branch=self.branch2,
+            category=self.category,
+            cashbox=self.cashbox2,
+            amount=Decimal("1000000.00"),
+            date=today,
+            payment_method="bank",
+            description="Yunusobod bank xarajat"
+        )
+
+        # 1. Filial 1 rahbari (Manager 1) PnL hisobotini olganda:
+        self.client.force_authenticate(user=self.manager1)
+        res_m1 = self.client.get("/api/v1/finance/reports/pnl/")
+        self.assertEqual(res_m1.status_code, status.HTTP_200_OK)
+        d1 = res_m1.data
+        self.assertEqual(d1['branch_id'], self.branch1.id)
+        self.assertEqual(Decimal(str(d1['total_income'])), Decimal("10000000.00"))
+        self.assertEqual(Decimal(str(d1['total_expense'])), Decimal("4000000.00"))
+        self.assertEqual(Decimal(str(d1['net_profit'])), Decimal("6000000.00"))
+        self.assertEqual(Decimal(str(d1['sof_foyda'])), Decimal("6000000.00"))
+
+        # To'lov turlari bo'yicha:
+        self.assertEqual(Decimal(str(d1['by_payment_method']['naqd']['net_profit'])), Decimal("4000000.00"))
+        self.assertEqual(Decimal(str(d1['by_payment_method']['plastik']['net_profit'])), Decimal("2000000.00"))
+        self.assertEqual(Decimal(str(d1['by_payment_method']['bank']['net_profit'])), Decimal("0.00"))
+        self.assertNotIn('branches', d1)
+
+        # 2. Tashkilot rahbari (Owner) umumiy PnL hisobotini olganda:
+        self.client.force_authenticate(user=self.owner)
+        res_owner = self.client.get("/api/v1/finance/reports/pnl/")
+        self.assertEqual(res_owner.status_code, status.HTTP_200_OK)
+        d_all = res_owner.data
+
+        # Umumiy ko'rsatkichlar:
+        # Kirim: 10m + 6m = 16m UZS
+        # Chiqim: 4m + 2m = 6m UZS
+        # Sof Foyda: 16m - 6m = 10m UZS
+        self.assertEqual(Decimal(str(d_all['total_income'])), Decimal("16000000.00"))
+        self.assertEqual(Decimal(str(d_all['total_expense'])), Decimal("6000000.00"))
+        self.assertEqual(Decimal(str(d_all['net_profit'])), Decimal("10000000.00"))
+        self.assertEqual(Decimal(str(d_all['sof_foyda'])), Decimal("10000000.00"))
+
+        # Umumiy to'lov turlari:
+        self.assertEqual(Decimal(str(d_all['by_payment_method']['naqd']['net_profit'])), Decimal("7000000.00"))
+        self.assertEqual(Decimal(str(d_all['by_payment_method']['plastik']['net_profit'])), Decimal("2000000.00"))
+        self.assertEqual(Decimal(str(d_all['by_payment_method']['bank']['net_profit'])), Decimal("1000000.00"))
+
+        # Filiallar ro'yxati chiqishi:
+        self.assertIn('branches', d_all)
+        self.assertEqual(len(d_all['branches']), 2)
+        b1_rep = next(b for b in d_all['branches'] if b['branch_id'] == self.branch1.id)
+        b2_rep = next(b for b in d_all['branches'] if b['branch_id'] == self.branch2.id)
+        self.assertEqual(Decimal(str(b1_rep['net_profit'])), Decimal("6000000.00"))
+        self.assertEqual(Decimal(str(b2_rep['net_profit'])), Decimal("4000000.00"))
+
+        # 3. Owner aniq 2-filial bo'yicha so'raganda:
+        res_b2 = self.client.get(f"/api/v1/finance/reports/pnl/?branch={self.branch2.id}")
+        self.assertEqual(res_b2.status_code, status.HTTP_200_OK)
+        d_b2 = res_b2.data
+        self.assertEqual(d_b2['branch_id'], self.branch2.id)
+        self.assertEqual(Decimal(str(d_b2['total_income'])), Decimal("6000000.00"))
+        self.assertEqual(Decimal(str(d_b2['total_expense'])), Decimal("2000000.00"))
+        self.assertEqual(Decimal(str(d_b2['net_profit'])), Decimal("4000000.00"))
+        self.assertEqual(Decimal(str(d_b2['sof_foyda'])), Decimal("4000000.00"))
+
+
+
+
+
 
 
 

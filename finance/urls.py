@@ -10,7 +10,7 @@ from finance.views import (
     WithdrawalViewSet, ConversionReportsFunnelView, CRMLeadsListView,
     ConversionReportsOverviewView, ConversionReportsLostReasonsView, ConversionReportsPipelineTransitionsView,
     LeadsReportPieChartView, LeadsReportBarChartView, LeadsReportStatisticsView, CompanyProfitChartView,
-    FinanceActionViewSet, temp_log_view
+    FinanceActionViewSet, temp_log_view, TeacherWorkLogViewSet
 )
 
 from finance.views import StaffSalaryPercentViewSet, FinanceSettingAPIView, FinancialReportsView, \
@@ -36,6 +36,7 @@ router.register(r'bonuses', BonusViewSet, basename='bonus')
 router.register(r'fines', FineViewSet, basename='fine')
 router.register(r'salaries', SalaryViewSet, basename='salary')
 router.register(r'teacher-salary-rules', TeacherSalaryRuleViewSet, basename='teacher-salary-rule')
+router.register(r'teacher-work-logs', TeacherWorkLogViewSet, basename='teacher-work-log')
 router.register(r'salary-calculations', TeacherSalaryCalculationViewSet, basename='teacher-salary-calculation')
 router.register(r'teacher-salary-payments', TeacherSalaryPaymentsView, basename='teacher-salary-payment')
 router.register(r'cashboxes', CashboxViewSet, basename='cashbox')

@@ -18,12 +18,13 @@ from datetime import datetime, time
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
     Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, Cashbox, CashTransaction,
-    TransactionCategory, Transaction
+    TransactionCategory, Transaction, TeacherWorkLog
 )
 from finance.serializers import (
     ExpenseCategorySerializer, ExpenseSubcategorySerializer, ExpenseSerializer,
     MonthlyIncomeSerializer, PaymentSerializer, SaleSerializer, BonusSerializer,
-    FineSerializer, SalarySerializer, TeacherSalaryRuleSerializer, TeacherSalaryCalculationSerializer, CashboxSerializer
+    FineSerializer, SalarySerializer, TeacherSalaryRuleSerializer, TeacherSalaryCalculationSerializer, CashboxSerializer,
+    TeacherWorkLogSerializer, QuickSubstitutionSerializer
 )
 from academics.models import Student, Group, StudentGroup, TeacherSalaryPayment,GroupLesson
 from academics.serializers import StudentSerializer, TeacherSalaryPaymentSerializer
@@ -48,17 +49,22 @@ def get_active_branch_id(request):
             request.headers.get('x-branch-id') or
             request.headers.get('X-Branch-ID')
         )
-    if not branch_id and request.user and request.user.is_authenticated:
-        branch_id = getattr(request.user, 'branch_id', None)
 
-    if branch_id and request.user and request.user.is_authenticated:
+    if request.user and request.user.is_authenticated:
         user_role = getattr(request.user, 'role', '')
         if user_role not in ['owner', 'admin'] and not request.user.is_superuser:
             user_branches = set(request.user.branches.values_list('id', flat=True))
             if request.user.branch_id:
                 user_branches.add(request.user.branch_id)
-            if user_branches and int(branch_id) not in user_branches:
-                return None
+            if user_branches:
+                try:
+                    if not branch_id or int(branch_id) not in user_branches:
+                        return request.user.branch_id or next(iter(user_branches))
+                except (ValueError, TypeError):
+                    return request.user.branch_id or next(iter(user_branches))
+
+    if not branch_id and request.user and request.user.is_authenticated:
+        branch_id = getattr(request.user, 'branch_id', None)
 
     return branch_id
 
@@ -188,14 +194,20 @@ class ExpenseViewSet(TenantViewSetMixin,
 
             save_kwargs = {'organization': org}
 
-            # Agar filial (branch) ham bo'lsa biriktiramiz
-            branch_id = self.get_branch_id()
-            if branch_id:
-                from organizations.models import Branch
-                try:
-                    save_kwargs['branch'] = Branch.objects.get(id=branch_id)
-                except Branch.DoesNotExist:
-                    pass
+            # Filialni aniqlaymiz: xarajat qaysi kassa hisobidan bo'lsa, o'sha kassaning filiali biriktiriladi
+            cashbox = serializer.validated_data.get('cashbox')
+            branch = cashbox.branch if cashbox and cashbox.branch else None
+            if not branch:
+                branch_id = self.get_branch_id()
+                if branch_id:
+                    from organizations.models import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id)
+                    except Branch.DoesNotExist:
+                        pass
+
+            if branch:
+                save_kwargs['branch'] = branch
 
             # Xarajatni saqlaymiz
             expense = serializer.save(**save_kwargs)
@@ -853,11 +865,18 @@ class TeacherSalaryCalculationViewSet(TenantViewSetMixin, viewsets.ModelViewSet)
                 if not teacher_obj:
                     continue
 
-                calc = TeacherSalaryCalculation.objects.filter(
-                    organization_id=org_id,
-                    teacher=teacher_obj,
-                    period=period
-                ).first()
+                calc_filter = {
+                    'organization_id': org_id,
+                    'teacher': teacher_obj,
+                    'period': period
+                }
+                target_branch_id = cashbox.branch_id if cashbox and cashbox.branch_id else (self.get_branch_id() if hasattr(self, 'get_branch_id') else None)
+                if target_branch_id:
+                    calc = TeacherSalaryCalculation.objects.filter(**calc_filter, branch_id=target_branch_id).first()
+                else:
+                    calc = None
+                if not calc:
+                    calc = TeacherSalaryCalculation.objects.filter(**calc_filter).first()
 
                 # 1. Calculate remaining unpaid salary (to_lanmagan) and gross earned salary for this teacher
                 net_unpaid = Decimal('0.00')
@@ -918,6 +937,7 @@ class TeacherSalaryCalculationViewSet(TenantViewSetMixin, viewsets.ModelViewSet)
 
                 # Create TeacherSalaryPayment (with valid model fields)
                 org_obj = Organization.objects.filter(id=org_id).first() if org_id else cashbox.organization
+                payment_branch = cashbox.branch if cashbox and cashbox.branch else (calc.branch if calc and calc.branch else None)
                 
                 try:
                     pyear, pmonth = map(int, period.split('-'))
@@ -934,6 +954,7 @@ class TeacherSalaryCalculationViewSet(TenantViewSetMixin, viewsets.ModelViewSet)
 
                 payment = TeacherSalaryPayment.objects.create(
                     organization=org_obj,
+                    branch=payment_branch,
                     teacher=teacher_obj,
                     amount=payout_amount,
                     period=period,
@@ -947,11 +968,14 @@ class TeacherSalaryCalculationViewSet(TenantViewSetMixin, viewsets.ModelViewSet)
                 ).first()
                 if tx:
                     tx.cashbox = cashbox
+                    if payment_branch:
+                        tx.branch = payment_branch
                     tx.amount = payout_amount
                     tx.save()
                 else:
                     Transaction.objects.create(
                         organization=org_obj,
+                        branch=payment_branch,
                         cashbox=cashbox,
                         amount=payout_amount,
                         type='EXPENSE',
@@ -971,6 +995,312 @@ class TeacherSalaryCalculationViewSet(TenantViewSetMixin, viewsets.ModelViewSet)
             "detail": f"O'qituvchiga oylik to'landi va {cashbox.name} kassasidan yechildi.",
             "payments": created_payments
         }, status=status.HTTP_201_CREATED)
+
+
+def calculate_teacher_branch_balances(teacher, org_id, current_branch_id=None):
+    """
+    O'qituvchining barcha filiallar bo'yicha hisoblangan oyliklari, to'langan pullari,
+    joriy oydagi yangi darslari va qoldiq balanslarini hisoblab beradi.
+    Shuningdek, barcha filiallarning yagona umumiy balansini (overall_balance) chiqaradi.
+    """
+    from organizations.models import Branch
+
+    branch_ids = set()
+    if teacher.branch_id:
+        branch_ids.add(teacher.branch_id)
+    if hasattr(teacher, 'branches'):
+        branch_ids.update(teacher.branches.values_list('id', flat=True))
+
+    calc_branch_ids = TeacherSalaryCalculation.objects.filter(
+        organization_id=org_id, teacher=teacher
+    ).exclude(branch_id__isnull=True).values_list('branch_id', flat=True)
+    branch_ids.update(calc_branch_ids)
+
+    log_branch_ids = TeacherWorkLog.objects.filter(
+        organization_id=org_id, teacher=teacher
+    ).exclude(branch_id__isnull=True).values_list('branch_id', flat=True)
+    branch_ids.update(log_branch_ids)
+
+    payment_branch_ids = TeacherSalaryPayment.objects.filter(
+        organization_id=org_id, teacher=teacher
+    ).exclude(branch_id__isnull=True).values_list('branch_id', flat=True)
+    branch_ids.update(payment_branch_ids)
+
+    if current_branch_id:
+        try:
+            branch_ids.add(int(current_branch_id))
+        except (ValueError, TypeError):
+            pass
+
+    branches_qs = Branch.objects.filter(id__in=branch_ids, organization_id=org_id)
+    branches_dict = {b.id: b for b in branches_qs}
+
+    from django.utils import timezone
+    now = timezone.now()
+    current_period = f"{now.year}-{now.month:02d}"
+
+    branches_result = []
+    overall_calculated = Decimal('0.00')
+    overall_paid = Decimal('0.00')
+    overall_uncalculated_logs = Decimal('0.00')
+    overall_balance = Decimal('0.00')
+    current_branch_balance = Decimal('0.00')
+    current_branch_name = None
+
+    c_b_id = int(current_branch_id) if current_branch_id else None
+
+    for b_id in sorted(branch_ids):
+        b_obj = branches_dict.get(b_id)
+        b_name = b_obj.name if b_obj else f"Filial #{b_id}"
+
+        # 1. Hisoblangan oyliklar
+        calcs_sum = TeacherSalaryCalculation.objects.filter(
+            organization_id=org_id,
+            teacher=teacher,
+            branch_id=b_id
+        ).aggregate(total=Sum('calculated_amount'))['total'] or Decimal('0.00')
+
+        # 2. To'langan summalar
+        paid_sum = TeacherSalaryPayment.objects.filter(
+            organization_id=org_id,
+            teacher=teacher,
+            branch_id=b_id
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        # 3. Joriy oydagi hali oyligi hisoblanmagan dars soatlari loglari
+        has_current_calc = TeacherSalaryCalculation.objects.filter(
+            organization_id=org_id,
+            teacher=teacher,
+            branch_id=b_id,
+            period=current_period
+        ).exists()
+
+        if not has_current_calc:
+            uncalc_logs_sum = TeacherWorkLog.objects.filter(
+                organization_id=org_id,
+                teacher=teacher,
+                branch_id=b_id,
+                date__year=now.year,
+                date__month=now.month
+            ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+        else:
+            uncalc_logs_sum = Decimal('0.00')
+
+        # Filial balansi: Hisoblangan maosh - To'langan maosh + Joriy yangi darslar
+        branch_balance = (calcs_sum - paid_sum) + uncalc_logs_sum
+
+        is_current = (c_b_id is not None and b_id == c_b_id)
+        if is_current:
+            current_branch_balance = branch_balance
+            current_branch_name = b_name
+
+        branches_result.append({
+            "branch_id": b_id,
+            "branch_name": b_name,
+            "calculated_amount": calcs_sum,
+            "paid_amount": paid_sum,
+            "uncalculated_work_logs": uncalc_logs_sum,
+            "balance": branch_balance,
+            "is_current": is_current
+        })
+
+        overall_calculated += calcs_sum
+        overall_paid += paid_sum
+        overall_uncalculated_logs += uncalc_logs_sum
+        overall_balance += branch_balance
+
+    return {
+        "teacher_id": teacher.id,
+        "teacher_name": teacher.get_full_name() or teacher.username,
+        "overall_balance": overall_balance,
+        "overall_calculated": overall_calculated,
+        "overall_paid": overall_paid,
+        "overall_uncalculated_work_logs": overall_uncalculated_logs,
+        "current_branch_id": c_b_id,
+        "current_branch_name": current_branch_name,
+        "current_branch_balance": current_branch_balance,
+        "branches": branches_result
+    }
+
+
+class TeacherWorkLogViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    permission_page_name = 'Ish haqi'
+    queryset = TeacherWorkLog.objects.all()
+    serializer_class = TeacherWorkLogSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['teacher', 'group', 'is_substitution', 'date']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        teacher_id = self.request.query_params.get('teacher')
+        if teacher_id:
+            qs = qs.filter(teacher_id=teacher_id)
+
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(date__gte=start_date)
+        if end_date:
+            qs = qs.filter(date__lte=end_date)
+
+        month = self.request.query_params.get('month')
+        if month:
+            try:
+                parts = month.split('-')
+                if len(parts) == 2:
+                    qs = qs.filter(date__year=int(parts[0]), date__month=int(parts[1]))
+            except (ValueError, TypeError):
+                pass
+
+        return qs
+
+    def perform_create(self, serializer):
+        org_id = self.get_organization_id()
+        if not org_id:
+            raise exceptions.ValidationError({"detail": "Organization context is required."})
+        branch_id = self.get_branch_id()
+        serializer.save(
+            organization_id=org_id,
+            branch_id=branch_id,
+            created_by=self.request.user if self.request.user.is_authenticated else None
+        )
+
+    @decorators.action(detail=False, methods=['post'], url_path='quick-substitution')
+    def quick_substitution(self, request):
+        serializer = QuickSubstitutionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        org_id = self.get_organization_id()
+        if not org_id:
+            raise exceptions.ValidationError({"detail": "Organization context is required."})
+        branch_id = self.get_branch_id()
+
+        orig_teacher = get_user_model().objects.filter(id=data['original_teacher_id']).first()
+        sub_teacher = get_user_model().objects.filter(id=data['substitute_teacher_id']).first()
+        if not orig_teacher or not sub_teacher:
+            raise exceptions.ValidationError({"detail": "O'qituvchi(lar) topilmadi."})
+
+        orig_rate = data.get('original_hourly_rate')
+        if not orig_rate:
+            orig_rate = getattr(orig_teacher, 'hourly_rate', None) or Decimal('0.00')
+
+        sub_rate = data.get('substitute_hourly_rate')
+        if not sub_rate:
+            sub_rate = getattr(sub_teacher, 'hourly_rate', None) or orig_rate
+
+        group_id = data.get('group_id')
+        group = None
+        if group_id:
+            group = Group.objects.filter(id=group_id, organization_id=org_id).first()
+
+        # 1. Asl o'qituvchiga amalda o'tgan soati uchun log yaratamiz
+        log1 = TeacherWorkLog.objects.create(
+            organization_id=org_id,
+            branch_id=branch_id,
+            date=data['date'],
+            teacher=orig_teacher,
+            group=group,
+            hours=data['original_hours'],
+            hourly_rate=orig_rate,
+            is_substitution=False,
+            created_by=request.user if request.user.is_authenticated else None,
+            note=f"{data.get('note', '')} (Darsning {data['original_hours']} soatini o'tdi)".strip()
+        )
+
+        # 2. O'rniga kirgan o'qituvchiga (zamen) o'tgan soati uchun log yaratamiz
+        log2 = TeacherWorkLog.objects.create(
+            organization_id=org_id,
+            branch_id=branch_id,
+            date=data['date'],
+            teacher=sub_teacher,
+            group=group,
+            hours=data['substitute_hours'],
+            hourly_rate=sub_rate,
+            is_substitution=True,
+            original_teacher=orig_teacher,
+            substitution_reason=data.get('reason', "O'rinbosarlik (zamen)"),
+            created_by=request.user if request.user.is_authenticated else None,
+            note=f"{data.get('note', '')} ({orig_teacher.first_name or orig_teacher.username} o'rniga {data['substitute_hours']} soat zamen o'tdi)".strip()
+        )
+
+        return Response(
+            {
+                "message": "O'rinbosarlik (zamen) darslari muvaffaqiyatli saqlandi!",
+                "original_teacher_log": TeacherWorkLogSerializer(log1).data,
+                "substitute_teacher_log": TeacherWorkLogSerializer(log2).data
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    @decorators.action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        qs = self.filter_queryset(self.get_queryset())
+        total_hours = sum(l.hours for l in qs)
+        total_amount = sum(l.total_amount for l in qs)
+        regular_hours = sum(l.hours for l in qs if not l.is_substitution)
+        sub_hours = sum(l.hours for l in qs if l.is_substitution)
+
+        return Response({
+            "count": qs.count(),
+            "total_hours": str(total_hours),
+            "regular_hours": str(regular_hours),
+            "substitution_hours": str(sub_hours),
+            "total_amount": str(total_amount),
+        }, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=False, methods=['get'], url_path='teacher-balance')
+    def teacher_balance(self, request):
+        teacher_id = request.query_params.get('teacher') or request.query_params.get('teacher_id')
+        if not teacher_id:
+            return Response({"detail": "teacher parametri yuborilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
+
+        org_id = self.get_organization_id()
+        if not org_id:
+            raise exceptions.ValidationError({"detail": "Organization context is required."})
+
+        branch_id = self.get_branch_id()
+        teacher = get_user_model().objects.filter(id=teacher_id, organization_id=org_id).first()
+        if not teacher:
+            return Response({"detail": "O'qituvchi topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+
+        balance_data = calculate_teacher_branch_balances(teacher, org_id, current_branch_id=branch_id)
+        return Response(balance_data, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=False, methods=['get'], url_path='teachers')
+    def teachers_list(self, request):
+        """
+        Filial rahbari kunlik dars soatini kiritish oynasida o'qituvchini tanlayotganda
+        ro'yxatni olishi uchun. Har bir o'qituvchi bilan birga uning shu filialdagi balansi
+        va umumiy balansi birga qaytadi.
+        """
+        org_id = self.get_organization_id()
+        if not org_id:
+            raise exceptions.ValidationError({"detail": "Organization context is required."})
+        branch_id = self.get_branch_id()
+
+        teachers_qs = get_user_model().objects.filter(organization_id=org_id, role='teacher', is_active=True)
+        if branch_id:
+            from django.db.models import Q
+            teachers_qs = teachers_qs.filter(
+                Q(branches__id=branch_id) | Q(branch_id=branch_id)
+            ).distinct()
+
+        results = []
+        for t in teachers_qs:
+            bal = calculate_teacher_branch_balances(t, org_id, current_branch_id=branch_id)
+            results.append({
+                "id": t.id,
+                "name": t.get_full_name() or t.username,
+                "phone": t.phone,
+                "hourly_rate": t.hourly_rate or Decimal('0.00'),
+                "salary_type": t.salary_type,
+                "current_branch_balance": bal["current_branch_balance"],
+                "overall_balance": bal["overall_balance"],
+                "branches_summary": ", ".join([f"{b['branch_name']}: {int(b['balance']):,} UZS".replace(",", " ") for b in bal["branches"]])
+            })
+
+        return Response(results, status=status.HTTP_200_OK)
 
 
 class TeacherSalaryCalculateView(TenantViewSetMixin, APIView):
@@ -1081,6 +1411,21 @@ class TeacherSalaryCalculateView(TenantViewSetMixin, APIView):
             student_discount = Decimal(1) - (Decimal(stud_holiday_days) / Decimal(last_day))
 
         for teacher in teachers:
+            calc_branch_id = branch_id or getattr(teacher, 'branch_id', None)
+
+            # Check if teacher has logged work for this month and branch
+            teacher_work_logs = TeacherWorkLog.objects.filter(
+                organization_id=org_id,
+                teacher=teacher,
+                date__year=year,
+                date__month=month
+            )
+            if calc_branch_id:
+                teacher_work_logs = teacher_work_logs.filter(branch_id=calc_branch_id)
+
+            teacher_salary_type = getattr(teacher, 'salary_type', None)
+            teacher_hourly_rate = getattr(teacher, 'hourly_rate', None)
+
             # Find rule for this teacher
             rule = TeacherSalaryRule.objects.filter(
                 organization_id=org_id,
@@ -1090,11 +1435,15 @@ class TeacherSalaryCalculateView(TenantViewSetMixin, APIView):
             ).first()
 
             if not rule:
-                # Use teacher's profile salary percentage if set
-                if teacher.salary_percentage:
+                if teacher_salary_type == 'hourly' or (teacher_hourly_rate and teacher_hourly_rate > 0) or teacher_work_logs.exists():
+                    rule_type = 'per_hour'
+                    rate = teacher_hourly_rate or (std_rule.rate if (std_rule and std_rule.rule_type == 'per_hour') else Decimal('50000.00'))
+                elif teacher.salary_percentage:
                     rule_type = 'percentage'
                     rate = Decimal(str(teacher.salary_percentage.percent))
-                # Use default standard rule if available, otherwise static fallback
+                elif teacher_salary_type == 'fixed':
+                    rule_type = 'fixed'
+                    rate = Decimal('800.00')
                 elif std_rule:
                     rule_type = std_rule.rule_type
                     rate = std_rule.rate
@@ -1199,53 +1548,73 @@ class TeacherSalaryCalculateView(TenantViewSetMixin, APIView):
                         details['calculated_from_lessons'] = True
 
             elif rule_type == 'per_hour':
-                from academics.models import LessonSchedule
-
-                schedules = LessonSchedule.objects.filter(group__teacher=teacher, organization_id=org_id)
-                if schedules.exists():
+                if teacher_work_logs.exists():
                     total_hours = Decimal('0.00')
-                    even_schedules = [s for s in schedules if s.day_type == 'even']
-                    odd_schedules = [s for s in schedules if s.day_type == 'odd']
+                    total_earned = Decimal('0.00')
+                    reg_hours = Decimal('0.00')
+                    sub_hours = Decimal('0.00')
+                    for wl in teacher_work_logs:
+                        total_hours += wl.hours
+                        total_earned += wl.total_amount
+                        if wl.is_substitution:
+                            sub_hours += wl.hours
+                        else:
+                            reg_hours += wl.hours
 
-                    curr = month_start
-                    while curr <= month_end:
-                        # Skip holidays
-                        if curr in holiday_dates:
-                            curr += timezone.timedelta(days=1)
-                            continue
-
-                        weekday = curr.weekday()
-                        day_schedules = []
-                        if weekday in (1, 3, 5):  # Tue, Thu, Sat
-                            day_schedules = even_schedules
-                        elif weekday in (0, 2, 4):  # Mon, Wed, Fri
-                            day_schedules = odd_schedules
-
-                        for s in day_schedules:
-                            from datetime import datetime, combine
-                            duration = datetime.combine(curr, s.end_time) - datetime.combine(curr, s.start_time)
-                            hours = Decimal(duration.total_seconds()) / Decimal('3600.0')
-                            total_hours += hours
-
-                        curr += timezone.timedelta(days=1)
-
-                    hours_taught = total_hours
-                    details['calculated_via_schedules'] = True
+                    calculated_amount = total_earned
+                    details['hours_taught'] = str(total_hours)
+                    details['regular_hours'] = str(reg_hours)
+                    details['substitution_hours'] = str(sub_hours)
+                    details['work_logs_count'] = teacher_work_logs.count()
+                    details['calculated_via_work_logs'] = True
                 else:
-                    hours_taught = max(Decimal('0.00'), Decimal('24.00') - Decimal(holiday_days_count * 2))
-                    details['calculated_via_schedules'] = False
+                    from academics.models import LessonSchedule
 
-                calculated_amount = rate * hours_taught
-                details['hours_taught'] = str(hours_taught)
-                if holiday_days_count > 0:
-                    details['holiday_days_deducted'] = holiday_days_count
+                    schedules = LessonSchedule.objects.filter(group__teacher=teacher, organization_id=org_id)
+                    if schedules.exists():
+                        total_hours = Decimal('0.00')
+                        even_schedules = [s for s in schedules if s.day_type == 'even']
+                        odd_schedules = [s for s in schedules if s.day_type == 'odd']
 
-            calc_branch_id = branch_id or getattr(teacher, 'branch_id', None)
+                        curr = month_start
+                        while curr <= month_end:
+                            # Skip holidays
+                            if curr in holiday_dates:
+                                curr += timezone.timedelta(days=1)
+                                continue
+
+                            weekday = curr.weekday()
+                            day_schedules = []
+                            if weekday in (1, 3, 5):  # Tue, Thu, Sat
+                                day_schedules = even_schedules
+                            elif weekday in (0, 2, 4):  # Mon, Wed, Fri
+                                day_schedules = odd_schedules
+
+                            for s in day_schedules:
+                                from datetime import datetime, combine
+                                duration = datetime.combine(curr, s.end_time) - datetime.combine(curr, s.start_time)
+                                hours = Decimal(duration.total_seconds()) / Decimal('3600.0')
+                                total_hours += hours
+
+                            curr += timezone.timedelta(days=1)
+
+                        hours_taught = total_hours
+                        details['calculated_via_schedules'] = True
+                    else:
+                        hours_taught = max(Decimal('0.00'), Decimal('24.00') - Decimal(holiday_days_count * 2))
+                        details['calculated_via_schedules'] = False
+
+                    calculated_amount = rate * hours_taught
+                    details['hours_taught'] = str(hours_taught)
+                    if holiday_days_count > 0:
+                        details['holiday_days_deducted'] = holiday_days_count
+
             calc, created = TeacherSalaryCalculation.objects.update_or_create(
                 organization_id=org_id,
                 teacher=teacher,
                 period=period,
-                defaults={'calculated_amount': calculated_amount, 'details': details, 'branch_id': calc_branch_id}
+                branch_id=calc_branch_id,
+                defaults={'calculated_amount': calculated_amount, 'details': details}
             )
             calcs.append(calc)
 
@@ -1264,6 +1633,28 @@ class TeacherSalaryPaymentsView(TenantViewSetMixin, viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['teacher']
     pagination_class = None
+
+    def perform_create(self, serializer):
+        cashbox_id = self.request.data.get('cashbox') or self.request.data.get('cashbox_id')
+        branch = None
+        if cashbox_id:
+            from finance.models import Cashbox
+            cb = Cashbox.objects.filter(id=cashbox_id).first()
+            if cb and cb.branch:
+                branch = cb.branch
+        if not branch:
+            branch_id = self.get_branch_id()
+            if branch_id:
+                from organizations.models import Branch
+                branch = Branch.objects.filter(id=branch_id).first()
+
+        org_id = self.get_organization_id()
+        extra = {}
+        if org_id:
+            extra['organization_id'] = org_id
+        if branch:
+            extra['branch'] = branch
+        serializer.save(**extra)
 
     def create(self, request, *args, **kwargs):
         from finance.models import Cashbox
@@ -2543,10 +2934,166 @@ class CashFlowReportView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+def calculate_pnl_data(org_id, branch_id=None, from_date=None, to_date=None):
+    """
+    Filial yoki butun tashkilot uchun kirim, chiqim, sof foyda va 3 xil to'lov turi
+    (naqd, plastik, bank) bo'yicha tahlilni hisoblab beruvchi yordamchi funksiya.
+    """
+    from finance.models import Payment, Expense, Salary, CashTransaction, Transaction, normalize_payment_method
+    from academics.models import TeacherSalaryPayment
+    from organizations.models import Branch
+    from decimal import Decimal
+    from django.db.models import Q
+
+    branch_name = "Barcha filiallar"
+    if branch_id:
+        b_obj = Branch.objects.filter(id=branch_id).first()
+        if b_obj:
+            branch_name = b_obj.name
+
+    by_payment_method = {
+        'naqd': {'income': Decimal('0.00'), 'expense': Decimal('0.00'), 'net_profit': Decimal('0.00')},
+        'plastik': {'income': Decimal('0.00'), 'expense': Decimal('0.00'), 'net_profit': Decimal('0.00')},
+        'bank': {'income': Decimal('0.00'), 'expense': Decimal('0.00'), 'net_profit': Decimal('0.00')},
+    }
+
+    # 1. Income: Student Payments
+    p_filter = Q(organization_id=org_id)
+    if branch_id:
+        p_filter &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
+    if from_date:
+        p_filter &= Q(date__gte=from_date)
+    if to_date:
+        p_filter &= Q(date__lte=to_date)
+
+    payments = Payment.objects.filter(p_filter, amount__gt=0)
+    total_income = Decimal('0.00')
+    for p in payments:
+        total_income += p.amount
+        pm = normalize_payment_method(getattr(p, 'payment_method', 'naqd'))
+        by_payment_method[pm]['income'] += p.amount
+
+    # Cashbox kirim (CashTransaction kirim)
+    ct_filter = Q(organization_id=org_id)
+    if branch_id:
+        ct_filter &= Q(cashbox__branch_id=branch_id)
+    if from_date:
+        ct_filter &= Q(date__gte=from_date)
+    if to_date:
+        ct_filter &= Q(date__lte=to_date)
+
+    ct_incomes = CashTransaction.objects.filter(ct_filter, transaction_type='kirim', amount__gt=0)
+    for ct in ct_incomes:
+        total_income += ct.amount
+        pm = normalize_payment_method(getattr(ct, 'payment_method', 'naqd'))
+        by_payment_method[pm]['income'] += ct.amount
+
+    # If payments table has 0, fallback to Transaction for INCOME
+    if total_income == Decimal('0.00'):
+        tx_inc_filter = Q(organization_id=org_id, type='INCOME')
+        if branch_id:
+            tx_inc_filter &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
+        if from_date:
+            tx_inc_filter &= Q(created_at__gte=from_date)
+        if to_date:
+            tx_inc_filter &= Q(created_at__lte=to_date)
+        tx_incomes = Transaction.objects.filter(tx_inc_filter).exclude(description__startswith='Davomat #')
+        for tx in tx_incomes:
+            total_income += tx.amount
+            pm = normalize_payment_method(getattr(tx, 'payment_method', 'naqd'))
+            by_payment_method[pm]['income'] += tx.amount
+
+    # 2. Expenses: Operating Expenses
+    e_filter = Q(organization_id=org_id)
+    if branch_id:
+        e_filter &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
+    if from_date:
+        e_filter &= Q(date__gte=from_date)
+    if to_date:
+        e_filter &= Q(date__lte=to_date)
+
+    expenses = Expense.objects.filter(e_filter, amount__gt=0)
+    expenses_val = Decimal('0.00')
+    for exp in expenses:
+        expenses_val += exp.amount
+        pm = normalize_payment_method(getattr(exp, 'payment_method', 'naqd'))
+        by_payment_method[pm]['expense'] += exp.amount
+
+    # Teacher salaries
+    t_filter = Q(organization_id=org_id)
+    if branch_id:
+        t_filter &= Q(branch_id=branch_id)
+    if from_date:
+        t_filter &= Q(paid_at__date__gte=from_date)
+    if to_date:
+        t_filter &= Q(paid_at__date__lte=to_date)
+
+    tsalaries = TeacherSalaryPayment.objects.filter(t_filter, amount__gt=0)
+    tsalaries_val = Decimal('0.00')
+    for tsp in tsalaries:
+        tsalaries_val += tsp.amount
+        pm = 'naqd'
+        by_payment_method[pm]['expense'] += tsp.amount
+
+    # Staff salaries
+    s_filter = Q(organization_id=org_id, status='paid')
+    if branch_id:
+        s_filter &= Q(branch_id=branch_id)
+    if from_date:
+        s_filter &= Q(date__gte=from_date)
+    if to_date:
+        s_filter &= Q(date__lte=to_date)
+
+    salaries = Salary.objects.filter(s_filter, amount__gt=0)
+    salaries_val = Decimal('0.00')
+    for s in salaries:
+        salaries_val += s.amount
+        pm = 'naqd'
+        by_payment_method[pm]['expense'] += s.amount
+
+    # Cashbox chiqim (CashTransaction chiqim)
+    ct_expenses = CashTransaction.objects.filter(ct_filter, transaction_type='chiqim', amount__gt=0)
+    ct_expenses_val = Decimal('0.00')
+    for ct in ct_expenses:
+        ct_expenses_val += ct.amount
+        pm = normalize_payment_method(getattr(ct, 'payment_method', 'naqd'))
+        by_payment_method[pm]['expense'] += ct.amount
+
+    total_expense = expenses_val + tsalaries_val + salaries_val + ct_expenses_val
+    net_profit = total_income - total_expense
+
+    for pm in ('naqd', 'plastik', 'bank'):
+        by_payment_method[pm]['net_profit'] = by_payment_method[pm]['income'] - by_payment_method[pm]['expense']
+
+    serialized_by_pm = {
+        k: {
+            'income': float(v['income']),
+            'expense': float(v['expense']),
+            'net_profit': float(v['net_profit'])
+        }
+        for k, v in by_payment_method.items()
+    }
+
+    return {
+        "branch_id": branch_id,
+        "branch_name": branch_name,
+        "total_income": float(total_income),
+        "total_expense": float(total_expense),
+        "expenses": float(expenses_val),
+        "teacher_salaries": float(tsalaries_val),
+        "staff_salaries": float(salaries_val),
+        "other_expenses": float(ct_expenses_val),
+        "net_profit": float(net_profit),
+        "sof_foyda": float(net_profit),
+        "by_payment_method": serialized_by_pm
+    }
+
+
 class PnLReportView(APIView):
     """
     Foyda va Zarar (PnL) hisoboti endpointi.
-    O'quvchilardan tushgan daromaddan o'qituvchilar foiz ulushi va xarajatlar ayirilib sof foyda hisoblanadi.
+    Filiallar bo'yicha alohida va tashkilot bo'yicha umumiy sof foydani,
+    hamda 3 xil to'lov turi (naqd, plastik, bank) bo'yicha hisoblaydi.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -2558,77 +3105,31 @@ class PnLReportView(APIView):
         if not org_id and hasattr(request.user, 'organization') and request.user.organization:
             org_id = request.user.organization.id
 
+        if not org_id:
+            return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from organizations.models import Branch
         branch_id = get_active_branch_id(request)
 
-        # 1. Total income (Student payments)
-        p_filter = Q(organization_id=org_id)
+        # Agar aniq filial so'ralgan bo'lsa yoki foydalanuvchi filial rahbari bo'lsa:
         if branch_id:
-            p_filter &= Q(branch_id=branch_id)
-        if from_date:
-            p_filter &= Q(date__gte=from_date)
-        if to_date:
-            p_filter &= Q(date__lte=to_date)
+            data = calculate_pnl_data(org_id, branch_id=int(branch_id), from_date=from_date, to_date=to_date)
+            return Response(data, status=status.HTTP_200_OK)
 
-        total_income = Payment.objects.filter(p_filter, amount__gt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        # Tashkilot rahbari (Owner/Admin) umumiy ko'rinishni so'raganda:
+        overall_data = calculate_pnl_data(org_id, branch_id=None, from_date=from_date, to_date=to_date)
 
-        if total_income == 0 and org_id:
-            tx_inc_filter = Q(organization_id=org_id, type='INCOME')
-            if branch_id:
-                tx_inc_filter &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
-            if from_date:
-                tx_inc_filter &= Q(created_at__gte=from_date)
-            if to_date:
-                tx_inc_filter &= Q(created_at__lte=to_date)
-            total_income = Transaction.objects.filter(tx_inc_filter).exclude(description__startswith='Davomat #').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        branches_qs = Branch.objects.filter(organization_id=org_id)
+        branches_list = []
+        for b in branches_qs:
+            b_data = calculate_pnl_data(org_id, branch_id=b.id, from_date=from_date, to_date=to_date)
+            branches_list.append(b_data)
 
-        # 2. Total expenses (Expenses + Teacher Salary Accruals / Payouts)
-        e_filter = Q(organization_id=org_id)
-        t_filter = Q(organization_id=org_id)
-        calc_filter = Q(organization_id=org_id)
+        response_data = dict(overall_data)
+        response_data['overall'] = overall_data
+        response_data['branches'] = branches_list
 
-        if branch_id:
-            e_filter &= Q(branch_id=branch_id)
-            t_filter &= Q(branch_id=branch_id)
-            calc_filter &= Q(branch_id=branch_id)
-
-        if from_date:
-            e_filter &= Q(date__gte=from_date)
-            t_filter &= Q(paid_at__date__gte=from_date)
-            try:
-                calc_filter &= Q(period__gte=from_date[:7])
-            except Exception:
-                pass
-        if to_date:
-            e_filter &= Q(date__lte=to_date)
-            t_filter &= Q(paid_at__date__lte=to_date)
-            try:
-                calc_filter &= Q(period__lte=to_date[:7])
-            except Exception:
-                pass
-
-        expenses_val = Expense.objects.filter(e_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-        tsalaries_val = TeacherSalaryPayment.objects.filter(t_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-
-        # Teacher accrued percentage share from attendance calculations
-        teacher_accrued = Decimal('0.00')
-        calcs = TeacherSalaryCalculation.objects.filter(calc_filter)
-        for c in calcs:
-            serializer = TeacherSalaryCalculationSerializer(c)
-            teacher_accrued += Decimal(str(serializer.data.get('total_earned') or 0))
-
-        teacher_expenses = max(tsalaries_val, teacher_accrued)
-        total_expense = expenses_val + teacher_expenses
-
-        net_profit = max(Decimal('0.00'), total_income - total_expense)
-
-        return Response({
-            "total_income": float(total_income),
-            "total_expense": float(total_expense),
-            "expenses": float(expenses_val),
-            "teacher_salaries": float(teacher_expenses),
-            "net_profit": float(net_profit),
-            "sof_foyda": float(net_profit)
-        }, status=status.HTTP_200_OK)
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class TransactionCategoryViewSet(TenantViewSetMixin, viewsets.ModelViewSet):

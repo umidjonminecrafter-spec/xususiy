@@ -44,6 +44,24 @@ class User(AbstractUser):
     telegram_chat_id = models.CharField(max_length=100, null=True, blank=True, verbose_name="Telegram Chat ID")
     telegram_language = models.CharField(max_length=5, default='uz', choices=[('uz', "O'zbekcha"), ('ru', 'Русский')], verbose_name="Telegram tili")
 
+    SALARY_TYPE_CHOICES = (
+        ('percentage', 'Foizli'),
+        ('hourly', 'Soatbay'),
+        ('fixed', "O'zgarmas oylik"),
+    )
+    salary_type = models.CharField(
+        max_length=20,
+        choices=SALARY_TYPE_CHOICES,
+        default='percentage',
+        verbose_name="Oylik hisoblash turi"
+    )
+    hourly_rate = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0.00,
+        verbose_name="1 soat dars narxi (soatbay)"
+    )
+
     # 🚀 O'qituvchi xodim yaratilayotganda moliya foiz stavkasini biriktirish (1-rasm)
     salary_percentage = models.ForeignKey(
         'finance.StaffSalaryPercent',
@@ -56,10 +74,15 @@ class User(AbstractUser):
 
     def clean(self):
         super().clean()
-        if self.role == 'teacher' and not self.salary_percentage:
-            raise ValidationError({
-                'salary_percentage': "O'qituvchi roli uchun oladigan foizini tanlash majburiy!"
-            })
+        if self.role == 'teacher':
+            if self.salary_type == 'percentage' and not self.salary_percentage:
+                raise ValidationError({
+                    'salary_percentage': "Foizli o'qituvchi uchun oladigan foizini tanlash majburiy!"
+                })
+            elif self.salary_type == 'hourly' and (self.hourly_rate is None or self.hourly_rate <= 0):
+                raise ValidationError({
+                    'hourly_rate': "Soatbay o'qituvchi uchun 1 soat dars narxini kiritish majburiy!"
+                })
 
     def save(self, *args, **kwargs):
         if self.pk:

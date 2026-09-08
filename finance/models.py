@@ -1,5 +1,7 @@
+from decimal import Decimal
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from organizations.models import TenantModel
 from academics.models import Student, TeacherSalaryPayment
 
@@ -29,11 +31,43 @@ class TransactionCategory(models.Model):
         return f"{self.name} ({self.type})"
 
 
+PAYMENT_METHOD_CHOICES = (
+    ('naqd', 'Naqd pul'),
+    ('plastik', 'Plastik karta'),
+    ('bank', "Bank hisobi / O'tkazma"),
+)
+
+
+def normalize_payment_method(method):
+    """
+    Kiritilgan har qanday to'lov usulini 3 xil asosiy turga (naqd, plastik, bank)
+    standartlashtirib beruvchi yagona funksiya.
+    """
+    if not method:
+        return 'naqd'
+    m = str(method).lower().strip()
+    if m in ('naqd', 'cash', 'cash_payment'):
+        return 'naqd'
+    elif m in ('plastik', 'card', 'terminal', 'karta', 'humo', 'uzcard', 'click', 'payme', 'uzum'):
+        return 'plastik'
+    elif m in ('bank', 'transfer', 'hisob_raqam', 'otkazma', "o'tkazma", 'bank_transfer', 'hisob'):
+        return 'bank'
+    return 'naqd'
+
+
 class Expense(TenantModel):
+    PAYMENT_METHODS = PAYMENT_METHOD_CHOICES
+
     category = models.ForeignKey(ExpenseCategory, on_delete=models.CASCADE, related_name="expenses")
     subcategory = models.ForeignKey(ExpenseSubcategory, on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name="expenses")
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES,
+        default='naqd',
+        verbose_name="To'lov turi"
+    )
     description = models.TextField(null=True, blank=True)
     date = models.DateField()
     cashbox = models.ForeignKey('Cashbox', on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
@@ -212,6 +246,91 @@ class TeacherSalaryCalculation(TenantModel):
         return f"Calc: {self.teacher} - {self.calculated_amount} for {self.period}"
 
 
+class TeacherWorkLog(TenantModel):
+    """
+    O'qituvchining kundalik dars/soat qaydnomasi.
+    Filial rahbari har kuni qaysi o'qituvchi filialda necha soat dars o'tganini yozib boradi.
+    Agar boshqa o'qituvchi o'rniga kirgan bo'lsa (zamen), is_substitution=True bo'ladi va
+    amalda darsni o'tgan o'qituvchiga dars soati va summasi yoziladi.
+    """
+    date = models.DateField(default=timezone.now, verbose_name="Dars sanasi")
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="work_logs",
+        verbose_name="Dars o'tgan o'qituvchi"
+    )
+    group = models.ForeignKey(
+        'academics.Group',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="teacher_work_logs",
+        verbose_name="Guruh"
+    )
+    hours = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=1.00,
+        verbose_name="O'tilgan soat"
+    )
+    hourly_rate = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0.00,
+        verbose_name="1 soat dars narxi"
+    )
+    total_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0.00,
+        verbose_name="Jami hisoblangan summa"
+    )
+    is_substitution = models.BooleanField(
+        default=False,
+        verbose_name="O'rinbosarlik (zamen) darsimi?"
+    )
+    original_teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="substituted_work_logs",
+        verbose_name="Asl o'qituvchi (zamen bo'lsa)"
+    )
+    substitution_reason = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name="Zamen sababi"
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="logged_teacher_works",
+        verbose_name="Kiritgan xodim (filial rahbari)"
+    )
+    note = models.TextField(null=True, blank=True, verbose_name="Qo'shimcha izoh")
+
+    class Meta:
+        verbose_name = "O'qituvchi dars qaydnomasi"
+        verbose_name_plural = "O'qituvchilar dars qaydnomalari"
+        ordering = ['-date', '-created_at']
+
+    def save(self, *args, **kwargs):
+        if (not self.hourly_rate or self.hourly_rate == 0) and self.teacher:
+            teacher_rate = getattr(self.teacher, 'hourly_rate', None)
+            if teacher_rate:
+                self.hourly_rate = teacher_rate
+        self.total_amount = round(Decimal(str(self.hours)) * Decimal(str(self.hourly_rate or 0)), 2)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.date} | {self.teacher} - {self.hours} soat ({self.total_amount} so'm)"
+
+
 class Cashbox(TenantModel):
     name = models.CharField(max_length=255)
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
@@ -269,12 +388,13 @@ class CashTransaction(models.Model):
         ('naqd', 'Naqd'),
         ('plastik', 'Plastik'),
         ('terminal', 'Terminal'),
+        ('bank', "Bank o'tkazmasi"),
     )
 
     organization = models.ForeignKey('organizations.Organization', on_delete=models.CASCADE)
     cashbox = models.ForeignKey(Cashbox, on_delete=models.CASCADE, related_name='transactions')
     transaction_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES)
-    payment_method = models.CharField(max_length=15, choices=PAYMENT_METHODS)
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHODS)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     date = models.DateField()
 
@@ -666,6 +786,12 @@ class Transaction(TenantModel):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     type = models.CharField(max_length=10, choices=TRANSACTION_TYPES)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='DIRECT')
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES,
+        default='naqd',
+        verbose_name="To'lov turi"
+    )
 
     # Kim tomonidan amalga oshirildi yoki kimga tegishli
     student = models.ForeignKey('academics.Student', on_delete=models.SET_NULL, null=True, blank=True)
@@ -739,13 +865,17 @@ def _sync_transaction_mirror(source_field_name, instance, tx_type, category, cas
     lookup = {source_field_name: instance}
     tx = Transaction.objects.filter(**lookup).first()
 
+    branch_val = getattr(instance, 'branch_id', None) or (cashbox.branch_id if cashbox else None)
+    pm = normalize_payment_method(getattr(instance, 'payment_method', 'naqd'))
+
     values = {
         'organization': instance.organization,
-        'branch_id': getattr(instance, 'branch_id', None),
+        'branch_id': branch_val,
         'cashbox': cashbox,
         'amount': instance.amount,
         'type': tx_type,
         'category': category,
+        'payment_method': pm,
         'student': getattr(instance, 'student', None),
         'employee': getattr(instance, 'employee', None),
         'description': description,
@@ -847,8 +977,14 @@ from academics.models import TeacherSalaryPayment
 
 @receiver(post_save, sender=TeacherSalaryPayment)
 def teacher_salary_payment_transaction_sync(sender, instance, created, **kwargs):
-    # Tashkilotning birinchi kassasini topamiz (afzalroq nomi 'Asosiy Kassa' yoki o'shanga o'xshash bo'lgan)
-    cashbox = Cashbox.objects.filter(organization=instance.organization, name__icontains="asosiy").first()
+    # Filial bo'yicha yoki tashkilotning asosiy kassasini topamiz
+    cashbox = None
+    if instance.branch:
+        cashbox = Cashbox.objects.filter(organization=instance.organization, branch=instance.branch, name__icontains="asosiy").first()
+        if not cashbox:
+            cashbox = Cashbox.objects.filter(organization=instance.organization, branch=instance.branch).first()
+    if not cashbox:
+        cashbox = Cashbox.objects.filter(organization=instance.organization, name__icontains="asosiy").first()
     if not cashbox:
         cashbox = Cashbox.objects.filter(organization=instance.organization).first()
 
@@ -867,11 +1003,14 @@ def teacher_salary_payment_transaction_sync(sender, instance, created, **kwargs)
 
     if tx:
         tx.cashbox = cashbox
+        if instance.branch:
+            tx.branch = instance.branch
         tx.amount = instance.amount
         tx.save()
     else:
         Transaction.objects.create(
             organization=instance.organization,
+            branch=instance.branch,
             cashbox=cashbox,
             amount=instance.amount,
             type='EXPENSE',

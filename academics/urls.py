@@ -14,7 +14,7 @@ from .views import (
     BuildingViewSet, SchoolClassViewSet, ParentViewSet, StudentAddressViewSet, StudentAppealViewSet
 )
 from .views import StudentFieldSettingViewSet
-from finance.views import TeacherSalaryCalculationViewSet, TeacherSalaryRuleViewSet
+from finance.views import TeacherSalaryCalculationViewSet, TeacherSalaryRuleViewSet, TeacherWorkLogViewSet
 
 
 student_field_settings = StudentFieldSettingViewSet.as_view({
@@ -59,10 +59,10 @@ router.register(r'homework', HomeworkViewSet, basename='homework-single')
 router.register(r'homeworks', HomeworkViewSet, basename='homework')
 router.register(r'bot-message-templates', BotMessageTemplateViewSet, basename='bot-message-template')
 
-# Teachers nested routes (to match /api/v1/academics/teachers/...)
 router.register(r'teachers/salary-calculations', TeacherSalaryCalculationViewSet, basename='academic-teacher-salary-calc')
 router.register(r'teachers/salary-payments', TeacherSalaryPaymentViewSet, basename='academic-teacher-salary-payment')
 router.register(r'teachers/salary-rules', TeacherSalaryRuleViewSet, basename='academic-teacher-salary-rule')
+router.register(r'teachers/work-logs', TeacherWorkLogViewSet, basename='academic-teacher-work-log')
 router.register(r'evaluation-levels', StudentEvaluationLevelViewSet, basename='evaluation-levels')
 router.register(r'course-materials', CourseMaterialViewSet, basename='course-material')
 

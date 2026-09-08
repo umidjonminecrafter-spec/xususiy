@@ -3,7 +3,8 @@ from rest_framework.exceptions import ValidationError
 
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
-    Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, Cashbox
+    Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, Cashbox,
+    TeacherWorkLog
 )
 from .models import FinanceSetting, StaffSalaryPercent,CashTransaction,TransactionCategory
 class ExpenseCategorySerializer(serializers.ModelSerializer):
@@ -80,6 +81,10 @@ class ExpenseSerializer(serializers.ModelSerializer):
         comment = data.get('comment', '') or data.get('izoh', '')
         name = data.get('name', '') or data.get('title', '') or data.get('nomi', '')
 
+        if 'payment_method' in data:
+            from finance.models import normalize_payment_method
+            data['payment_method'] = normalize_payment_method(data['payment_method'])
+
         packed_data = {
             'recipient': recipient,
             'payment_type': payment_type,
@@ -91,12 +96,50 @@ class ExpenseSerializer(serializers.ModelSerializer):
 
         return super().to_internal_value(data)
 
+    def validate(self, attrs):
+        from finance.models import normalize_payment_method
+        from decimal import Decimal
+        if 'payment_method' in attrs:
+            attrs['payment_method'] = normalize_payment_method(attrs.get('payment_method'))
+
+        cashbox = attrs.get('cashbox')
+        amount = attrs.get('amount')
+
+        request = self.context.get('request')
+        user = request.user if request else None
+
+        if cashbox:
+            # 1. Filial mosligi tekshiruvi: Menejer faqat o'z filialidagi kassadan foydalana oladi
+            if user and user.is_authenticated and not user.is_superuser and getattr(user, 'role', '') not in ('owner', 'admin'):
+                user_branch_ids = set(user.branches.values_list('id', flat=True))
+                if user.branch_id:
+                    user_branch_ids.add(user.branch_id)
+                if user_branch_ids and cashbox.branch_id and cashbox.branch_id not in user_branch_ids:
+                    raise serializers.ValidationError({
+                        "cashbox": "Siz faqat o'zingizga biriktirilgan filial kassasidan xarajat qila olasiz! Boshqa filial kassasidan pul sarflash taqiqlanadi."
+                    })
+
+            # 2. Kassa balansi tekshiruvi: Xarajat uchun kassada yetarli pul bo'lishi shart!
+            if amount is not None:
+                cb_balance = Decimal(str(cashbox.balance or 0))
+                if cb_balance < amount:
+                    bal_str = f"{int(cb_balance):,} UZS".replace(",", " ")
+                    amt_str = f"{int(amount):,} UZS".replace(",", " ")
+                    raise serializers.ValidationError({
+                        "cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Xarajat summasi: {amt_str}"
+                    })
+
+        return attrs
+
     def to_representation(self, instance):
         rep = super().to_representation(instance)
 
         # Default fallbacks
         rep['recipient'] = ''
         rep['payment_type'] = instance.cashbox_id if instance.cashbox else None
+        rep['payment_method'] = getattr(instance, 'payment_method', 'naqd')
+        rep['branch_id'] = instance.branch_id or (instance.cashbox.branch_id if instance.cashbox else None)
+        rep['branch_name'] = instance.branch.name if instance.branch else (instance.cashbox.branch.name if instance.cashbox and instance.cashbox.branch else None)
         rep['comment'] = instance.description or ''
         rep['izoh'] = instance.description or ''
         rep['name'] = instance.description or ''
@@ -341,10 +384,12 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
             year, month = map(int, obj.period.split('-'))
             from academics.models import TeacherSalaryPayment
             from django.db.models import Q
-            val = TeacherSalaryPayment.objects.filter(
-                Q(organization_id=obj.organization_id, teacher_id=obj.teacher_id) &
-                (Q(period=obj.period) | Q(paid_at__year=year, paid_at__month=month))
-            ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
+            p_filter = Q(organization_id=obj.organization_id, teacher_id=obj.teacher_id) & (
+                Q(period=obj.period) | Q(paid_at__year=year, paid_at__month=month)
+            )
+            if obj.branch_id:
+                p_filter = p_filter & (Q(branch_id=obj.branch_id) | Q(branch__isnull=True))
+            val = TeacherSalaryPayment.objects.filter(p_filter).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
             return float(val)
         except Exception:
             return 0.0
@@ -565,6 +610,22 @@ class CashTransactionSerializer(serializers.ModelSerializer):
                     "non_field_errors": "Chiqim amaliyotida bir vaqtning o'zida ham xodimni, ham o'quvchini tanlab bo'lmaydi!"
                 })
 
+            # 3. Kassa balansi va filial nazorati
+            cashbox = attrs.get('cashbox')
+            amount = attrs.get('amount')
+            if cashbox and amount is not None:
+                from decimal import Decimal
+                request = self.context.get('request')
+                user = request.user if request else None
+                if user and user.is_authenticated and not user.is_superuser and getattr(user, 'role', '') not in ('owner', 'admin'):
+                    user_branch_ids = set(user.branches.values_list('id', flat=True))
+                    if user.branch_id:
+                        user_branch_ids.add(user.branch_id)
+                    if user_branch_ids and cashbox.branch_id and cashbox.branch_id not in user_branch_ids:
+                        raise serializers.ValidationError({
+                            "cashbox": "Siz faqat o'zingizga biriktirilgan filial kassasidan chiqim qila olasiz!"
+                        })
+
         return attrs
 class FinanceSettingSerializer(serializers.ModelSerializer):
     class Meta:
@@ -593,6 +654,8 @@ class StaffSalaryPercentSerializer(serializers.ModelSerializer):
         read_only_fields = ('organization', 'branch', 'created_at', 'updated_at')
 class TransactionSerializer(serializers.ModelSerializer):
     cashbox_name = serializers.CharField(source='cashbox.name', read_only=True)
+    branch_id = serializers.IntegerField(source='branch.id', read_only=True, default=None)
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default=None)
     student_name = serializers.CharField(source='student.full_name', read_only=True, default=None)
     employee_name = serializers.CharField(source='employee.username', read_only=True, default=None)
     
@@ -610,7 +673,7 @@ class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transaction
         fields = [
-            'id', 'cashbox', 'cashbox_name', 'amount', 'type',
+            'id', 'cashbox', 'cashbox_name', 'branch_id', 'branch_name', 'amount', 'type',
             'category', 'student', 'student_name', 'employee',
             'employee_name', 'description', 'created_at',
             'payment_method', 'category_name', 'comment',
@@ -619,11 +682,15 @@ class TransactionSerializer(serializers.ModelSerializer):
         ]
 
     def get_payment_method(self, obj):
+        if hasattr(obj, 'payment_method') and obj.payment_method:
+            return obj.payment_method
         if obj.source_payment:
-            return obj.source_payment.payment_method
+            return getattr(obj.source_payment, 'payment_method', 'naqd')
+        if obj.source_expense and hasattr(obj.source_expense, 'payment_method'):
+            return getattr(obj.source_expense, 'payment_method', 'naqd')
         if obj.source_cashtransaction:
-            return obj.source_cashtransaction.payment_method
-        return "naqd"  # Chiqimlar yoki boshqa tranzaksiyalar uchun default
+            return getattr(obj.source_cashtransaction, 'payment_method', 'naqd')
+        return "naqd"
 
     def get_category_name(self, obj):
         if obj.source_expense:
@@ -809,3 +876,53 @@ class CashTransferSerializer(serializers.Serializer):
         if amount <= 0:
             raise serializers.ValidationError({"amount": "O'tkazma summasi 0 dan katta bo'lishi kerak!"})
         return attrs
+
+
+class TeacherWorkLogSerializer(serializers.ModelSerializer):
+    teacher_name = serializers.SerializerMethodField(read_only=True)
+    original_teacher_name = serializers.SerializerMethodField(read_only=True)
+    group_name = serializers.CharField(source='group.name', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+    created_by_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = TeacherWorkLog
+        fields = [
+            'id', 'organization', 'branch', 'branch_name',
+            'date', 'teacher', 'teacher_name', 'group', 'group_name',
+            'hours', 'hourly_rate', 'total_amount',
+            'is_substitution', 'original_teacher', 'original_teacher_name',
+            'substitution_reason', 'created_by', 'created_by_name',
+            'note', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ('id', 'organization', 'branch', 'total_amount', 'created_by', 'created_at', 'updated_at')
+
+    def get_teacher_name(self, obj):
+        if obj.teacher:
+            return f"{obj.teacher.first_name} {obj.teacher.last_name}".strip() or obj.teacher.username
+        return None
+
+    def get_original_teacher_name(self, obj):
+        if obj.original_teacher:
+            return f"{obj.original_teacher.first_name} {obj.original_teacher.last_name}".strip() or obj.original_teacher.username
+        return None
+
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.username
+        return None
+
+
+class QuickSubstitutionSerializer(serializers.Serializer):
+    date = serializers.DateField(default=datetime.date.today)
+    group_id = serializers.IntegerField(required=False, allow_null=True)
+    original_teacher_id = serializers.IntegerField(required=True)
+    original_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=True)
+    original_hourly_rate = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+
+    substitute_teacher_id = serializers.IntegerField(required=True)
+    substitute_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=True)
+    substitute_hourly_rate = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+
+    reason = serializers.CharField(required=False, allow_blank=True, default="O'rinbosarlik (zamen)")
+    note = serializers.CharField(required=False, allow_blank=True, default="")
