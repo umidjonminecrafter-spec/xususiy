@@ -1263,7 +1263,73 @@ class TeacherHourlyWorkLogTests(APITestCase):
         self.assertEqual(Decimal(str(sub_data['hours'])), Decimal("2.00"))
         self.assertEqual(Decimal(str(sub_data['total_amount'])), Decimal("120000.00"))
         self.assertTrue(sub_data['is_substitution'])
+        self.assertEqual(sub_data['lesson_type_display'], "Qo'shimcha dars")
         self.assertEqual(sub_data['original_teacher'], self.teacher1.id)
+
+    def test_quick_substitution_uses_finance_setting_extra_lesson_rate(self):
+        """
+        Talab: Sozlamalar oynasida qo'shimcha dars (extra_lesson_rate) narxi belgilangan bo'lsa,
+        darsni tashlab ketgan o'qituvchiga o'z stavkasi bo'yicha, qolgan soatini o'tib bergan
+        o'qituvchiga esa (uning o'z stavkasidan qat'i nazar) sozlamadagi qo'shimcha dars narxi bo'yicha hisoblanadi.
+        """
+        from finance.models import FinanceSetting, TeacherWorkLog
+
+        # Sozlamada qo'shimcha dars 1 soat narxini 45,000 qilib saqlaymiz
+        FinanceSetting.objects.create(
+            organization=self.org,
+            branch=self.branch1,
+            extra_lesson_rate=Decimal("45000.00")
+        )
+
+        self.client.force_authenticate(user=self.manager1)
+        url = "/api/v1/finance/teacher-work-logs/quick-substitution/"
+        payload = {
+            "date": "2026-09-08",
+            "original_teacher_id": self.teacher1.id,  # Stavka: 50,000
+            "original_hours": "4.00",
+            # original_hourly_rate berilmagan, avtomat Teacher 1 stavkasi (50,000) olinadi
+            "substitute_teacher_id": self.teacher2.id,  # O'z stavkasi: 60,000
+            "substitute_hours": "2.00",
+            # substitute_hourly_rate berilmagan, avtomat FinanceSetting.extra_lesson_rate (45,000) olinishi kerak!
+            "reason": "O'qituvchi 1 ning ishi chiqib qoldi",
+            "note": "6 soatlik dars taqsimoti"
+        }
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # 1-o'qituvchi logini tekshiramiz: 4 soat * 50,000 = 200,000 (Asosiy dars)
+        orig_data = response.data['original_teacher_log']
+        self.assertEqual(Decimal(str(orig_data['hours'])), Decimal("4.00"))
+        self.assertEqual(Decimal(str(orig_data['hourly_rate'])), Decimal("50000.00"))
+        self.assertEqual(Decimal(str(orig_data['total_amount'])), Decimal("200000.00"))
+        self.assertFalse(orig_data['is_substitution'])
+        self.assertEqual(orig_data['lesson_type_display'], "Asosiy dars")
+
+        # 2-o'qituvchi logini tekshiramiz: 2 soat * 45,000 = 90,000 (Qo'shimcha dars)
+        sub_data = response.data['substitute_teacher_log']
+        self.assertEqual(Decimal(str(sub_data['hours'])), Decimal("2.00"))
+        self.assertEqual(Decimal(str(sub_data['hourly_rate'])), Decimal("45000.00"))
+        self.assertEqual(Decimal(str(sub_data['total_amount'])), Decimal("90000.00"))
+        self.assertTrue(sub_data['is_substitution'])
+        self.assertEqual(sub_data['lesson_type_display'], "Qo'shimcha dars")
+        self.assertEqual(sub_data['original_teacher'], self.teacher1.id)
+
+    def test_finance_settings_extra_lesson_rate_api(self):
+        """
+        Sozlamalar oynasida extra_lesson_rate ni saqlash va olishni tekshiramiz
+        """
+        self.client.force_authenticate(user=self.owner)
+        url = "/api/v1/finance/settings/"
+
+        # 1. GET settings
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn("extra_lesson_rate", res.data)
+
+        # 2. PUT update extra_lesson_rate
+        update_res = self.client.put(url, {"extra_lesson_rate": "55000.00"}, format='json')
+        self.assertEqual(update_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(str(update_res.data["extra_lesson_rate"])), Decimal("55000.00"))
 
     def test_monthly_salary_calculate_with_work_logs(self):
         """

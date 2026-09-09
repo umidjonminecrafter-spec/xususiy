@@ -320,10 +320,18 @@ class TeacherWorkLog(TenantModel):
         ordering = ['-date', '-created_at']
 
     def save(self, *args, **kwargs):
-        if (not self.hourly_rate or self.hourly_rate == 0) and self.teacher:
-            teacher_rate = getattr(self.teacher, 'hourly_rate', None)
-            if teacher_rate:
-                self.hourly_rate = teacher_rate
+        if not self.hourly_rate or self.hourly_rate == 0:
+            if self.is_substitution and self.organization_id:
+                try:
+                    setting = FinanceSetting.objects.filter(organization_id=self.organization_id).first()
+                    if setting and setting.extra_lesson_rate and setting.extra_lesson_rate > 0:
+                        self.hourly_rate = setting.extra_lesson_rate
+                except Exception:
+                    pass
+            if (not self.hourly_rate or self.hourly_rate == 0) and self.teacher:
+                teacher_rate = getattr(self.teacher, 'hourly_rate', None)
+                if teacher_rate:
+                    self.hourly_rate = teacher_rate
         self.total_amount = round(Decimal(str(self.hours)) * Decimal(str(self.hourly_rate or 0)), 2)
         super().save(*args, **kwargs)
 
@@ -367,6 +375,14 @@ class FinanceSetting(TenantModel):
     two_groups_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     three_groups_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     four_groups_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+
+    # 6. Qo'shimcha dars (zamen) 1 soat narxi sozlamasi
+    extra_lesson_rate = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0.00,
+        verbose_name="Qo'shimcha dars (zamen) 1 soat narxi"
+    )
 
     def __str__(self):
         return f"Finance Settings - {self.organization.name if self.organization else 'No Org'}"

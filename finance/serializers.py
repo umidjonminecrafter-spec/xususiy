@@ -884,6 +884,7 @@ class TeacherWorkLogSerializer(serializers.ModelSerializer):
     group_name = serializers.CharField(source='group.name', read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     created_by_name = serializers.SerializerMethodField(read_only=True)
+    lesson_type_display = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = TeacherWorkLog
@@ -891,11 +892,15 @@ class TeacherWorkLogSerializer(serializers.ModelSerializer):
             'id', 'organization', 'branch', 'branch_name',
             'date', 'teacher', 'teacher_name', 'group', 'group_name',
             'hours', 'hourly_rate', 'total_amount',
-            'is_substitution', 'original_teacher', 'original_teacher_name',
+            'is_substitution', 'lesson_type_display',
+            'original_teacher', 'original_teacher_name',
             'substitution_reason', 'created_by', 'created_by_name',
             'note', 'created_at', 'updated_at'
         ]
         read_only_fields = ('id', 'organization', 'branch', 'total_amount', 'created_by', 'created_at', 'updated_at')
+
+    def get_lesson_type_display(self, obj):
+        return "Qo'shimcha dars" if obj.is_substitution else "Asosiy dars"
 
     def get_teacher_name(self, obj):
         if obj.teacher:

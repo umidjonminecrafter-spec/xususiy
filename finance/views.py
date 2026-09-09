@@ -1159,11 +1159,20 @@ class TeacherWorkLogViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         if not org_id:
             raise exceptions.ValidationError({"detail": "Organization context is required."})
         branch_id = self.get_branch_id()
-        serializer.save(
-            organization_id=org_id,
-            branch_id=branch_id,
-            created_by=self.request.user if self.request.user.is_authenticated else None
-        )
+        extra_kwargs = {
+            'organization_id': org_id,
+            'branch_id': branch_id,
+            'created_by': self.request.user if self.request.user.is_authenticated else None
+        }
+        # Agar is_substitution=True bo'lsa va hourly_rate berilmagan bo'lsa, sozlamadagi extra_lesson_rate ni olamiz
+        is_sub = serializer.validated_data.get('is_substitution', False)
+        rate = serializer.validated_data.get('hourly_rate')
+        if is_sub and (not rate or rate == 0):
+            from finance.models import FinanceSetting
+            setting = FinanceSetting.objects.filter(organization_id=org_id).first()
+            if setting and setting.extra_lesson_rate and setting.extra_lesson_rate > 0:
+                extra_kwargs['hourly_rate'] = setting.extra_lesson_rate
+        serializer.save(**extra_kwargs)
 
     @decorators.action(detail=False, methods=['post'], url_path='quick-substitution')
     def quick_substitution(self, request):
@@ -1187,14 +1196,21 @@ class TeacherWorkLogViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
         sub_rate = data.get('substitute_hourly_rate')
         if not sub_rate:
-            sub_rate = getattr(sub_teacher, 'hourly_rate', None) or orig_rate
+            # Agar qo'shimcha dars stavkasi berilmagan bo'lsa, avval FinanceSetting.extra_lesson_rate dan olamiz
+            from finance.models import FinanceSetting
+            setting = FinanceSetting.objects.filter(organization_id=org_id).first()
+            if setting and setting.extra_lesson_rate and setting.extra_lesson_rate > 0:
+                sub_rate = setting.extra_lesson_rate
+            else:
+                sub_rate = getattr(sub_teacher, 'hourly_rate', None) or orig_rate
 
         group_id = data.get('group_id')
         group = None
         if group_id:
             group = Group.objects.filter(id=group_id, organization_id=org_id).first()
 
-        # 1. Asl o'qituvchiga amalda o'tgan soati uchun log yaratamiz
+        # 1. Asl o'qituvchiga amalda o'tgan soati uchun log yaratamiz (o'z stavkasi bo'yicha)
+        orig_note = f"{data.get('note', '')} (Asosiy dars: {data['original_hours']} soat o'tdi)".strip()
         log1 = TeacherWorkLog.objects.create(
             organization_id=org_id,
             branch_id=branch_id,
@@ -1205,10 +1221,11 @@ class TeacherWorkLogViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             hourly_rate=orig_rate,
             is_substitution=False,
             created_by=request.user if request.user.is_authenticated else None,
-            note=f"{data.get('note', '')} (Darsning {data['original_hours']} soatini o'tdi)".strip()
+            note=orig_note
         )
 
-        # 2. O'rniga kirgan o'qituvchiga (zamen) o'tgan soati uchun log yaratamiz
+        # 2. O'rniga kirgan o'qituvchiga (qo'shimcha dars) o'tgan soati uchun log yaratamiz (qo'shimcha dars stavkasi bo'yicha)
+        sub_note = f"{data.get('note', '')} (Qo'shimcha dars: {orig_teacher.first_name or orig_teacher.username} o'rniga {data['substitute_hours']} soat o'tdi)".strip()
         log2 = TeacherWorkLog.objects.create(
             organization_id=org_id,
             branch_id=branch_id,
@@ -1219,14 +1236,14 @@ class TeacherWorkLogViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             hourly_rate=sub_rate,
             is_substitution=True,
             original_teacher=orig_teacher,
-            substitution_reason=data.get('reason', "O'rinbosarlik (zamen)"),
+            substitution_reason=data.get('reason', "Qo'shimcha dars (zamen)"),
             created_by=request.user if request.user.is_authenticated else None,
-            note=f"{data.get('note', '')} ({orig_teacher.first_name or orig_teacher.username} o'rniga {data['substitute_hours']} soat zamen o'tdi)".strip()
+            note=sub_note
         )
 
         return Response(
             {
-                "message": "O'rinbosarlik (zamen) darslari muvaffaqiyatli saqlandi!",
+                "message": "Qo'shimcha dars (zamen) darslari muvaffaqiyatli saqlandi!",
                 "original_teacher_log": TeacherWorkLogSerializer(log1).data,
                 "substitute_teacher_log": TeacherWorkLogSerializer(log2).data
             },
