@@ -1761,11 +1761,276 @@ class StudentAppealTests(APITestCase):
         self.assertIn("Muammo hal bo'lmadi", owner_alert_text)
 
 
+class TelegramStaffBotSalaryTests(APITestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from organizations.models import Organization, Branch
+        from accounts.models import User
+        from finance.models import Cashbox
 
+        self.org = Organization.objects.create(name="Smart Edu Center")
+        self.branch = Branch.objects.create(organization=self.org, name="Chilonzor")
+        self.cashbox = Cashbox.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            name="Asosiy Kassa",
+            balance=Decimal("10000000.00")
+        )
+        self.teacher = User.objects.create_user(
+            username="teacher_telegram_user",
+            first_name="Dilshod",
+            last_name="Karimov",
+            phone="+998901239988",
+            role="teacher",
+            salary_type="hourly",
+            hourly_rate=Decimal("50000.00"),
+            organization=self.org,
+            branch=self.branch,
+            telegram_chat_id="77889900"
+        )
 
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_staff_bot_teacher_salary_command(self, mock_send):
+        """O'qituvchi botda '💰 Oylik va hisoblar' bosganda real vaqtdagi balans va soatlarni ko'rishini tekshirish."""
+        from decimal import Decimal
+        from academics.telegram_bot import handle_telegram_update, STAFF_BOT_TOKEN
+        from finance.models import TeacherWorkLog
+        from django.utils import timezone
 
+        now = timezone.now()
+        # 1. Asosiy dars: 6 soat * 50,000 = 300,000 UZS
+        TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            date=now.date(),
+            teacher=self.teacher,
+            hours=Decimal("6.00"),
+            hourly_rate=Decimal("50000.00"),
+            is_substitution=False
+        )
 
+        # 2. Qo'shimcha (zamen) dars: 2 soat * 50,000 = 100,000 UZS
+        TeacherWorkLog.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            date=now.date(),
+            teacher=self.teacher,
+            hours=Decimal("2.00"),
+            hourly_rate=Decimal("50000.00"),
+            is_substitution=True
+        )
 
+        update = {
+            "message": {
+                "chat": {"id": 77889900},
+                "from": {"id": 77889900},
+                "text": "💰 Oylik va hisoblar"
+            }
+        }
+        handle_telegram_update('staff', STAFF_BOT_TOKEN, update)
 
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0]
+        token = call_args[0]
+        chat_id = call_args[1]
+        text = call_args[2]
 
+        self.assertEqual(chat_id, 77889900)
+        self.assertIn("Oylik va moliyaviy hisob-kitoblar", text)
+        self.assertIn("Jami o'tilgan dars:", text)
+        self.assertIn("8", text)  # 6 + 2 = 8 soat
+        self.assertIn("Asosiy darslar: <b>6", text)
+        self.assertIn("Qo'shimcha (zamen) darslar: <b>2", text)
+        self.assertIn("Chilonzor", text)
 
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_teacher_salary_payment_automatic_telegram_notification(self, mock_send):
+        """Oylik to'langanda o'qituvchining telegramiga avtomatik to'liq xabarnoma borishini tekshirish."""
+        from decimal import Decimal
+        from academics.models import TeacherSalaryPayment
+
+        payment = TeacherSalaryPayment.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            teacher=self.teacher,
+            amount=Decimal("1500000.00"),
+            period="2026-09"
+        )
+
+        mock_send.assert_called()
+        # O'qituvchiga borgan xabarni tekshiramiz
+        teacher_calls = [call for call in mock_send.call_args_list if str(call[0][1]) == "77889900"]
+        self.assertGreaterEqual(len(teacher_calls), 1)
+
+        sent_text = teacher_calls[0][0][2]
+        self.assertIn("ISH HAQI TO'LANDI!", sent_text)
+        self.assertIn("Dilshod Karimov", sent_text)
+        self.assertIn("1 500 000 UZS", sent_text)
+        self.assertIn("01.09.2026 dan 30.09.2026 gacha", sent_text)
+        self.assertIn("2026-09", sent_text)
+
+class TelegramStudentBotFixesTests(APITestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from organizations.models import Organization, Branch
+        from accounts.models import User
+        from academics.models import Student, Course, Group
+        from finance.models import Cashbox
+
+        self.org = Organization.objects.create(name="Smart Edu Center")
+        self.branch = Branch.objects.create(organization=self.org, name="Chilonzor")
+        self.cashbox = Cashbox.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            name="Asosiy Kassa",
+            balance=Decimal("10000000.00")
+        )
+
+        from organizations.models import TelegramNotificationSetting
+        TelegramNotificationSetting.objects.create(
+            organization=self.org,
+            parent_bot_token="TEST_PARENT_TOKEN",
+            is_active=True
+        )
+
+        self.student = Student.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            first_name="Jasur",
+            last_name="Toshmatov",
+            phone="+998901234567",
+            father_phone="+998909876543",
+            balance=Decimal("0.00"),
+            telegram_chat_id="123456789",
+            father_telegram_chat_id="987654321",
+            is_archived=False
+        )
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_appeal_with_numbers_not_intercepted_as_phone(self, mock_send):
+        """Talaba murojaatida summalar yoki raqamlar bo'lganda telefon raqam deb tushunib xato qilmasligini tekshirish."""
+        from academics.telegram_bot import handle_telegram_update, STUDENT_BOT_TOKEN
+        from academics.models import StudentAppeal
+
+        # 1. Step: student clicks "✍️ Taklif / Shikoyat yuborish"
+        menu_update = {
+            "message": {
+                "chat": {"id": 123456789},
+                "from": {"id": 123456789},
+                "text": "✍️ Taklif / Shikoyat yuborish"
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, menu_update)
+
+        # 2. Step: student selects type, e.g. "🔴 Shikoyat"
+        type_update = {
+            "message": {
+                "chat": {"id": 123456789},
+                "from": {"id": 123456789},
+                "text": "🔴 Shikoyat"
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, type_update)
+
+        # 3. Step: student sends appeal containing numbers/amounts (e.g. 1200000 som)
+        appeal_text = "Assalomu alaykum, men 1200000 som tolov qilgandim, lekin balansimda chiqmayapti"
+        text_update = {
+            "message": {
+                "chat": {"id": 123456789},
+                "from": {"id": 123456789},
+                "text": appeal_text
+            }
+        }
+        handle_telegram_update('student', STUDENT_BOT_TOKEN, text_update)
+
+        # Verify appeal was successfully created
+        appeal = StudentAppeal.objects.filter(student=self.student).last()
+        self.assertIsNotNone(appeal)
+        self.assertEqual(appeal.message, appeal_text)
+
+        # Verify success reply was sent, NOT "telefon raqamli talaba topilmadi"
+        last_call_text = mock_send.call_args[0][2]
+        self.assertIn("Murojaatingiz muvaffaqiyatli qabul qilindi", last_call_text)
+        self.assertNotIn("telefon raqamli talaba topilmadi", last_call_text)
+
+    def test_get_student_for_chat_prioritizes_active(self):
+        """get_student_for_chat arxivlangan talabani emas, faol talabani birinchi navbatda tanlashini tekshirish."""
+        from academics.telegram_bot import get_student_for_chat
+        from academics.models import Student
+
+        # Create an archived student duplicate with the same telegram_chat_id
+        archived_student = Student.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            first_name="Jasur (Eski)",
+            last_name="Toshmatov",
+            phone="+998901234567",
+            telegram_chat_id="123456789",
+            is_archived=True
+        )
+
+        resolved_student = get_student_for_chat("123456789")
+        self.assertEqual(resolved_student.id, self.student.id)
+        self.assertFalse(resolved_student.is_archived)
+
+    def test_get_student_for_chat_auto_links_from_user(self):
+        """User orqali kirgan talaba Student profiliga avtomatik bog'lanishini tekshirish."""
+        from academics.telegram_bot import get_student_for_chat
+        from academics.models import Student
+        from accounts.models import User
+
+        new_student = Student.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            first_name="Malika",
+            last_name="Aliyeva",
+            phone="+998935554433",
+            telegram_chat_id=None,
+            is_archived=False
+        )
+
+        User.objects.create_user(
+            username="malika_student",
+            first_name="Malika",
+            last_name="Aliyeva",
+            phone="+998935554433",
+            role="student",
+            organization=self.org,
+            branch=self.branch,
+            telegram_chat_id="77665544"
+        )
+
+        resolved = get_student_for_chat("77665544")
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, new_student.id)
+        new_student.refresh_from_db()
+        self.assertEqual(new_student.telegram_chat_id, "77665544")
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_payment_creates_telegram_receipt_for_student_and_parent(self, mock_send):
+        """To'lov qabul qilinganda talaba va ota-onaga avtomatik elektron chek borishini tekshirish."""
+        import datetime
+        from decimal import Decimal
+        from finance.models import Payment
+
+        payment = Payment.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            cashbox=self.cashbox,
+            student=self.student,
+            amount=Decimal("500000.00"),
+            payment_method="naqd",
+            date=datetime.date.today()
+        )
+
+        mock_send.assert_called()
+        recipient_chats = [str(call[0][1]) for call in mock_send.call_args_list]
+        self.assertIn("123456789", recipient_chats)
+        self.assertIn("987654321", recipient_chats)
+
+        # Check receipt content
+        student_msg = [call[0][2] for call in mock_send.call_args_list if str(call[0][1]) == "123456789"][0]
+        self.assertIn("TO'LOV QABUL QILINDI", student_msg)
+        self.assertIn("500 000 UZS", student_msg)
+        self.assertIn("Jasur Toshmatov", student_msg)
+        self.assertIn("Chilonzor", student_msg)

@@ -19,6 +19,22 @@ def normalize_phone(phone_str):
     return ""
 
 
+def is_likely_phone_number(text):
+    """
+    Matn faqat telefon raqami ekanligini tekshiradi (so'zlar/gaplar kelsa False qaytaradi)
+    """
+    if not text:
+        return False
+    text_clean = str(text).strip()
+    if not text_clean:
+        return False
+    allowed = set("0123456789+ -()[]")
+    if not set(text_clean).issubset(allowed):
+        return False
+    digits = "".join(c for c in text_clean if c.isdigit())
+    return 7 <= len(digits) <= 15
+
+
 def send_telegram_message(token, chat_id, text, reply_markup=None):
     if not token or not chat_id:
         return False
@@ -32,8 +48,26 @@ def send_telegram_message(token, chat_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     try:
         response = requests.post(url, json=payload, timeout=8)
-        if response.status_code != 200:
-            print(f"[TELEGRAM_API_ERROR] Status {response.status_code} sending to {chat_id}: {response.text}")
+        if response.status_code == 200:
+            return True
+
+        # HTML entity parse xatoligi bo'lsa (masalan <, >, & belgilari), oddiy matn ko'rinishida qayta yuborish
+        resp_text = response.text or ""
+        if response.status_code != 200 and ("can't parse entities" in resp_text.lower() or "entity" in resp_text.lower()):
+            import re
+            plain_text = re.sub(r'<[^>]*>', '', str(text))
+            payload_plain = {
+                "chat_id": chat_id,
+                "text": plain_text
+            }
+            if reply_markup:
+                payload_plain["reply_markup"] = reply_markup
+            retry_res = requests.post(url, json=payload_plain, timeout=8)
+            if retry_res.status_code == 200:
+                return True
+            print(f"[TELEGRAM_API_ERROR_PLAIN_RETRY] Status {retry_res.status_code} sending to {chat_id}: {retry_res.text}")
+
+        print(f"[TELEGRAM_API_ERROR] Status {response.status_code} sending to {chat_id}: {response.text}")
         return response.status_code == 200
     except Exception as e:
         print(f"[TELEGRAM_EXCEPTION] Error sending message to {chat_id}: {str(e)}")
@@ -460,6 +494,12 @@ def find_students_by_phone(phone_raw):
     norm = f"+998{last9}" if len(last9) == 9 else f"+{digits}"
 
     q = Q(phone__icontains=last9) | Q(phone=norm) | Q(phone=digits) | Q(phone=f"+{digits}")
+    
+    # 1. Faol (arxivlanmagan) talabalar ustuvor
+    st_active = Student.objects.filter(q, is_archived=False)
+    if st_active.exists():
+        return st_active
+
     st = Student.objects.filter(q)
     if st.exists():
         return st
@@ -470,6 +510,9 @@ def find_students_by_phone(phone_raw):
         if (last9 and s_p.endswith(last9)) or (digits and s_p == digits):
             matched_ids.append(s.id)
     if matched_ids:
+        active_matched = Student.objects.filter(id__in=matched_ids, is_archived=False)
+        if active_matched.exists():
+            return active_matched
         return Student.objects.filter(id__in=matched_ids)
     return Student.objects.none()
 
@@ -491,7 +534,55 @@ def find_parents_by_phone(phone_raw):
             f_ids.append(s.id)
         if (last9 and m_p.endswith(last9)) or (digits and m_p == digits):
             m_ids.append(s.id)
-    return Student.objects.filter(id__in=f_ids), Student.objects.filter(id__in=m_ids)
+            
+    f_active = Student.objects.filter(id__in=f_ids, is_archived=False)
+    f_qs = f_active if f_active.exists() else Student.objects.filter(id__in=f_ids)
+    
+    m_active = Student.objects.filter(id__in=m_ids, is_archived=False)
+    m_qs = m_active if m_active.exists() else Student.objects.filter(id__in=m_ids)
+    
+    return f_qs, m_qs
+
+
+def get_student_for_chat(chat_id):
+    """
+    Berilgan chat_id orqali talabani topish (faol talabalarni birinchi o'ringa qo'yadi
+    va User orqali avtomatik sinxronlaydi)
+    """
+    if not chat_id:
+        return None
+    str_cid = str(chat_id).strip()
+
+    # 1. Faol (arxivlanmagan) talabani qidirish
+    student = Student.objects.filter(
+        Q(telegram_chat_id=str_cid) | Q(telegram_chat_id=chat_id),
+        is_archived=False
+    ).order_by('-id').first()
+    if student:
+        return student
+
+    # 2. Arxivlangan bo'lsa ham mavjud talaba
+    student = Student.objects.filter(
+        Q(telegram_chat_id=str_cid) | Q(telegram_chat_id=chat_id)
+    ).order_by('-id').first()
+    if student:
+        return student
+
+    # 3. User (role='student') orqali qidirish va sinxronlash
+    matched_user = User.objects.filter(
+        Q(telegram_chat_id=str_cid) | Q(telegram_chat_id=chat_id),
+        role='student'
+    ).first()
+    if matched_user:
+        st = find_students_by_phone(matched_user.phone or matched_user.username).filter(is_archived=False).first()
+        if not st:
+            st = find_students_by_phone(matched_user.phone or matched_user.username).first()
+        if st:
+            st.telegram_chat_id = str_cid
+            st.save(update_fields=['telegram_chat_id'])
+            return st
+
+    return None
 
 
 def handle_appeal_satisfaction_callback(token, chat_id, callback_data):
@@ -660,10 +751,13 @@ def handle_telegram_update(bot_type, token, update_data):
     if contact:
         phone_raw = contact.get("phone_number")
     elif text and not text.startswith("/"):
-        digits_only = "".join(c for c in text if c.isdigit())
-        menu_prefixes = ["👤", "💰", "💳", "🧾", "📅", "📊", "🏆", "📝", "✉️", "👶", "📋", "🔔", "🌐", "🇺🇿", "🇷🇺", "⬅️", "ℹ️"]
-        if (len(digits_only) >= 7 and len(digits_only) <= 15) and not any(text.startswith(btn) for btn in menu_prefixes):
-            phone_raw = text
+        from django.core.cache import cache
+        state_key = f"student_appeal_state_{chat_id}"
+        in_appeal_state = bool(bot_type == 'student' and cache.get(state_key))
+        if not in_appeal_state and is_likely_phone_number(text):
+            menu_prefixes = ["👤", "💰", "💳", "🧾", "📅", "📊", "🏆", "📝", "✉️", "👶", "📋", "🔔", "🌐", "🇺🇿", "🇷🇺", "⬅️", "ℹ️"]
+            if not any(text.startswith(btn) for btn in menu_prefixes):
+                phone_raw = text
 
     if phone_raw:
         phone_normalized = normalize_phone(phone_raw)
@@ -674,10 +768,10 @@ def handle_telegram_update(bot_type, token, update_data):
 
             linked = False
             if students.exists():
-                students.update(telegram_chat_id=chat_id)
+                students.update(telegram_chat_id=str(chat_id))
                 linked = True
             if users.exists():
-                users.update(telegram_chat_id=chat_id)
+                users.update(telegram_chat_id=str(chat_id))
                 linked = True
 
             if linked:
@@ -693,13 +787,18 @@ def handle_telegram_update(bot_type, token, update_data):
 
             linked = False
             if students.exists():
-                students.update(telegram_chat_id=chat_id)
+                students.update(telegram_chat_id=str(chat_id))
                 linked = True
             if users.exists():
                 student_users = users.filter(role='student')
                 if student_users.exists():
-                    student_users.update(telegram_chat_id=chat_id)
-                linked = True
+                    student_users.update(telegram_chat_id=str(chat_id))
+                if not linked:
+                    for u in student_users:
+                        st = find_students_by_phone(u.phone or u.username)
+                        if st.exists():
+                            st.update(telegram_chat_id=str(chat_id))
+                            linked = True
 
             if linked:
                 msg = f"<b>Muvaffaqiyatli bog'landi!</b> 🎓\n\nSiz Student botidan muvaffaqiyatli ro'yxatdan o'tdingiz."
@@ -834,19 +933,20 @@ def handle_telegram_update(bot_type, token, update_data):
     # 2. Buyruqlar yoki menyu tugmalarini bosganda
     if text == "/start":
         # 🌟 Yangi: Agar foydalanuvchi allaqachon bog'langan bo'lsa menyuni qayta yuborish
-        if bot_type == 'student' and Student.objects.filter(telegram_chat_id=chat_id).exists():
-            student = Student.objects.filter(telegram_chat_id=chat_id).first()
-            msg = f"Assalomu alaykum, {student.first_name}! Xush kelibsiz."
-            menu = get_reply_keyboard([
-                ["👤 Profilim", "💰 Balans & Qarz"],
-                ["💳 Oxirgi to'lovlar", "🧾 Oxirgi to'lov cheki"],
-                ["📅 Dars jadvalim", "📊 Davomatlarim"],
-                ["🏆 Imtihon baholari", "📝 Uy vazifalarim"],
-                ["✉️ Kelgan xabarlar", "✍️ Murojaat yuborish"],
-                ["📋 Murojaatlarim"]
-            ])
-            send_telegram_message(token, chat_id, msg, menu)
-            return
+        if bot_type == 'student':
+            student = get_student_for_chat(chat_id)
+            if student:
+                msg = f"Assalomu alaykum, {student.first_name}! Xush kelibsiz."
+                menu = get_reply_keyboard([
+                    ["👤 Profilim", "💰 Balans & Qarz"],
+                    ["💳 Oxirgi to'lovlar", "🧾 Oxirgi to'lov cheki"],
+                    ["📅 Dars jadvalim", "📊 Davomatlarim"],
+                    ["🏆 Imtihon baholari", "📝 Uy vazifalarim"],
+                    ["✉️ Kelgan xabarlar", "✍️ Murojaat yuborish"],
+                    ["📋 Murojaatlarim"]
+                ])
+                send_telegram_message(token, chat_id, msg, menu)
+                return
         elif bot_type == 'reports' and User.objects.filter(telegram_chat_id=chat_id).exists():
             user = User.objects.filter(telegram_chat_id=chat_id).first()
             lang = getattr(user, 'telegram_language', 'uz') or 'uz'
@@ -995,7 +1095,7 @@ def handle_telegram_update(bot_type, token, update_data):
                 send_telegram_message(token, chat_id, reply, menu)
 
     elif bot_type == 'student':
-        student = Student.objects.filter(telegram_chat_id=chat_id).first()
+        student = get_student_for_chat(chat_id)
         if not student:
             msg = "Siz hali ro'yxatdan o'tmagansiz. Iltimos, telefon raqamingizni yuboring:"
             send_telegram_message(token, chat_id, msg, get_contact_keyboard())
@@ -1009,6 +1109,11 @@ def handle_telegram_update(bot_type, token, update_data):
             ["✉️ Kelgan xabarlar", "✍️ Murojaat yuborish"],
             ["📋 Murojaatlarim"]
         ])
+
+        if text in ["/start", "/menu"]:
+            msg = f"Assalomu alaykum, {student.first_name}! Xush kelibsiz."
+            send_telegram_message(token, chat_id, msg, menu)
+            return
 
         from django.core.cache import cache
         state_key = f"student_appeal_state_{chat_id}"
@@ -1084,16 +1189,17 @@ def handle_telegram_update(bot_type, token, update_data):
 
             # CRM tizimiga Notification yaratish
             try:
-                Notification.objects.create(
-                    organization=student.organization,
-                    user=None,
-                    title=f"Yangi {appeal_name.lower()}: {student.first_name} {student.last_name or ''}".strip(),
-                    message=(
-                        f"Talaba {student.first_name} {student.last_name or ''} ({student.phone}) dan yangi {appeal_name.lower()} keldi:\n\n"
-                        f"\"{text}\""
-                    ),
-                    type='student_appeal'
-                )
+                if student.organization:
+                    Notification.objects.create(
+                        organization=student.organization,
+                        user=None,
+                        title=f"Yangi {appeal_name.lower()}: {student.first_name} {student.last_name or ''}".strip(),
+                        message=(
+                            f"Talaba {student.first_name} {student.last_name or ''} ({student.phone}) dan yangi {appeal_name.lower()} keldi:\n\n"
+                            f"\"{text}\""
+                        ),
+                        type='student_appeal'
+                    )
             except Exception as e_notif:
                 print(f"[ERROR] Notification yaratishda xato: {e_notif}")
 
@@ -1111,7 +1217,7 @@ def handle_telegram_update(bot_type, token, update_data):
             return
 
         # Yangi murojaat boshlash
-        if text in ["✍️ Murojaat yuborish", "✍️ Murojaat", "/murojaat"]:
+        if text in ["✍️ Murojaat yuborish", "✍️ Murojaat", "/murojaat", "✍️ Taklif / Shikoyat yuborish", "✍️ Taklif yuborish", "✍️ Shikoyat yuborish"]:
             cache.set(state_key, "waiting_appeal_type", 600)
             type_keyboard = get_reply_keyboard([
                 ["🔴 Shikoyat", "💡 Taklif"],
@@ -1128,14 +1234,17 @@ def handle_telegram_update(bot_type, token, update_data):
             return
 
         if text == "👤 Profilim":
-            active_groups = StudentGroup.objects.filter(student=student, group__status='active')
-            groups_str = ", ".join([g.group.name for g in active_groups]) or "Guruh yo'q"
+            active_groups = StudentGroup.objects.filter(student=student, group__status='active').select_related('group')
+            groups_str = ", ".join([g.group.name for g in active_groups if g.group]) or "Guruh yo'q"
+            sinf_info = f"Sinfi: {student.school_class.name}\n" if (hasattr(student, 'school_class') and student.school_class) else ""
+            bal_val = int(student.balance or 0)
             res = (
                 f"<b>👤 Talaba Profili</b>\n\n"
                 f"Ism: {student.first_name} {student.last_name or ''}\n"
                 f"Telefon: {student.phone}\n"
+                f"{sinf_info}"
                 f"Guruhlar: {groups_str}\n"
-                f"Balans: {int(student.balance or 0):,} UZS\n".replace(",", " ")
+                f"Balans: {bal_val:,} UZS\n".replace(",", " ")
             )
             send_telegram_message(token, chat_id, res, menu)
 
@@ -1143,119 +1252,185 @@ def handle_telegram_update(bot_type, token, update_data):
             bal = student.balance or 0
             status_emoji = "✅" if bal >= 0 else "⚠️"
             debt = abs(bal) if bal < 0 else 0
+            p_date = student.payment_date.strftime("%d.%m.%Y") if (student.payment_date and hasattr(student.payment_date, 'strftime')) else (student.payment_date or 'Belgilanmagan')
             res = (
                 f"<b>💰 Balans va Qarz holati:</b>\n\n"
                 f"Joriy balans: <code>{int(bal):,} UZS</code> {status_emoji}\n"
                 f"Qarzdorlik: <code>{int(debt):,} UZS</code>\n"
-                f"To'lov kuni: {student.payment_date or 'Belgilanmagan'}"
+                f"To'lov kuni: {p_date}"
             ).replace(",", " ")
             send_telegram_message(token, chat_id, res, menu)
 
         elif text == "💳 Oxirgi to'lovlar":
             from finance.models import Payment
-            payments = Payment.objects.filter(student=student).order_by('-date')[:5]
+            payments = Payment.objects.filter(student=student).order_by('-date', '-id')[:5]
             if not payments.exists():
                 res = "Sizda to'lovlar tarixi topilmadi."
             else:
+                pm_names = {
+                    'naqd': "Naqd pul", 'cash': "Naqd pul",
+                    'plastik': "Plastik karta", 'card': "Plastik karta",
+                    'bank': "Bank o'tkazmasi"
+                }
                 res = "<b>💳 Oxirgi 5 ta to'lovingiz:</b>\n\n"
                 for p in payments:
-                    res += f"• {p.date}: <b>{int(p.amount or 0):,} UZS</b> ({p.payment_method})\n"
+                    p_date_str = p.date.strftime("%d.%m.%Y") if hasattr(p.date, 'strftime') else p.date
+                    pm = pm_names.get(str(p.payment_method or '').lower().strip(), p.payment_method or "To'lov")
+                    res += f"• {p_date_str}: <b>{int(p.amount or 0):,} UZS</b> ({pm})\n"
                 res = res.replace(",", " ")
             send_telegram_message(token, chat_id, res, menu)
 
         elif text == "🧾 Oxirgi to'lov cheki":
             from finance.models import Payment
-            p = Payment.objects.filter(student=student).order_by('-date').first()
+            p = Payment.objects.filter(student=student).order_by('-date', '-id').first()
             if not p:
                 res = "Oxirgi to'lov cheki topilmadi."
             else:
+                pm_names = {
+                    'naqd': "Naqd pul 💵", 'cash': "Naqd pul 💵",
+                    'plastik': "Plastik karta 💳", 'card': "Plastik karta 💳",
+                    'bank': "Bank o'tkazmasi 🏦"
+                }
+                pm_str = pm_names.get(str(p.payment_method or '').lower().strip(), p.payment_method or "Naqd")
                 org_name = student.organization.name if student.organization else "SmartTalim"
-                employee_name = p.employee.get_full_name() or p.employee.username if p.employee else "Tizim"
+                employee_name = f"{p.employee.first_name} {p.employee.last_name or ''}".strip() or p.employee.username if p.employee else "Kassa / Tizim"
+                p_date_str = p.date.strftime("%d.%m.%Y") if hasattr(p.date, 'strftime') else p.date
+                comment_line = f"\n💬 Izoh: {p.comment}" if p.comment else ""
                 res = (
                     f"<b>🧾 To'lov Cheki #{p.id}</b>\n"
                     f"🏢 Muassasa: <b>{org_name}</b>\n\n"
                     f"👤 Talaba: {student.first_name} {student.last_name or ''}\n"
                     f"💵 Summa: <code>{int(p.amount or 0):,} UZS</code>\n"
-                    f"📅 Sana: {p.date}\n"
-                    f"💳 To'lov turi: {p.payment_method}\n"
-                    f"🧑‍💼 Qabul qildi: {employee_name}\n"
-                    f"💬 Izoh: {p.comment or '-'}\n\n"
+                    f"📅 Sana: {p_date_str}\n"
+                    f"💳 To'lov turi: {pm_str}\n"
+                    f"🧑‍💼 Qabul qildi: {employee_name}"
+                    f"{comment_line}\n\n"
                     f"<i>SmartTalim tizimi orqali tasdiqlangan.</i>"
                 ).replace(",", " ")
             send_telegram_message(token, chat_id, res, menu)
 
         elif text == "📅 Dars jadvalim":
-            active_groups = StudentGroup.objects.filter(student=student, group__status='active')
+            active_groups = StudentGroup.objects.filter(student=student, group__status='active').select_related('group', 'group__course', 'group__teacher')
             if not active_groups.exists():
+                if hasattr(student, 'school_class') and student.school_class:
+                    res = (
+                        f"<b>📅 Sizning sinf jadvalingiz:</b>\n\n"
+                        f"🏫 Sinf: <b>{student.school_class.name}</b>\n"
+                    )
+                    send_telegram_message(token, chat_id, res, menu)
+                    return
                 send_telegram_message(token, chat_id, "Siz faol guruhlarda topilmadingiz.", menu)
                 return
 
             res = "<b>📅 Sizning dars jadvalingiz:</b>\n\n"
             for sg in active_groups:
                 g = sg.group
-                day_type_str = "Juft kunlar" if g.day_type == 'even' else "Toq kunlar"
-                teacher_str = g.teacher.get_full_name() if g.teacher else "Noma'lum"
+                if not g:
+                    continue
+                if g.days and isinstance(g.days, list) and len(g.days) > 0:
+                    day_type_str = ", ".join(str(d) for d in g.days)
+                elif g.day_type == 'even':
+                    day_type_str = "Juft kunlar (Se-Pay-Shan)"
+                elif g.day_type == 'odd':
+                    day_type_str = "Toq kunlar (Dush-Chor-Juma)"
+                elif g.day_type:
+                    day_type_str = str(g.day_type)
+                else:
+                    day_type_str = "Belgilanmagan"
+
+                teacher_str = (g.teacher.get_full_name() or g.teacher.username) if g.teacher else "Noma'lum"
+
+                time_str = "Belgilanmagan"
+                if g.start_time:
+                    st_str = g.start_time.strftime("%H:%M") if hasattr(g.start_time, 'strftime') else str(g.start_time)[:5]
+                    if g.end_time:
+                        et_str = g.end_time.strftime("%H:%M") if hasattr(g.end_time, 'strftime') else str(g.end_time)[:5]
+                        time_str = f"{st_str} - {et_str}"
+                    else:
+                        time_str = st_str
+
+                course_str = f" ({g.course.name})" if (g.course and g.course.name) else ""
                 res += (
-                    f"📚 <b>{g.name}</b> ({g.course.name if g.course else ''})\n"
-                    f"⏰ Vaqt: {g.start_time or 'Belgilanmagan'}\n"
+                    f"📚 <b>{g.name}</b>{course_str}\n"
+                    f"⏰ Vaqt: <b>{time_str}</b>\n"
                     f"🗓 Kunlar: {day_type_str}\n"
                     f"👤 O'qituvchi: {teacher_str}\n\n"
                 )
             send_telegram_message(token, chat_id, res, menu)
 
         elif text == "📊 Davomatlarim":
-            attendances = Attendance.objects.filter(student=student).order_by('-date')[:10]
+            attendances = Attendance.objects.filter(student=student).select_related('group').order_by('-date', '-id')[:10]
             if not attendances.exists():
                 res = "Davomat ma'lumotlari topilmadi."
             else:
                 res = "<b>📊 Oxirgi 10 ta davomatingiz:</b>\n\n"
                 for att in attendances:
                     status_text = "Keldi ✅" if att.status == 'present' else "Kelmadi ❌" if att.status == 'absent' else "Kechikdi ⚠️" if att.status == 'late' else "Sababli 📁"
-                    res += f"• {att.date}: {att.group.name} - <b>{status_text}</b>\n"
+                    d_str = att.date.strftime("%d.%m.%Y") if hasattr(att.date, 'strftime') else att.date
+                    group_name = att.group.name if att.group else "Dars"
+                    res += f"• {d_str}: <b>{group_name}</b> - {status_text}\n"
             send_telegram_message(token, chat_id, res, menu)
 
         elif text == "🏆 Imtihon baholari":
-            results = ExamResult.objects.filter(student=student).select_related('exam').order_by('-exam__date')[:10]
+            results = ExamResult.objects.filter(student=student).select_related('exam').order_by('-exam__date', '-id')[:10]
             if not results.exists():
                 res = "Baholar topilmadi."
             else:
                 res = "<b>🏆 Oxirgi imtihon baholaringiz:</b>\n\n"
                 for r in results:
-                    res += f"• {r.exam.name} ({r.exam.date}): <b>{int(r.score or 0)} ball</b>\n"
+                    exam_title = r.exam.name if r.exam else "Imtihon"
+                    exam_date_str = r.exam.date.strftime("%d.%m.%Y") if (r.exam and r.exam.date and hasattr(r.exam.date, 'strftime')) else (r.exam.date if r.exam else "")
+                    score_val = float(r.score or 0)
+                    score_str = f"{int(score_val)}" if score_val.is_integer() else f"{score_val:.1f}"
+                    date_info = f" ({exam_date_str})" if exam_date_str else ""
+                    res += f"• <b>{exam_title}</b>{date_info}: <b>{score_str} ball</b>\n"
             send_telegram_message(token, chat_id, res, menu)
 
         elif text == "📝 Uy vazifalarim":
             from academics.models import Homework
             active_groups = StudentGroup.objects.filter(student=student, group__status='active').values_list('group_id', flat=True)
-            homeworks = Homework.objects.filter(group_id__in=active_groups).order_by('-due_date')[:5]
+            homeworks = Homework.objects.filter(group_id__in=active_groups).select_related('group').order_by('-due_date', '-id')[:5]
             if not homeworks.exists():
                 res = "Uy vazifalari topilmadi."
             else:
                 res = "<b>📝 Uy vazifalari va topshiriqlar:</b>\n\n"
                 for hw in homeworks:
-                    due = hw.due_date.strftime("%d.%m.%Y") if hw.due_date else "Belgilanmagan"
+                    hw_due = hw.due_date or (hw.deadline.date() if hw.deadline else None)
+                    due_str = hw_due.strftime("%d.%m.%Y") if hw_due else "Belgilanmagan"
+                    task_text = hw.description or hw.text or 'Matn kiritilmagan'
+                    if len(task_text) > 150:
+                        task_text = task_text[:147] + "..."
+                    group_title = hw.group.name if hw.group else "Guruh"
                     res += (
-                        f"📚 <b>{hw.group.name}</b>: <u>{hw.title}</u>\n"
-                        f"💬 Topshiriq: {hw.text or 'Matn kiritilmagan'}\n"
-                        f"📅 Muddat: <b>{due}</b>\n\n"
+                        f"📚 <b>{group_title}</b>: <u>{hw.title}</u>\n"
+                        f"💬 Topshiriq: {task_text}\n"
+                        f"📅 Muddat: <b>{due_str}</b>\n\n"
                     )
             send_telegram_message(token, chat_id, res, menu)
 
         elif text == "✉️ Kelgan xabarlar":
             from communication.models import SMSMessages
-            sms_list = SMSMessages.objects.filter(recipient=student.phone).order_by('-sent_at')[:5]
+            digits = "".join(c for c in str(student.phone or '') if c.isdigit())
+            last9 = digits[-9:] if len(digits) >= 9 else digits
+            sms_q = Q(recipient=student.phone)
+            if last9:
+                sms_q |= Q(recipient__icontains=last9)
+            if digits:
+                sms_q |= Q(recipient=digits) | Q(recipient=f"+{digits}")
+
+            sms_list = SMSMessages.objects.filter(sms_q).order_by('-sent_at', '-id')[:5]
             if not sms_list.exists():
                 res = "Sizga yuborilgan xabarlar topilmadi."
             else:
                 res = "<b>✉️ Oxirgi 5 ta kelgan tizim xabarlari:</b>\n\n"
                 for sms in sms_list:
-                    date_str = sms.sent_at.strftime("%d.%m.%Y %H:%M")
+                    date_str = sms.sent_at.strftime("%d.%m.%Y %H:%M") if getattr(sms, 'sent_at', None) else ""
                     res += f"📅 {date_str}\n💬 {sms.message}\n\n"
             send_telegram_message(token, chat_id, res, menu)
 
         elif text in ["📋 Murojaatlarim", "📋 Murojaatlar"]:
             from academics.models import StudentAppeal
-            appeals = StudentAppeal.objects.filter(student=student).order_by('-created_at')[:5]
+            appeals = StudentAppeal.objects.filter(student=student).order_by('-created_at', '-id')[:5]
             if not appeals.exists():
                 send_telegram_message(token, chat_id, "Siz hali murojaat yubormagansiz.", menu)
             else:
@@ -1268,11 +1443,13 @@ def handle_telegram_update(bot_type, token, update_data):
                         'resolved': "Hal etildi ✅",
                         'rejected': "Rad etildi ❌"
                     }.get(ap.status, ap.status)
+                    ap_type = ap.get_appeal_type_display() if hasattr(ap, 'get_appeal_type_display') else ap.appeal_type
+                    msg_preview = (ap.message or "")[:100]
                     res += (
-                        f"📌 <b>Murojaat #{ap.id} ({ap.get_appeal_type_display()})</b>\n"
+                        f"📌 <b>Murojaat #{ap.id} ({ap_type})</b>\n"
                         f"📅 Sana: {date_str}\n"
                         f"📊 Holati: <b>{status_text}</b>\n"
-                        f"💬 Matn: <i>{ap.message[:100]}</i>\n"
+                        f"💬 Matn: <i>{msg_preview}</i>\n"
                     )
                     if ap.response:
                         res += f"✍️ <b>Ma'muriyat javobi:</b> <i>{ap.response}</i>\n"
@@ -1590,38 +1767,112 @@ def handle_telegram_update(bot_type, token, update_data):
             send_telegram_message(token, chat_id, res, menu)
 
         elif text in ["💰 Oylik va hisoblar", "💰 Зарплата и расчеты"]:
-            from finance.models import Salary, TeacherSalaryCalculation
-            salaries = Salary.objects.filter(employee=user).order_by('-date')[:5]
-            calcs = TeacherSalaryCalculation.objects.filter(teacher=user).order_by('-created_at')[:5]
-            
-            if lang == 'ru':
-                res = "<b>💰 Зарплата и финансовые расчеты:</b>\n\n"
-                res += "💵 <b>Последние выплаты:</b>\n"
-                if not salaries.exists():
-                    res += "  Выплаты не найдены.\n"
-                for s in salaries:
-                    status = "Оплачено ✅" if s.status == 'paid' else "В ожидании ⏳"
-                    res += f"  • {s.date}: <code>{int(s.amount or 0):,} UZS</code> - {status}\n"
-                
-                res += "\n📊 <b>Последние расчеты зарплаты:</b>\n"
-                if not calcs.exists():
-                    res += "  Расчеты не найдены.\n"
-                for c in calcs:
-                    res += f"  • Период: {c.period}\n    Начислено: <code>{int(c.calculated_amount or 0):,}</code> | Бонус: {int(c.bonus or 0):,} | Штраф: {int(c.penalty or 0):,}\n"
+            from django.utils import timezone
+            from decimal import Decimal
+            now = timezone.now()
+            current_period = f"{now.year}-{now.month:02d}"
+
+            if getattr(user, 'role', '') == 'teacher':
+                from finance.views import calculate_teacher_branch_balances
+                from academics.models import TeacherSalaryPayment
+                from finance.models import TeacherWorkLog, TeacherSalaryCalculation
+
+                bal_data = calculate_teacher_branch_balances(user, user.organization_id)
+                overall_bal = bal_data.get("overall_balance", Decimal('0.00'))
+                branches = bal_data.get("branches", [])
+
+                # Joriy oy dars soatlari (TeacherWorkLog)
+                work_logs = TeacherWorkLog.objects.filter(
+                    teacher=user,
+                    organization_id=user.organization_id,
+                    date__year=now.year,
+                    date__month=now.month
+                )
+                total_hours = sum(l.hours for l in work_logs)
+                total_work_amount = sum(l.total_amount for l in work_logs)
+                reg_hours = sum(l.hours for l in work_logs if not l.is_substitution)
+                sub_hours = sum(l.hours for l in work_logs if l.is_substitution)
+
+                # Oxirgi to'lovlar (TeacherSalaryPayment)
+                payments = TeacherSalaryPayment.objects.filter(
+                    teacher=user,
+                    organization_id=user.organization_id
+                ).order_by('-paid_at', '-created_at')[:5]
+
+                # Oxirgi oylik hisob-kitob (TeacherSalaryCalculation)
+                last_calc = TeacherSalaryCalculation.objects.filter(
+                    teacher=user,
+                    organization_id=user.organization_id
+                ).order_by('-period').first()
+
+                if lang == 'ru':
+                    res = "<b>💰 Зарплата и финансовые расчеты:</b>\n\n"
+                    res += f"📊 <b>Ваш текущий баланс к выплате:</b> <code>{int(overall_bal):,} UZS</code>\n"
+                    if branches:
+                        res += "🏢 <b>По филиалам:</b>\n"
+                        for b in branches:
+                            res += f"  • {b['branch_name']}: <code>{int(b['balance']):,} UZS</code>\n"
+                    
+                    if work_logs.exists():
+                        res += f"\n⏱ <b>Часы занятий за этот месяц ({current_period}):</b>\n"
+                        res += f"  • Всего проведено: <b>{total_hours} ч.</b> (<code>{int(total_work_amount):,} UZS</code>)\n"
+                        res += f"  • Основные уроки: <b>{reg_hours} ч.</b>\n"
+                        if sub_hours > 0:
+                            res += f"  • Дополнительные (замена): <b>{sub_hours} ч.</b>\n"
+                    elif last_calc:
+                        res += f"\n📊 <b>Расчет за {last_calc.period}:</b> <code>{int(last_calc.calculated_amount or 0):,} UZS</code>\n"
+
+                    res += "\n💵 <b>Последние выплаты:</b>\n"
+                    if not payments.exists():
+                        res += "  Выплаты пока не производились.\n"
+                    else:
+                        for p in payments:
+                            p_date = p.paid_at.strftime("%d.%m.%Y") if p.paid_at else p.created_at.strftime("%d.%m.%Y")
+                            res += f"  • {p_date} ({p.period}): <code>{int(p.amount or 0):,} UZS</code> ✅\n"
+                else:
+                    res = "<b>💰 Oylik va moliyaviy hisob-kitoblar:</b>\n\n"
+                    res += f"📊 <b>Joriy kutilayotgan qoldiq balansingiz:</b> <code>{int(overall_bal):,} UZS</code>\n"
+                    if branches:
+                        res += "🏢 <b>Filiallar bo'yicha:</b>\n"
+                        for b in branches:
+                            res += f"  • {b['branch_name']}: <code>{int(b['balance']):,} UZS</code>\n"
+                    
+                    if work_logs.exists():
+                        res += f"\n⏱ <b>Joriy oydagi dars soatlari ({current_period}):</b>\n"
+                        res += f"  • Jami o'tilgan dars: <b>{total_hours} soat</b> (<code>{int(total_work_amount):,} UZS</code>)\n"
+                        res += f"  • Asosiy darslar: <b>{reg_hours} soat</b>\n"
+                        if sub_hours > 0:
+                            res += f"  • Qo'shimcha (zamen) darslar: <b>{sub_hours} soat</b>\n"
+                    elif last_calc:
+                        res += f"\n📊 <b>{last_calc.period} oyi hisob-kitobi:</b> <code>{int(last_calc.calculated_amount or 0):,} UZS</code>\n"
+
+                    res += "\n💵 <b>Oxirgi olingan to'lovlar:</b>\n"
+                    if not payments.exists():
+                        res += "  To'lovlar hali amalga oshirilmagan.\n"
+                    else:
+                        for p in payments:
+                            p_date = p.paid_at.strftime("%d.%m.%Y") if p.paid_at else p.created_at.strftime("%d.%m.%Y")
+                            res += f"  • {p_date} ({p.period}): <code>{int(p.amount or 0):,} UZS</code> ✅\n"
+
             else:
-                res = "<b>💰 Oylik va moliyaviy hisob-kitoblar:</b>\n\n"
-                res += "💵 <b>Oxirgi oylik to'lovlari:</b>\n"
-                if not salaries.exists():
-                    res += "  To'lovlar topilmadi.\n"
-                for s in salaries:
-                    status = "To'langan ✅" if s.status == 'paid' else "Kutilmoqda ⏳"
-                    res += f"  • {s.date}: <code>{int(s.amount or 0):,} UZS</code> - {status}\n"
-                
-                res += "\n📊 <b>Oxirgi oylik hisob-kitoblari:</b>\n"
-                if not calcs.exists():
-                    res += "  Hisob-kitoblar topilmadi.\n"
-                for c in calcs:
-                    res += f"  • Davr: {c.period}\n    Hisoblandi: <code>{int(c.calculated_amount or 0):,}</code> | Bonus: {int(c.bonus or 0):,} | Jarima: {int(c.penalty or 0):,}\n"
+                # Xodimlar (o'qituvchi bo'lmaganlar) uchun
+                from finance.models import Salary
+                salaries = Salary.objects.filter(employee=user).order_by('-date')[:5]
+                if lang == 'ru':
+                    res = "<b>💰 Зарплата сотрудника:</b>\n\n"
+                    if not salaries.exists():
+                        res += "Выплаты не найдены.\n"
+                    for s in salaries:
+                        status = "Оплачено ✅" if s.status == 'paid' else "В ожидании ⏳"
+                        res += f"• {s.date}: <code>{int(s.amount or 0):,} UZS</code> - {status}\n"
+                else:
+                    res = "<b>💰 Xodim oylik to'lovlari:</b>\n\n"
+                    if not salaries.exists():
+                        res += "To'lovlar topilmadi.\n"
+                    for s in salaries:
+                        status = "To'langan ✅" if s.status == 'paid' else "Kutilmoqda ⏳"
+                        res += f"• {s.date}: <code>{int(s.amount or 0):,} UZS</code> - {status}\n"
+
             res = res.replace(",", " ")
             send_telegram_message(token, chat_id, res, menu)
 

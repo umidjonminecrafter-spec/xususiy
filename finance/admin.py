@@ -2,8 +2,61 @@ from django.contrib import admin
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
     Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, StaffSalaryPercent,
-    TeacherWorkLog
+    TeacherWorkLog, Cashbox, CashTransaction, Transaction, FinanceSetting, FinanceAction
 )
+
+
+@admin.register(Cashbox)
+class CashboxAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'balance', 'branch', 'organization', 'is_archived', 'created_at')
+    list_filter = ('is_archived', 'organization', 'branch')
+    search_fields = ('name',)
+    fields = ('name', 'balance', 'branch', 'organization', 'is_archived')
+
+    def save_model(self, request, obj, form, change):
+        if not obj.organization_id and not change:
+            user_org_id = getattr(request.user, 'organization_id', None)
+            if user_org_id:
+                obj.organization_id = user_org_id
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        user_org_id = getattr(request.user, 'organization_id', None)
+        if user_org_id:
+            return qs.filter(organization_id=user_org_id)
+        return qs.none()
+
+
+@admin.register(CashTransaction)
+class CashTransactionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'cashbox', 'transaction_type', 'payment_method', 'amount', 'date', 'category_name', 'organization', 'created_at')
+    list_filter = ('transaction_type', 'payment_method', 'date', 'organization')
+    search_fields = ('category_name', 'comment', 'cashbox__name')
+    date_hierarchy = 'date'
+
+
+@admin.register(Transaction)
+class TransactionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'cashbox', 'type', 'category', 'payment_method', 'amount', 'student', 'employee', 'created_at', 'organization', 'branch')
+    list_filter = ('type', 'category', 'payment_method', 'organization', 'branch')
+    search_fields = ('description', 'student__first_name', 'student__last_name', 'employee__username', 'cashbox__name')
+    date_hierarchy = 'created_at'
+
+
+@admin.register(FinanceSetting)
+class FinanceSettingAdmin(admin.ModelAdmin):
+    list_display = ('id', 'organization', 'is_bonus_enabled', 'is_penalty_enabled', 'is_auto_discount_enabled', 'extra_lesson_rate')
+    list_filter = ('organization', 'is_bonus_enabled', 'is_penalty_enabled', 'is_auto_discount_enabled')
+
+
+@admin.register(FinanceAction)
+class FinanceActionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'action_type', 'target_type', 'amount', 'student', 'employee', 'reason', 'created_at', 'organization')
+    list_filter = ('action_type', 'target_type', 'organization')
+    search_fields = ('reason', 'student__first_name', 'student__last_name', 'employee__username')
 
 
 @admin.register(StaffSalaryPercent)
