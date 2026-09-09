@@ -1906,6 +1906,19 @@ class TelegramStudentBotFixesTests(APITestCase):
             is_archived=False
         )
 
+        self.course = Course.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            name="Matematika",
+            price=Decimal("450000.00")
+        )
+        self.group = Group.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            name="Matematika 1-guruh",
+            course=self.course
+        )
+
     @patch('academics.telegram_bot.send_telegram_message')
     def test_appeal_with_numbers_not_intercepted_as_phone(self, mock_send):
         """Talaba murojaatida summalar yoki raqamlar bo'lganda telefon raqam deb tushunib xato qilmasligini tekshirish."""
@@ -2034,3 +2047,96 @@ class TelegramStudentBotFixesTests(APITestCase):
         self.assertIn("500 000 UZS", student_msg)
         self.assertIn("Jasur Toshmatov", student_msg)
         self.assertIn("Chilonzor", student_msg)
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_attendance_notification_sent_to_student_and_parent(self, mock_send):
+        """Yo'qlama qilinganda talaba va ota-onaga avtomatik telegram xabar borishini tekshirish."""
+        import datetime
+        from academics.models import Attendance
+
+        attendance = Attendance.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            student=self.student,
+            group=self.group,
+            date=datetime.date.today(),
+            status='present',
+            grade=5
+        )
+
+        mock_send.assert_called()
+        recipient_chats = [str(call[0][1]) for call in mock_send.call_args_list]
+        self.assertIn("123456789", recipient_chats)
+        self.assertIn("987654321", recipient_chats)
+
+        student_msgs = [call[0][2] for call in mock_send.call_args_list if str(call[0][1]) == "123456789"]
+        att_msgs = [m for m in student_msgs if "DAVOMAT QAYD ETILDI" in m]
+        self.assertTrue(len(att_msgs) > 0)
+        att_msg = att_msgs[0]
+        self.assertIn("Darsda qatnashdi (Keldi)", att_msg)
+        self.assertIn("Matematika 1-guruh", att_msg)
+        self.assertIn("5 ball", att_msg)
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_future_attendance_does_not_send_notification(self, mock_send):
+        """Kelajakdagi darslar uchun oldindan yaratilgan placeholderlarda davomat xabari bormasligini tekshirish."""
+        import datetime
+        from academics.models import Attendance
+
+        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+        Attendance.objects.create(
+            organization=self.org,
+            branch=self.branch,
+            student=self.student,
+            group=self.group,
+            date=tomorrow,
+            status='absent'
+        )
+
+        # Kelajakdagi dars uchun hech qanday davomat xabari bormasligi kerak
+        att_msgs = [call[0][2] for call in mock_send.call_args_list if "DAVOMAT QAYD ETILDI" in call[0][2]]
+        self.assertEqual(len(att_msgs), 0)
+        mock_send.assert_not_called()
+
+    @patch('academics.telegram_bot.send_telegram_message')
+    def test_group_attendance_view_flexible_status_notifies_bot(self, mock_send):
+        """GroupAttendanceView orqali 'keldi' / 'bor' / 'present' yuborilganda botga xabar borishini tekshirish."""
+        import datetime
+        from accounts.models import User
+        from academics.models import Attendance
+
+        admin_user = User.objects.create_user(
+            username="admin_att_user",
+            password="testpassword123",
+            role="admin",
+            organization=self.org,
+            branch=self.branch
+        )
+        self.client.force_authenticate(user=admin_user)
+
+        today_str = datetime.date.today().isoformat()
+        response = self.client.post(
+            f"/api/v1/academics/attendances/group/{self.group.id}/",
+            data=[{
+                "student": self.student.id,
+                "date": today_str,
+                "status": "keldi",
+                "grade": 4,
+                "reason": "Yaxshi qatnashdi"
+            }],
+            format="json"
+        )
+        self.assertIn(response.status_code, [200, 201])
+
+        att = Attendance.objects.filter(group=self.group, student=self.student).last()
+        self.assertIsNotNone(att)
+        self.assertEqual(att.status, "present")
+        self.assertEqual(att.grade, 4)
+
+        student_msgs = [call[0][2] for call in mock_send.call_args_list if str(call[0][1]) == "123456789"]
+        att_msgs = [m for m in student_msgs if "DAVOMAT QAYD ETILDI" in m]
+        self.assertTrue(len(att_msgs) > 0)
+        self.assertIn("Darsda qatnashdi (Keldi)", att_msgs[0])
+        self.assertIn("4 ball", att_msgs[0])
+        self.assertIn("Yaxshi qatnashdi", att_msgs[0])
+

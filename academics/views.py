@@ -1634,7 +1634,16 @@ class GroupAttendanceView(TenantViewSetMixin, APIView):
                     date = timezone.now().date()
 
             status_val = item.get('status')
-            if not status_val:
+            status_str = str(status_val or '').lower().strip()
+            if status_str in ['keldi', 'bor', 'ha', 'true', '1', 'present']:
+                status_val = 'present'
+            elif status_str in ['kelmadi', 'yoq', "yo'q", 'false', '0', 'absent']:
+                status_val = 'absent'
+            elif status_str in ['kechikdi', 'kech', 'late']:
+                status_val = 'late'
+            elif status_str in ['sababli', 'excused']:
+                status_val = 'excused'
+            elif not status_val:
                 is_present = item.get('is_present')
                 reason = item.get('reason')
                 if is_present is True:
@@ -2187,7 +2196,7 @@ class AttendanceViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 "detail": f"Ushbu sana ({attendance_date}) dam olish kuni (Bayram) deb e'lon qilingan! Davomat olib bo'lmaydi."
             })
 
-        serializer.save()
+        super().perform_create(serializer)
 
     def get_queryset(self):
         queryset = super().get_queryset()

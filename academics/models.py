@@ -280,6 +280,11 @@ class Attendance(TenantModel):
                 self.branch_id = self.group.branch_id
             if not self.organization_id and self.group.organization_id:
                 self.organization_id = self.group.organization_id
+        if self.student:
+            if not self.branch_id and self.student.branch_id:
+                self.branch_id = self.student.branch_id
+            if not self.organization_id and self.student.organization_id:
+                self.organization_id = self.student.organization_id
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -1517,71 +1522,113 @@ def notify_homework_created(sender, instance, created, **kwargs):
 def notify_attendance_saved(sender, instance, created, **kwargs):
     if instance.student and instance.group:
         try:
-            from academics.telegram_bot import send_telegram_message, get_student_bot_token
-            from organizations.models import TelegramNotificationSetting
+            from django.utils import timezone as django_timezone
+
+            # Kelgusidagi darslar (placeholderlar) uchun avtomatik xabar yubormaymiz
+            today = django_timezone.now().date()
+            if instance.date and instance.date > today:
+                return
+
+            from academics.telegram_bot import send_telegram_message, get_student_bot_token, get_parent_bot_token
             from accounts.models import User
             from django.db.models import Q
-            from django.utils import timezone as django_timezone
 
             student = instance.student
             group = instance.group
+            org = instance.organization or getattr(group, 'organization', None) or getattr(student, 'organization', None)
 
-            status_map = {
-                'present': "✅ Keldi (Darsda)",
-                'late': "⏰ Kechikdi",
-                'absent': "❌ Kelmadi (Sababsiz)",
-                'excused': "📋 Sababli kelmadi"
-            }
-            status_text = status_map.get(instance.status, instance.status)
-
-            teacher_name = "O'qituvchi"
-            if group.teacher:
-                teacher_name = group.teacher.get_full_name() or group.teacher.username
-
-            created_at = getattr(instance, 'created_at', None) or django_timezone.now()
-            exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
-
-            grade_str = str(instance.grade) if instance.grade is not None else "Qo'yilmagan"
-            reason_str = instance.reason if instance.reason else "Yo'q"
-
+            # 1. Talabaning Telegram chat ID sini aniqlash
             student_chat_id = getattr(student, 'telegram_chat_id', None)
             if not student_chat_id and student.phone:
                 digits = "".join(c for c in student.phone if c.isdigit())
                 last_9 = digits[-9:] if len(digits) >= 9 else digits
-                matched_user = User.objects.filter(
-                    Q(phone=student.phone) | Q(username=student.phone) |
-                    (Q(phone__icontains=last_9) if last_9 else Q()) |
-                    (Q(username__icontains=last_9) if last_9 else Q())
-                ).filter(role='student', telegram_chat_id__isnull=False).first()
-                if matched_user:
-                    student_chat_id = matched_user.telegram_chat_id
+                if last_9:
+                    other_st = Student.objects.filter(
+                        phone__icontains=last_9,
+                        telegram_chat_id__isnull=False
+                    ).exclude(telegram_chat_id='').order_by('-id').first()
+                    if other_st and other_st.telegram_chat_id:
+                        student_chat_id = other_st.telegram_chat_id
 
+                if not student_chat_id:
+                    matched_user = User.objects.filter(
+                        (Q(phone=student.phone) | Q(username=student.phone) |
+                         (Q(phone__icontains=last_9) if last_9 else Q()) |
+                         (Q(username__icontains=last_9) if last_9 else Q())),
+                        telegram_chat_id__isnull=False
+                    ).exclude(telegram_chat_id='').first()
+                    if matched_user and matched_user.telegram_chat_id:
+                        student_chat_id = matched_user.telegram_chat_id
+
+                # Kelgusidagi so'rovlar uchun student yozuviga saqlab qo'yish
+                if student_chat_id and not student.telegram_chat_id:
+                    student.telegram_chat_id = str(student_chat_id)
+                    student.save(update_fields=['telegram_chat_id'])
+
+            status_map = {
+                'present': "✅ Darsda qatnashdi (Keldi)",
+                'late': "⏰ Darsga kechikib keldi",
+                'absent': "❌ Darsga kelmadi (Sababsiz)",
+                'excused': "📋 Darsga qatnashmadi (Sababli)"
+            }
+            status_text = status_map.get(str(instance.status).lower(), instance.status)
+
+            teacher_name = "O'qituvchi"
+            if group.teacher:
+                teacher_name = group.teacher.get_full_name() or group.teacher.username
+            else:
+                from academics.models import GroupTeacher
+                gt = GroupTeacher.objects.filter(group=group).select_related('teacher').first()
+                if gt and gt.teacher:
+                    teacher_name = gt.teacher.get_full_name() or gt.teacher.username
+
+            course_name = group.course.name if getattr(group, 'course', None) else ""
+            group_display = f"{group.name} ({course_name})" if course_name else group.name
+
+            date_str = instance.date.strftime("%d.%m.%Y") if hasattr(instance.date, 'strftime') else str(instance.date)
+            exact_time = django_timezone.localtime(django_timezone.now()).strftime("%d.%m.%Y %H:%M")
+
+            grade_line = f"⭐ <b>Dars bahosi:</b> {instance.grade} ball\n" if instance.grade is not None else ""
+            reason_line = f"📝 <b>Sabab / Izoh:</b> {instance.reason}\n" if instance.reason else ""
+            balance_val = int(student.balance or 0)
+            balance_str = f"{balance_val:,} UZS".replace(",", " ")
+            org_name = org.name if org else "SmartTalim"
+
+            # 1. Talaba botiga yuborish
             if student_chat_id:
-                student_token = get_student_bot_token(instance.organization)
+                student_token = get_student_bot_token(org)
                 st_msg = (
-                    f"<b>📊 Davomat Qayd Etildi!</b>\n\n"
-                    f"👥 <b>Guruh:</b> {group.name}\n"
+                    f"<b>📊 DAVOMAT QAYD ETILDI!</b>\n\n"
+                    f"Hurmatli <b>{student.first_name}</b>, dars davomatingiz belgilandi:\n\n"
+                    f"🏢 <b>O'quv markaz:</b> {org_name}\n"
+                    f"👥 <b>Guruh / Fan:</b> {group_display}\n"
                     f"📌 <b>Holatingiz:</b> {status_text}\n"
-                    f"📅 <b>Dars sanasi:</b> {instance.date}\n"
-                    f"⭐ <b>Dars bahosi:</b> {grade_str}\n"
-                    f"📝 <b>Izoh:</b> {reason_str}\n"
+                    f"📅 <b>Dars sanasi:</b> {date_str}\n"
+                    f"{grade_line}"
+                    f"{reason_line}"
                     f"👤 <b>O'qituvchi:</b> {teacher_name}\n"
-                    f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
+                    f"💰 <b>Joriy balansingiz:</b> <code>{balance_str}</code>\n"
+                    f"🕒 <b>Qayd etilgan vaqt:</b> <code>{exact_time}</code>\n\n"
+                    f"<i>SmartTalim tizimi orqali tasdiqlangan.</i>"
                 )
                 send_telegram_message(student_token, student_chat_id, st_msg)
 
-            setting = TelegramNotificationSetting.objects.filter(organization=instance.organization).first()
-            parent_token = setting.parent_bot_token or setting.bot_token if setting else None
-            if parent_token:
+            # 2. Ota-onaning botiga yuborish
+            parent_token = get_parent_bot_token(org)
+            if parent_token and (student.father_telegram_chat_id or student.mother_telegram_chat_id):
                 parent_msg = (
-                    f"<b>📊 Farzandingiz Davomati Qayd Etildi!</b>\n\n"
-                    f"👶 <b>Farzand:</b> {student.first_name} {student.last_name or ''}\n"
-                    f"👥 <b>Guruh:</b> {group.name}\n"
+                    f"<b>📊 FARZANDINGIZ DAVOMATI QAYD ETILDI!</b>\n\n"
+                    f"Hurmatli ota-ona, farzandingiz <b>{student.first_name} {student.last_name or ''}</b> ning dars davomati belgilandi:\n\n"
+                    f"🏢 <b>O'quv markaz:</b> {org_name}\n"
+                    f"👥 <b>Guruh / Fan:</b> {group_display}\n"
                     f"📌 <b>Holati:</b> {status_text}\n"
-                    f"📅 <b>Dars sanasi:</b> {instance.date}\n"
-                    f"⭐ <b>Baho:</b> {grade_str}\n"
+                    f"📅 <b>Dars sanasi:</b> {date_str}\n"
+                    f"{grade_line}"
+                    f"{reason_line}"
                     f"👤 <b>O'qituvchi:</b> {teacher_name}\n"
-                    f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
+                    f"💰 <b>Farzandingiz balansi:</b> <code>{balance_str}</code>\n"
+                    f"🕒 <b>Qayd etilgan vaqt:</b> <code>{exact_time}</code>\n\n"
+                    f"<i>SmartTalim tizimi orqali tasdiqlangan.</i>"
                 )
                 if student.father_telegram_chat_id:
                     send_telegram_message(parent_token, student.father_telegram_chat_id, parent_msg)
