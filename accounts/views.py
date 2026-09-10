@@ -172,13 +172,22 @@ class EmployeeViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Xodimlar sozlamalari'
     serializer_class = EmployeeSerializer
     queryset = User.objects.all()
-    pagination_class = None
 
     def get_queryset(self):
+        from django.db.models import Q
         qs = super().get_queryset().exclude(is_superuser=True).exclude(role='student')
         role = self.request.query_params.get('role')
         if role:
-            qs = qs.filter(role=role)
+            if role.lower() in ['teacher', "o'qituvchi", "oqituvchi", "ustoz"]:
+                qs = qs.filter(
+                    Q(role__iexact='teacher') |
+                    Q(position__icontains="o'qituvchi") |
+                    Q(position__icontains="oqituvchi") |
+                    Q(position__icontains="teacher") |
+                    Q(position__icontains="ustoz")
+                )
+            else:
+                qs = qs.filter(role=role)
         return qs
 
     def destroy(self, request, *args, **kwargs):

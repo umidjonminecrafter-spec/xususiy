@@ -30,7 +30,7 @@ class TenantViewSetMixin:
     def get_branch_id(self):
         """
         Get branch ID from query parameters or headers (set by frontend navbar),
-        request.data (during POST/PUT/PATCH), or fallback to the user's assigned branch.
+        falling back to the user's assigned branch.
         """
         # 1. Check query parameters
         branch_id = self.request.query_params.get('branch') or self.request.query_params.get('branch_id')
@@ -41,40 +41,19 @@ class TenantViewSetMixin:
         if not branch_id:
             branch_id = self.request.META.get('HTTP_X_BRANCH_ID')
         
-        # 3. Check request.data (for POST/PUT/PATCH calls)
-        if not branch_id and hasattr(self.request, 'data'):
-            try:
-                data = self.request.data
-                if isinstance(data, dict):
-                    branch_id = data.get('branch') or data.get('branch_id')
-            except Exception:
-                pass
-
-        # 4. Fallback to user's branch
+        # 3. Fallback to user's branch
         if not branch_id and self.request.user and self.request.user.is_authenticated:
             branch_id = getattr(self.request.user, 'branch_id', None)
         
-        # 5. Validate branch belongs to user's organization & check user permissions
+        # 4. Validate branch belongs to user's organization
         if branch_id:
             org_id = self.get_organization_id()
             if org_id:
                 try:
-                    b_id = branch_id.id if hasattr(branch_id, 'id') else int(branch_id)
-                    branch = Branch.objects.get(id=b_id, organization_id=org_id)
-                    
-                    # Agar foydalanuvchi superuser, owner yoki admin bo'lmasa, faqat o'ziga biriktirilgan filialga cheklaymiz
-                    u = self.request.user
-                    if u and u.is_authenticated and not u.is_superuser and getattr(u, 'role', '') not in ('owner', 'admin'):
-                        assigned_branch_ids = set()
-                        if u.branch_id:
-                            assigned_branch_ids.add(u.branch_id)
-                        if hasattr(u, 'branches'):
-                            assigned_branch_ids.update(u.branches.values_list('id', flat=True))
-                        if assigned_branch_ids and branch.id not in assigned_branch_ids:
-                            return u.branch_id or branch.id
-
+                    branch = Branch.objects.get(id=branch_id, organization_id=org_id)
                     return branch.id
-                except (Branch.DoesNotExist, ValueError, TypeError):
+                except (Branch.DoesNotExist, ValueError):
+                    # Branch doesn't belong to this org or is invalid
                     return None
             return branch_id
         
@@ -104,25 +83,22 @@ class TenantViewSetMixin:
                         queryset = queryset.filter(
                             db_models.Q(branches=branch_id) |
                             db_models.Q(branch_id=branch_id) |
-                            db_models.Q(role='owner')
+                            db_models.Q(role='owner') |
+                            db_models.Q(branch__isnull=True, branches__isnull=True)
                         ).distinct()
                     else:
-                        # Tashkilot miqyosidagi umumiy sozlamalar (barcha filiallar uchun umumiy bo'lishi mumkin bo'lgan kataloglar)
-                        global_catalog_models = [
-                            'Subscription', 'Tariff', 'ReceiptSetting', 'BackupSetting',
-                            'StudentFieldSetting', 'FAQCategory', 'FAQItem', 'SmsProvider',
-                            'ExamSetting', 'TelegramNotificationSetting'
+                        # Model lists that must be strictly isolated to the branch
+                        strict_models = [
+                            'Group', 'Room', 'LessonSchedule', 'Payment', 'Expense', 
+                            'Sale', 'Bonus', 'Fine', 'Salary', 'TeacherSalaryPayment',
+                            'StudentGroup', 'FinanceAction', 'Cashbox', 'Transaction'
                         ]
-                        if model.__name__ in global_catalog_models:
+                        if model.__name__ in strict_models:
+                            queryset = queryset.filter(branch_id=branch_id)
+                        else:
                             queryset = queryset.filter(
                                 db_models.Q(branch_id=branch_id) | db_models.Q(branch__isnull=True)
                             )
-                        else:
-                            # BARCHA OPERATSION MODELLAR (Student, Group, Lead, Payment, Expense,
-                            # Attendance, LessonSchedule, GroupLesson, Homework, Exam, Room,
-                            # Building, SchoolClass, ClassStudent, Parent, Cashbox, Transaction,
-                            # Board, Item, StudentGroup va boshqalar) qat'iy filialga ajratiladi!
-                            queryset = queryset.filter(branch_id=branch_id)
 
         return queryset
 
@@ -148,16 +124,13 @@ class TenantViewSetMixin:
 
         # Inject branch
         if hasattr(model_class, 'branch'):
-            # Faqat serializerda branch berilmagan bo'lsa avtomatik kiritamiz
-            branch_val = getattr(serializer, 'validated_data', {}).get('branch', None)
-            if not branch_val:
-                branch_id = self.get_branch_id()
-                if branch_id:
-                    try:
-                        branch = Branch.objects.get(id=branch_id)
-                        extra_kwargs['branch'] = branch
-                    except Branch.DoesNotExist:
-                        pass  # Don't fail — branch is optional
+            branch_id = self.get_branch_id()
+            if branch_id:
+                try:
+                    branch = Branch.objects.get(id=branch_id)
+                    extra_kwargs['branch'] = branch
+                except Branch.DoesNotExist:
+                    pass  # Don't fail — branch is optional
 
         if extra_kwargs:
             serializer.save(**extra_kwargs)

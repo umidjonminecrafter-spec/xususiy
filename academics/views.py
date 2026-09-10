@@ -5,7 +5,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.filters import SearchFilter
 from organizations.mixins import TenantViewSetMixin
 from .models import StudentFieldSetting, GroupLesson
 from .serializers import StudentFieldSettingSerializer, StudentProfileSerializer, RescheduleLessonSerializer, \
@@ -14,8 +14,7 @@ from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, LessonSchedule,
     BalanceHistory, Exam, ExamResult, LeaveReason, LessonTime, OnlineLesson, StudentGroupLeave, StudentPricing,
     StudentArchive, Holiday, Homework,
-    BotMessageTemplate, CourseMaterial,
-    Building, SchoolClass, ClassStudent, Parent, StudentAddress, StudentAppeal
+    BotMessageTemplate, CourseMaterial
 )
 from organizations.mixins import TenantViewSetMixin
 from organizations.permissions import (
@@ -27,9 +26,7 @@ from academics.serializers import (
     LessonScheduleSerializer, StudentBalanceSerializer, BalanceHistorySerializer, ExamSerializer,
     ExamResultSerializer, LeaveReasonSerializer, LessonTimeSerializer, OnlineLessonSerializer,
     StudentGroupLeaveSerializer, StudentPricingSerializer, StudentArchiveSerializer, HolidaySerializer,
-    HomeworkSerializer, BotMessageTemplateSerializer, CourseMaterialSerializer,
-    BuildingSerializer, SchoolClassSerializer, ClassStudentSerializer, ParentSerializer, StudentAddressSerializer,
-    StudentAppealSerializer
+    HomeworkSerializer, BotMessageTemplateSerializer, CourseMaterialSerializer
 )
 
 from .models import TelegramVerification, Student
@@ -195,31 +192,16 @@ class RoomViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Talabalar'
-    queryset = Student.objects.all().select_related('school_class')
+    queryset = Student.objects.all()
     serializer_class = StudentSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
-    search_fields = ['first_name', 'last_name', 'phone', 'email', 'school_class__grade_level', 'school_class__section']
-    pagination_class = None
+    search_fields = ['first_name', 'last_name', 'phone', 'email']
 
     def get_queryset(self):
-        is_archived_param = self.request.query_params.get('is_archived') or self.request.query_params.get('archived')
-        if is_archived_param and str(is_archived_param).lower() in ('true', '1'):
-            queryset = super().get_queryset().filter(is_archived=True)
-        else:
-            queryset = super().get_queryset().exclude(is_archived=True)
+        queryset = super().get_queryset().exclude(is_archived=True)
         group_id = self.request.query_params.get('group') or self.request.query_params.get('group_id')
         if group_id:
             queryset = queryset.filter(student_groups__group_id=group_id)
-
-        # 🌟 Sinf (SchoolClass) bo'yicha filterlash
-        class_id = (
-            self.request.query_params.get('school_class') or
-            self.request.query_params.get('school_class_id') or
-            self.request.query_params.get('class_id') or
-            self.request.query_params.get('class')
-        )
-        if class_id:
-            queryset = queryset.filter(school_class_id=class_id)
 
         # 🌟 Yangi: ID bo'yicha filterlash
         student_id = self.request.query_params.get('id')
@@ -569,109 +551,30 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             ]
         }, status=status.HTTP_200_OK)
 
-    @decorators.action(detail=True, methods=['post'])
-    def archive(self, request, pk=None):
-        student = self.get_object()
-        reason = request.data.get('reason') or "Arxivlangan"
-        comment = request.data.get('comment') or ""
-        StudentArchive.objects.create(
-            organization=student.organization,
-            branch=student.branch,
-            first_name=student.first_name,
-            last_name=student.last_name,
-            phone=student.phone,
-            email=student.email,
-            role="Student",
-            reason=reason,
-            comment=comment,
-            archived_by=request.user.get_full_name() or request.user.username if request.user.is_authenticated else "Tizim"
-        )
-        student.is_archived = True
-        student.save(update_fields=['is_archived', 'updated_at'])
-        from accounts.models import User
-        if student.phone:
-            username = f"{student.phone}_{student.organization_id}"
-            qs = User.objects.filter(username=username, role='student')
-            if not qs.exists():
-                qs = User.objects.filter(username=student.phone, role='student')
-            qs.update(is_active=False)
-        return Response({"status": "archived", "id": student.id, "is_archived": True}, status=status.HTTP_200_OK)
-
-    @decorators.action(detail=True, methods=['post'])
-    def restore(self, request, pk=None):
-        student = self.get_object()
-        student.is_archived = False
-        student.save(update_fields=['is_archived', 'updated_at'])
-        from accounts.models import User
-        if student.phone:
-            username = f"{student.phone}_{student.organization_id}"
-            qs = User.objects.filter(username=username, role='student')
-            if not qs.exists():
-                qs = User.objects.filter(username=student.phone, role='student')
-            qs.update(is_active=True)
-        StudentArchive.objects.filter(phone=student.phone, organization=student.organization).delete()
-        return Response({"status": "restored", "id": student.id, "is_archived": False}, status=status.HTTP_200_OK)
-
     @decorators.action(detail=False, methods=['post'], url_path='import-excel')
     def import_excel(self, request):
-        import csv
-        import datetime
-        from decimal import Decimal, InvalidOperation
+        from decimal import Decimal
         from io import BytesIO
-        import random
-        import re
-
-        from academics.models import (
-            ClassStudent, Group, Parent, SchoolClass, Student, StudentAddress, StudentGroup
-        )
-
+        import csv
+        
         org_id = self.get_organization_id()
         if not org_id:
             return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        branch_id = (
-            self.get_branch_id()
-            or request.data.get('branch')
-            or request.data.get('branch_id')
-            or request.query_params.get('branch_id')
-            or request.query_params.get('branch')
-        )
-
-        default_class_id = (
-            request.data.get('school_class')
-            or request.data.get('school_class_id')
-            or request.data.get('class_id')
-            or request.data.get('class')
-            or request.query_params.get('school_class')
-            or request.query_params.get('school_class_id')
-            or request.query_params.get('class_id')
-            or request.query_params.get('class')
-        )
-
-        default_group_id = (
-            request.data.get('group')
-            or request.data.get('group_id')
-            or request.query_params.get('group')
-            or request.query_params.get('group_id')
-        )
-
+            
         file_obj = request.FILES.get('file')
         if not file_obj:
             return Response({"detail": "No file uploaded. Please upload a file with key 'file'."}, status=status.HTTP_400_BAD_REQUEST)
-
+            
         filename = file_obj.name.lower()
-        raw_rows = []
-
-        # -------------------------------------------------------------
-        # 1. READ FILE CONTENT (CSV or XLSX/XLS)
-        # -------------------------------------------------------------
+        rows_data = []
+        
         if filename.endswith('.csv'):
             try:
-                decoded_file = file_obj.read().decode('utf-8-sig', errors='ignore').splitlines()
-                reader = csv.reader(decoded_file)
-                for r in reader:
-                    if any(cell.strip() for cell in r if cell):
-                        raw_rows.append([str(c).strip() for c in r])
+                decoded_file = file_obj.read().decode('utf-8-sig').splitlines()
+                reader = csv.DictReader(decoded_file)
+                for row in reader:
+                    cleaned_row = {k.strip().lower() if k else '': v.strip() if v else '' for k, v in row.items()}
+                    rows_data.append(cleaned_row)
             except Exception as e:
                 return Response({"detail": f"CSV faylni o'qishda xatolik: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
         elif filename.endswith(('.xlsx', '.xls')):
@@ -679,518 +582,126 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 import openpyxl
                 wb = openpyxl.load_workbook(filename=BytesIO(file_obj.read()), data_only=True)
                 sheet = wb.active
-                for r in range(1, sheet.max_row + 1):
-                    row_cells = []
-                    has_val = False
-                    for c in range(1, sheet.max_column + 1):
-                        val = sheet.cell(row=r, column=c).value
+                
+                headers = []
+                for cell in sheet[1]:
+                    if cell.value is not None:
+                        headers.append(str(cell.value).strip().lower())
+                    else:
+                        headers.append('')
+                
+                for r in range(2, sheet.max_row + 1):
+                    row_data = {}
+                    has_data = False
+                    for c, header in enumerate(headers):
+                        if not header:
+                            continue
+                        val = sheet.cell(row=r, column=c+1).value
                         if val is not None:
-                            has_val = True
-                            row_cells.append(val)
+                            has_data = True
+                            row_data[header] = str(val).strip()
                         else:
-                            row_cells.append('')
-                    if has_val:
-                        raw_rows.append(row_cells)
+                            row_data[header] = ''
+                    if has_data:
+                        rows_data.append(row_data)
             except Exception as e:
                 return Response({"detail": f"Excel faylni o'qishda xatolik: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
         else:
             return Response({"detail": "Faqat .xlsx, .xls yoki .csv fayllar qo'llab-quvvatlanadi."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not raw_rows:
-            return Response({"detail": "Fayl bo'sh yoki unda ma'lumot topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # -------------------------------------------------------------
-        # 2. INTELLIGENT HEADER DETECTION (within first 10 rows)
-        # -------------------------------------------------------------
-        header_keywords = {
-            'ism', 'name', 'first', 'familiya', 'surname', 'last', 'fio', 'fish', 'f.i.sh', 'f.i.o',
-            'telefon', 'phone', 'tel', 'aloqa', 'sinf', 'class', 'guruh', 'group', 'balans', 'balance',
-            'sana', 'birth', 'tugilgan', "tug'ilgan", 'ota', 'ona', 'manzil', 'address', 'talaba', "o'quvchi",
-            'фио', 'ф.и.о', 'исм', 'фамилия', 'телефон', 'синф', 'класс', 'гуруҳ'
-        }
-
-        def normalize_header(h):
-            s = str(h).strip().lower()
-            s = re.sub(r'[\r\n\t]+', ' ', s)
-            s = re.sub(r'[^a-z0-9а-яёўқғҳ\'_ ]', '', s)
-            return re.sub(r'\s+', ' ', s).strip()
-
-        header_row_idx = 0
-        best_score = -1
-
-        for idx, row in enumerate(raw_rows[:10]):
-            score = 0
-            for cell in row:
-                norm = normalize_header(cell)
-                for kw in header_keywords:
-                    if kw in norm:
-                        score += 1
-                        break
-            if score > best_score:
-                best_score = score
-                header_row_idx = idx
-
-        if best_score <= 0:
-            header_row_idx = 0
-
-        raw_headers = raw_rows[header_row_idx]
-        headers = [normalize_header(h) for h in raw_headers]
-        data_rows = raw_rows[header_row_idx + 1:]
-
-        # -------------------------------------------------------------
-        # 3. FIELD MAPPING WITH EXPANDED SYNONYMS
-        # -------------------------------------------------------------
+            
         field_mapping = {
-            'full_name': [
-                'fish', 'fio', 'f i sh', 'f i o', 'ism sharifi', 'ismsharifi',
-                "to'liq ism", "to'liq ismi", 'toliq ism', 'toliq ismi',
-                'talaba', 'talaba fish', 'talabaning fish',
-                "o'quvchi", "o'quvchi fish", "o'quvchining fish",
-                'oquvchi', 'oquvchi fish', 'oquvchining fish',
-                'full name', 'fullname', 'student name', 'fio toliq',
-                'фио', 'ф и о', 'исми шарифи', 'ўқувчи', 'ўқувчининг фиш', 'талаба'
-            ],
-            'first_name': [
-                'ism', 'ismi', 'first name', 'firstname', 'first_name', 'name', 'student first name',
-                'исм', 'исми', 'имя'
-            ],
-            'last_name': [
-                'familiya', 'familiyasi', 'last name', 'lastname', 'last_name', 'surname',
-                'фамилия', 'фамилияси'
-            ],
-            'father_name': [
-                'otasining ismi', 'ota ismi', 'sharifi', 'otasi', 'father name', 'father_name',
-                'patronymic', 'middle name', 'middle_name', 'отасининг исми', 'шарифи', 'отчество'
-            ],
-            'phone': [
-                'telefon', 'telefoni', 'telefon raqami', 'telefon raqam', 'phone', 'phone number',
-                'phone_number', 'mobile', 'tel', 'aloqa', 'telefon nomer', 'nomer',
-                'телефон', 'тел', 'номер телефона', 'номер', 'телефон рақами'
-            ],
-            'father_phone': [
-                'ota telefoni', 'otasining telefoni', 'otasining telefon raqami', 'father phone',
-                'father_phone', "father phone", 'ота телефони', 'отасининг телефони', 'телефон отца'
-            ],
-            'mother_name': [
-                'ona ismi', 'onasi', 'onasining ismi', 'mother name', 'mother_name', "mother name",
-                'она исми', 'онасининг исми', 'имя матери'
-            ],
-            'mother_phone': [
-                'ona telefoni', 'onasining telefoni', 'onasining telefon raqami', 'mother phone',
-                'mother_phone', "mother phone", 'она телефони', 'онасининг телефони', 'телефон матери'
-            ],
-            'school_class': [
-                'sinf', 'sinfi', 'class', 'school_class', 'school class', 'grade', 'grade_level', 'klass',
-                'синф', 'синфи', 'класс'
-            ],
-            'group': [
-                'guruh', 'guruhi', 'group', 'group_name', 'kurs', 'course',
-                'гуруҳ', 'гуруҳи', 'группа', 'курс'
-            ],
-            'birth_date': [
-                "tug'ilgan sana", "tug'ilgan sanasi", "tug'ilgan kun", "tug'ilgan kuni",
-                "tugilgan sana", "tugilgan sanasi", "tugilgan kun", "tugilgan kuni",
-                'birth date', 'birth_date', 'birthday', 'dob', 'date of birth',
-                'туғилган сана', 'туғилган кун', 'тугилган сана', 'тугилган кун', 'дата рождения', 'др'
-            ],
-            'gender': [
-                'jins', 'jinsi', 'gender', 'sex', 'жинси', 'жинс', 'пол'
-            ],
-            'balance': [
-                'balans', 'balansi', 'hisob', 'balance', 'баланс'
-            ],
-            'address': [
-                'manzil', 'manzili', 'yashash manzili', 'uy manzili', 'address', 'residential address',
-                'манзил', 'манзили', 'яшаш манзили', 'адрес'
-            ],
-            'email': [
-                'email', 'e-mail', 'pochta', 'elektron pochta', 'электронная почта', 'почта'
-            ],
-            'telegram_chat_id': [
-                'telegram', 'telegram chat id', 'telegram_chat_id', 'telegram id', 'телеграм'
-            ]
+            'first_name': ['ism', 'first name', 'name', 'first_name'],
+            'last_name': ['familiya', 'last name', 'surname', 'last_name'],
+            'phone': ['telefon', 'phone', 'phone number', 'phone_number'],
+            'email': ['email', 'e-mail'],
+            'birth_date': ['tug\'ilgan sana', 'birth date', 'birthday', 'birth_date', 'tugilgan sana'],
+            'gender': ['jins', 'gender', 'sex'],
+            'balance': ['balans', 'balance'],
+            'father_name': ['ota ismi', 'father name', 'father_name'],
+            'father_phone': ['ota telefoni', 'father phone', 'father_phone'],
+            'mother_name': ['ona ismi', 'mother name', 'mother_name'],
+            'mother_phone': ['ona telefoni', 'mother phone', 'mother_phone'],
+            'telegram_chat_id': ['telegram', 'telegram chat id', 'telegram_chat_id']
         }
-
-        def clean_phone(val):
-            """Normalize phone values including floats like 998901234567.0 to +998XXXXXXXXX format."""
-            if val is None or val == '':
-                return None
-            if isinstance(val, (int, float)):
-                try:
-                    val = str(int(val))
-                except (ValueError, OverflowError):
-                    val = str(val)
-            else:
-                val = str(val).strip()
-                if val.endswith('.0'):
-                    val = val[:-2]
-
-            digits = ''.join(c for c in val if c.isdigit())
-            if not digits:
-                return None
-
-            # 9-digit local format: 901234567 -> 998901234567
-            if len(digits) == 9:
-                digits = '998' + digits
-            # 13-digit float artifact: 9989012345670 -> 998901234567
-            elif len(digits) == 13 and digits.startswith('998') and digits.endswith('0'):
-                digits = digits[:12]
-
-            if len(digits) == 12 and digits.startswith('998'):
-                return '+' + digits
-            elif len(digits) == 12:
-                return '+' + digits
-            elif len(digits) > 7:
-                return '+' + digits
-            return None
-
-        def clean_date(val):
-            """Parse Excel datetime objects, strings, and timestamps safely."""
-            if val is None or val == '':
-                return None
-            if isinstance(val, (datetime.datetime, datetime.date)):
-                return val.strftime('%Y-%m-%d')
-            s_val = str(val).strip()
-            # If datetime string like "2010-05-10 00:00:00", take date part
-            if ' ' in s_val:
-                s_val = s_val.split(' ')[0].strip()
-            if 'T' in s_val:
-                s_val = s_val.split('T')[0].strip()
-
-            date_formats = (
-                '%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y', '%d-%m-%Y',
-                '%Y/%m/%d', '%Y.%m.%d', '%d.%m.%y', '%d/%m/%y'
-            )
-            for fmt in date_formats:
-                try:
-                    return datetime.datetime.strptime(s_val, fmt).date().isoformat()
-                except ValueError:
-                    pass
-            return None
-
-        def clean_balance(val):
-            """Clean string balance to valid Decimal or default 0.00."""
-            if val is None or val == '':
-                return Decimal('0.00')
-            if isinstance(val, (int, float)):
-                return Decimal(str(val))
-            cleaned = str(val).replace(' ', '').replace("so'm", "").replace("som", "").replace("$", "").strip()
-            if ',' in cleaned and '.' not in cleaned:
-                cleaned = cleaned.replace(',', '.')
-            elif ',' in cleaned and '.' in cleaned:
-                cleaned = cleaned.replace(',', '')
-            try:
-                return Decimal(cleaned)
-            except InvalidOperation:
-                return Decimal('0.00')
-
+        
         success_count = 0
         error_logs = []
-
-        # -------------------------------------------------------------
-        # 4. ROW-BY-ROW IMPORT LOOP
-        # -------------------------------------------------------------
-        for idx, row in enumerate(data_rows):
-            row_num = header_row_idx + idx + 2
-
-            # Check if row has any non-empty content
-            if not any(str(c).strip() for c in row if c is not None):
-                continue
-
-            extracted_fields = {}
-            for col_idx, h in enumerate(headers):
-                if col_idx >= len(row):
-                    continue
-                cell_val = row[col_idx]
-                if cell_val is None or str(cell_val).strip() == '':
-                    continue
-
-                for field, synonyms in field_mapping.items():
-                    if field in extracted_fields:
-                        continue
-                    for syn in synonyms:
-                        if syn == h or syn in h:
-                            extracted_fields[field] = cell_val
-                            break
-
-            # ---------------------------------------------------------
-            # Full Name / First Name / Last Name parsing
-            # ---------------------------------------------------------
-            full_name_val = extracted_fields.get('full_name')
-            first_name = extracted_fields.get('first_name')
-            last_name = extracted_fields.get('last_name')
-            father_name = extracted_fields.get('father_name')
-
-            if full_name_val and (not first_name or not last_name):
-                fn_str = str(full_name_val).strip()
-                # Remove leading numbers like "1. Aliyev Vali" or "1) Aliyev Vali"
-                fn_str = re.sub(r'^\d+[\.\)\- ]+', '', fn_str).strip()
-                parts = fn_str.split()
-                if len(parts) == 1:
-                    if not first_name:
-                        first_name = parts[0]
-                elif len(parts) == 2:
-                    if not last_name:
-                        last_name = parts[0]
-                    if not first_name:
-                        first_name = parts[1]
-                elif len(parts) >= 3:
-                    if not last_name:
-                        last_name = parts[0]
-                    if not first_name:
-                        first_name = parts[1]
-                    if not father_name:
-                        father_name = ' '.join(parts[2:])
-
-            if not first_name:
-                # If only last_name exists or full_name couldn't be parsed
-                if last_name:
-                    first_name = last_name
-                    last_name = ''
-                else:
-                    error_logs.append(f"{row_num}-qatorda 'Ism' yoki 'F.I.SH' ustuni bo'sh yoki topilmadi.")
-                    continue
-
-            # ---------------------------------------------------------
-            # Phone & Contact handling
-            # ---------------------------------------------------------
-            raw_phone = clean_phone(extracted_fields.get('phone'))
-            father_phone = clean_phone(extracted_fields.get('father_phone'))
-            mother_phone = clean_phone(extracted_fields.get('mother_phone'))
-
-            # Fallbacks if student phone is empty
-            phone = raw_phone or father_phone or mother_phone
-            if not phone:
-                # Auto-generate a valid unique placeholder phone for student
-                rand_digits = f"{random.randint(1000000, 9999999)}"
-                phone = f"+99800{rand_digits}"
-
+        
+        for idx, row in enumerate(rows_data):
+            row_num = idx + 2
             student_data = {
-                'first_name': str(first_name).strip(),
-                'last_name': str(last_name).strip() if last_name else '',
-                'phone': phone,
-                'balance': clean_balance(extracted_fields.get('balance'))
+                'organization': org_id,
+                'branch': self.get_branch_id()
             }
-
-            if father_name:
-                student_data['father_name'] = str(father_name).strip()
-            if father_phone:
-                student_data['father_phone'] = father_phone
-            if extracted_fields.get('mother_name'):
-                student_data['mother_name'] = str(extracted_fields.get('mother_name')).strip()
-            if mother_phone:
-                student_data['mother_phone'] = mother_phone
-
-            if extracted_fields.get('email'):
-                student_data['email'] = str(extracted_fields.get('email')).strip()
-            if extracted_fields.get('telegram_chat_id'):
-                student_data['telegram_chat_id'] = str(extracted_fields.get('telegram_chat_id')).strip()
-            if extracted_fields.get('address'):
-                student_data['address'] = str(extracted_fields.get('address')).strip()
-
-            # Birth date
-            parsed_bdate = clean_date(extracted_fields.get('birth_date'))
-            if parsed_bdate:
-                student_data['birth_date'] = parsed_bdate
-
-            # Gender
-            raw_gender = str(extracted_fields.get('gender', '')).lower().strip()
-            if raw_gender:
-                if raw_gender in ['o', "o'g'il", 'ogil', 'erkak', 'm', 'male', 'мужик', 'муж', 'мужской']:
-                    student_data['gender'] = 'male'
-                elif raw_gender in ['q', 'qiz', 'ayol', 'f', 'female', 'жен', 'женский']:
-                    student_data['gender'] = 'female'
-
-            # ---------------------------------------------------------
-            # SchoolClass (Sinf) resolution
-            # ---------------------------------------------------------
-            assigned_class = None
-            class_field_val = extracted_fields.get('school_class')
-
-            if class_field_val:
-                raw_class_str = str(class_field_val).strip()
-                # 1. If numeric ID
-                if raw_class_str.isdigit():
-                    assigned_class = SchoolClass.objects.filter(id=int(raw_class_str), organization_id=org_id).first()
-                # 2. If format like "5-A", "5 A", "5A", "10-B"
-                if not assigned_class:
-                    m = re.match(r'^(\d+)\s*[-_ ]?\s*([A-Za-zА-Яа-яЎўҚқҒғҲҳ]?)$', raw_class_str)
-                    if m:
-                        g_lvl = m.group(1)
-                        sec = (m.group(2) or 'A').upper()
-                        assigned_class = SchoolClass.objects.filter(
-                            organization_id=org_id,
-                            grade_level=g_lvl,
-                            section__iexact=sec
-                        ).first()
-                        if not assigned_class:
-                            try:
-                                assigned_class = SchoolClass.objects.create(
-                                    organization_id=org_id,
-                                    branch_id=branch_id,
-                                    grade_level=g_lvl,
-                                    section=sec,
-                                    academic_year="2026-2027",
-                                    language="uz"
-                                )
-                            except Exception:
-                                pass
-                # 3. Fallback name search
-                if not assigned_class:
-                    for sc in SchoolClass.objects.filter(organization_id=org_id):
-                        if sc.name.lower() == raw_class_str.lower() or f"{sc.grade_level}{sc.section}".lower() == raw_class_str.lower():
-                            assigned_class = sc
-                            break
-
-            # If no row class, use request default class
-            if not assigned_class and default_class_id:
-                try:
-                    assigned_class = SchoolClass.objects.filter(id=int(default_class_id), organization_id=org_id).first()
-                except (ValueError, TypeError):
-                    pass
-
-            if assigned_class:
-                student_data['school_class'] = assigned_class.id
-
-            # ---------------------------------------------------------
-            # Safe Matching for Existing Student vs Creating New
-            # (Prevents overwriting/deleting students sharing a phone)
-            # ---------------------------------------------------------
-            existing_student = None
-            first_name_str = student_data['first_name'].strip()
-            last_name_str = student_data.get('last_name', '').strip()
-
-            # A. Match by phone AND matching first_name
+            
+            for field, synonyms in field_mapping.items():
+                found_val = None
+                for synonym in synonyms:
+                    if synonym in row:
+                        found_val = row[synonym]
+                        break
+                if found_val:
+                    student_data[field] = found_val
+            
+            first_name = student_data.get('first_name')
+            if not first_name:
+                error_logs.append(f"{row_num}-qatorda 'Ism' (first_name) ustuni bo'sh yoki topilmadi.")
+                continue
+                
+            phone = student_data.get('phone')
             if phone:
-                existing_student = Student.objects.filter(
-                    phone=phone,
-                    organization_id=org_id,
-                    first_name__iexact=first_name_str
-                ).first()
-
-            # B. Match by first_name AND last_name in same organization
-            if not existing_student and first_name_str and last_name_str:
-                existing_student = Student.objects.filter(
-                    organization_id=org_id,
-                    first_name__iexact=first_name_str,
-                    last_name__iexact=last_name_str
-                ).first()
-
-            # If student was previously archived, unarchive upon re-import
-            if existing_student and existing_student.is_archived:
-                existing_student.is_archived = False
-                existing_student.save(update_fields=['is_archived'])
-
+                phone = ''.join(c for c in str(phone) if c.isdigit())
+                if phone:
+                    if not phone.startswith('+'):
+                        phone = '+' + phone
+                    student_data['phone'] = phone
+            
+            # Format date of birth safely
+            birth_date = student_data.get('birth_date')
+            if birth_date:
+                import datetime
+                parsed_date = None
+                for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d'):
+                    try:
+                        parsed_date = datetime.datetime.strptime(str(birth_date), fmt).date()
+                        break
+                    except ValueError:
+                        pass
+                if parsed_date:
+                    student_data['birth_date'] = parsed_date.isoformat()
+                else:
+                    # Clear it if it could not be parsed to prevent serializer errors
+                    student_data.pop('birth_date')
+            
+            existing_student = None
+            if phone:
+                existing_student = Student.objects.filter(phone=phone, organization_id=org_id).first()
+                
             if not existing_student and 'password' not in student_data:
-                raw_pwd = ''.join(c for c in phone if c.isdigit())
-                student_data['password'] = raw_pwd if len(raw_pwd) >= 6 else "smarttalim123"
-
+                if phone:
+                    raw_phone = ''.join(c for c in phone if c.isdigit())
+                    if len(raw_phone) >= 6:
+                        student_data['password'] = raw_phone
+                    else:
+                        student_data['password'] = "smarttalim123"
+                else:
+                    student_data['password'] = "smarttalim123"
+                
             try:
                 if existing_student:
-                    serializer = StudentSerializer(
-                        existing_student,
-                        data=student_data,
-                        partial=True,
-                        context={'request': request, 'allow_shared_phone': True}
-                    )
+                    serializer = StudentSerializer(existing_student, data=student_data, partial=True)
                 else:
-                    serializer = StudentSerializer(
-                        data=student_data,
-                        context={'request': request, 'allow_shared_phone': True}
-                    )
-
+                    serializer = StudentSerializer(data=student_data)
+                    
                 if serializer.is_valid():
-                    student_instance = serializer.save(
-                        organization_id=org_id,
-                        branch_id=branch_id
-                    )
+                    serializer.save(organization_id=org_id, branch_id=self.get_branch_id())
                     success_count += 1
-
-                    # -------------------------------------------------
-                    # Post-save: Link SchoolClass, Group, Parent, Address
-                    # -------------------------------------------------
-                    if assigned_class:
-                        ClassStudent.objects.update_or_create(
-                            student=student_instance,
-                            school_class=assigned_class,
-                            defaults={
-                                'is_active': True,
-                                'organization_id': org_id,
-                                'branch_id': branch_id
-                            }
-                        )
-
-                    # Group resolution
-                    target_group = None
-                    group_field_val = extracted_fields.get('group')
-                    if group_field_val:
-                        g_str = str(group_field_val).strip()
-                        if g_str.isdigit():
-                            target_group = Group.objects.filter(id=int(g_str), organization_id=org_id).first()
-                        if not target_group:
-                            target_group = Group.objects.filter(name__iexact=g_str, organization_id=org_id).first()
-                    elif default_group_id:
-                        try:
-                            target_group = Group.objects.filter(id=int(default_group_id), organization_id=org_id).first()
-                        except (ValueError, TypeError):
-                            pass
-
-                    if target_group:
-                        StudentGroup.objects.get_or_create(
-                            organization_id=org_id,
-                            branch_id=branch_id or target_group.branch_id,
-                            student=student_instance,
-                            group=target_group
-                        )
-
-                    # Parent info
-                    father_n = student_data.get('father_name')
-                    father_p = student_data.get('father_phone')
-                    if father_n or father_p:
-                        Parent.objects.update_or_create(
-                            student=student_instance,
-                            relation='father',
-                            defaults={
-                                'full_name': father_n or "Otasi",
-                                'phone': father_p or student_instance.phone or '',
-                                'organization_id': org_id,
-                                'branch_id': branch_id
-                            }
-                        )
-
-                    mother_n = student_data.get('mother_name')
-                    mother_p = student_data.get('mother_phone')
-                    if mother_n or mother_p:
-                        Parent.objects.update_or_create(
-                            student=student_instance,
-                            relation='mother',
-                            defaults={
-                                'full_name': mother_n or "Onasi",
-                                'phone': mother_p or student_instance.phone or '',
-                                'organization_id': org_id,
-                                'branch_id': branch_id
-                            }
-                        )
-
-                    # Address info
-                    addr_val = student_data.get('address')
-                    if addr_val:
-                        StudentAddress.objects.update_or_create(
-                            student=student_instance,
-                            defaults={
-                                'organization_id': org_id,
-                                'branch_id': branch_id,
-                                'address': addr_val,
-                                'district': addr_val[:100],
-                                'student_phone': student_instance.phone or ''
-                            }
-                        )
                 else:
                     errors_str = ", ".join([f"{k}: {v[0]}" for k, v in serializer.errors.items()])
                     error_logs.append(f"{row_num}-qatorda xatolik: {errors_str}")
             except Exception as e:
                 error_logs.append(f"{row_num}-qatorda kutilmagan xatolik: {str(e)}")
-
+                
         return Response({
             "message": f"Excel import tugallandi. {success_count} ta talaba muvaffaqiyatli saqlandi/yangilandi.",
             "success_count": success_count,
@@ -1202,10 +713,6 @@ import logging
 
 
 logger = logging.getLogger(__name__)
-
-
-
-
 
 
 class GroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
@@ -1267,14 +774,6 @@ class GroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
-    @decorators.action(detail=True, methods=['get'])
-    def students(self, request, pk=None):
-        group = self.get_object()
-        student_groups = group.group_students.select_related('student').filter(student__isnull=False)
-        students = [sg.student for sg in student_groups if sg.student]
-        serializer = StudentSerializer(students, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
     @decorators.action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
         group = self.get_object()
@@ -1285,6 +784,32 @@ class GroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         group.status = 'archived'
         group.save()
         return Response({"status": "success", "detail": "Group archived successfully."}, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=True, methods=['get'], url_path='students')
+    def students(self, request, pk=None):
+        """Guruh talabalari ro'yxatini qaytaradi"""
+        group = self.get_object()
+        student_groups = group.group_students.select_related('student').all()
+        data = []
+        for sg in student_groups:
+            s = sg.student
+            if not s:
+                continue
+            data.append({
+                "id": s.id,
+                "student_group_id": sg.id,
+                "first_name": s.first_name,
+                "last_name": s.last_name or '',
+                "full_name": f"{s.first_name} {s.last_name or ''}".strip(),
+                "phone": s.phone,
+                "balance": float(s.balance or 0),
+                "joined_date": sg.joined_at.isoformat() if getattr(sg, 'joined_at', None) else None,
+                "price": float(sg.price) if sg.price is not None else (float(group.course.price) if group.course and hasattr(group.course, 'price') else 0.0),
+                "discount_type": getattr(sg, 'discount_type', None),
+                "discount_amount": float(getattr(sg, 'discount_amount', 0) or 0),
+                "is_active": not getattr(s, 'is_archived', False)
+            })
+        return Response(data, status=status.HTTP_200_OK)
 
     @decorators.action(detail=True, methods=['post'], url_path='add-student')
     def add_student(self, request, pk=None):
@@ -1608,7 +1133,7 @@ class StudentTransactionsView(TenantViewSetMixin, generics.ListAPIView):
         # Branch filtering
         branch_id = self.get_branch_id()
         if branch_id:
-            queryset = queryset.filter(branch_id=branch_id)
+            queryset = queryset.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
 
         student_id = (
             self.request.query_params.get('student') or
@@ -1654,8 +1179,6 @@ class GroupAttendanceView(TenantViewSetMixin, APIView):
             attendances = Attendance.objects.filter(group_id=group_id, organization_id=org_id)
         serializer = AttendanceSerializer(attendances, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
-
-
 
     def post(self, request, group_id):
         org_id = self.get_organization_id()
@@ -1713,16 +1236,7 @@ class GroupAttendanceView(TenantViewSetMixin, APIView):
                     date = timezone.now().date()
 
             status_val = item.get('status')
-            status_str = str(status_val or '').lower().strip()
-            if status_str in ['keldi', 'bor', 'ha', 'true', '1', 'present']:
-                status_val = 'present'
-            elif status_str in ['kelmadi', 'yoq', "yo'q", 'false', '0', 'absent']:
-                status_val = 'absent'
-            elif status_str in ['kechikdi', 'kech', 'late']:
-                status_val = 'late'
-            elif status_str in ['sababli', 'excused']:
-                status_val = 'excused'
-            elif not status_val:
+            if not status_val:
                 is_present = item.get('is_present')
                 reason = item.get('reason')
                 if is_present is True:
@@ -1833,14 +1347,6 @@ class StudentBalancesViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         from django.db.models import Q
-
-        student_id = (
-            self.request.query_params.get('student') or
-            self.request.query_params.get('student_id') or
-            self.request.query_params.get('id')
-        )
-        if student_id:
-            queryset = queryset.filter(id=student_id)
 
         search = self.request.query_params.get('search')
         if search:
@@ -2027,7 +1533,7 @@ class StudentGroupLeaveViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         # Branch filtering
         branch_id = self.get_branch_id()
         if branch_id:
-            qs = qs.filter(branch_id=branch_id)
+            qs = qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
 
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')
@@ -2275,7 +1781,7 @@ class AttendanceViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 "detail": f"Ushbu sana ({attendance_date}) dam olish kuni (Bayram) deb e'lon qilingan! Davomat olib bo'lmaydi."
             })
 
-        super().perform_create(serializer)
+        serializer.save()
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -2311,11 +1817,10 @@ class HolidayViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 class HomeworkViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     permission_page_name = 'Guruhlar'
-    queryset = Homework.objects.select_related('group', 'teacher', 'created_by').all()
+    queryset = Homework.objects.select_related('group', 'created_by').all()
     serializer_class = HomeworkSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
-    filterset_fields = ['group', 'teacher']
-    search_fields = ['title', 'description', 'text', 'group__name']
+    search_fields = ['title', 'text', 'group__name']
     pagination_class = None
 
     def get_queryset(self):
@@ -2323,10 +1828,6 @@ class HomeworkViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         group_id = self.request.query_params.get('group') or self.request.query_params.get('group_id')
         if group_id:
             queryset = queryset.filter(group_id=group_id)
-
-        teacher_id = self.request.query_params.get('teacher') or self.request.query_params.get('teacher_id')
-        if teacher_id:
-            queryset = queryset.filter(teacher_id=teacher_id)
 
         current_user = getattr(self.request, 'user', None)
         if current_user and getattr(current_user, 'role', None) == 'student':
@@ -2718,20 +2219,6 @@ class BirthdayCalendarAPIView(APIView):
 
         user_organization = request.user.organization
 
-        from django.db.models import Q
-        branch_id = (
-            request.query_params.get('branch') or
-            request.query_params.get('branch_id') or
-            request.headers.get('x-branch-id') or
-            request.headers.get('X-Branch-ID') or
-            getattr(request.user, 'branch_id', None)
-        )
-        if branch_id:
-            try:
-                branch_id = int(branch_id)
-            except (ValueError, TypeError):
-                branch_id = None
-
         # 1. O'quvchilarni (Student) filterlash
         students = Student.objects.filter(
             organization=user_organization,
@@ -2743,10 +2230,6 @@ class BirthdayCalendarAPIView(APIView):
             organization=user_organization,
             birth_date__month=month
         )
-
-        if branch_id:
-            students = students.filter(branch_id=branch_id)
-            users = users.filter(Q(branches__id=branch_id) | Q(branch_id=branch_id) | Q(role='owner')).distinct()
 
         birthday_list = []
 
@@ -2950,293 +2433,27 @@ class CheckBotRegistrationAPIView(APIView):
         return Response({"error": "phone, student_id yoki user_id yuborilishi majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
 
-# ─────────────────────────────────────────────────────────────
-# 1. BINOLAR VIEWSET
-# ─────────────────────────────────────────────────────────────
-class BuildingViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    queryset = Building.objects.all()
-    serializer_class = BuildingSerializer
+class TeacherViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """Faqat o'qituvchilarni qaytaruvchi va boshqaruvchi endpoint (/api/v1/academics/teachers/)"""
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter]
-    filterset_fields = ['branch']
-    search_fields = ['name', 'address']
-    pagination_class = None
+    permission_page_name = 'O\'qituvchilar'
 
-
-# ─────────────────────────────────────────────────────────────
-# 2. SINFLAR VIEWSET
-# ─────────────────────────────────────────────────────────────
-class SchoolClassViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    queryset = SchoolClass.objects.all().select_related('teacher', 'room', 'branch')
-    serializer_class = SchoolClassSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter]
-    filterset_fields = ['branch', 'grade_level', 'language', 'academic_year', 'teacher']
-    search_fields = ['grade_level', 'section', 'teacher__first_name', 'teacher__last_name', 'teacher__username']
-    pagination_class = None
-
-    # Sinf ichidagi faol o'quvchilar ro'yxati
-    @decorators.action(detail=True, methods=['get'])
-    def students(self, request, pk=None):
-        school_class = self.get_object()
-        class_students = school_class.students.filter(is_active=True).select_related('student')
-        serializer = ClassStudentSerializer(class_students, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    # Sinfga o'quvchi biriktirish (bitta yoki ko'plab)
-    @decorators.action(detail=True, methods=['post'], url_path='add-students')
-    def add_students(self, request, pk=None):
-        school_class = self.get_object()
-        
-        if hasattr(request.data, 'getlist') and len(request.data.getlist('student_ids')) > 0:
-            student_ids = request.data.getlist('student_ids')
-        else:
-            student_ids = request.data.get('student_ids', [])
-
-        if not isinstance(student_ids, list):
-            student_ids = [student_ids]
-        
-        added = []
-        for s_id in student_ids:
-            try:
-                obj, created = ClassStudent.objects.update_or_create(
-                    school_class=school_class,
-                    student_id=int(s_id),
-                    defaults={
-                        'is_active': True,
-                        'organization': school_class.organization,
-                        'branch': school_class.branch
-                    }
-                )
-                added.append(int(s_id))
-            except Exception:
-                pass
-
-        if added:
-            Student.objects.filter(id__in=added).update(school_class=school_class)
-
-        return Response({'status': 'success', 'added_students': added}, status=status.HTTP_200_OK)
-
-    # Sinfdan o'quvchini chiqarish
-    @decorators.action(detail=True, methods=['post'], url_path='remove-student')
-    def remove_student(self, request, pk=None):
-        school_class = self.get_object()
-        student_id = request.data.get('student_id')
-        if not student_id:
-            return Response({'error': 'student_id talab qilinadi'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        updated = ClassStudent.objects.filter(school_class=school_class, student_id=student_id).update(is_active=False)
-        Student.objects.filter(id=student_id, school_class=school_class).update(school_class=None)
-        return Response({'status': 'removed_successfully', 'updated_count': updated}, status=status.HTTP_200_OK)
-
-    # O'quvchini boshqa sinfga o'tkazish (Transfer)
-    @decorators.action(detail=True, methods=['post'], url_path='transfer-student')
-    def transfer_student(self, request, pk=None):
-        source_class = self.get_object()
-        student_id = request.data.get('student_id')
-        target_class_id = request.data.get('target_class_id')
-        
-        if not student_id or not target_class_id:
-            return Response({'error': 'student_id va target_class_id talab qilinadi'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            target_class = SchoolClass.objects.get(id=target_class_id)
-        except SchoolClass.DoesNotExist:
-            return Response({'error': f'ID si {target_class_id} bo\'lgan sinf topilmadi'}, status=status.HTTP_404_NOT_FOUND)
-
-        # Eski sinfda nofaol qilish
-        ClassStudent.objects.filter(school_class=source_class, student_id=student_id).update(is_active=False)
-        
-        # Yangi sinfga biriktirish
-        ClassStudent.objects.update_or_create(
-            school_class=target_class,
-            student_id=student_id,
-            defaults={
-                'is_active': True,
-                'organization': target_class.organization,
-                'branch': target_class.branch
-            }
-        )
-        Student.objects.filter(id=student_id).update(school_class=target_class)
-        return Response({'status': 'transferred_successfully'}, status=status.HTTP_200_OK)
-
-
-# ─────────────────────────────────────────────────────────────
-# 3. OTA-ONALAR VIEWSET
-# ─────────────────────────────────────────────────────────────
-class ParentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    queryset = Parent.objects.all().select_related('student')
-    serializer_class = ParentSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter]
-    filterset_fields = ['student', 'relation', 'branch']
-    search_fields = ['full_name', 'phone', 'student__first_name', 'student__last_name', 'workplace', 'address']
-    pagination_class = None
-
-
-# ─────────────────────────────────────────────────────────────
-# 4. O'QUVCHI MANZILLARI VIEWSET
-# ─────────────────────────────────────────────────────────────
-class StudentAddressViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    queryset = StudentAddress.objects.all().select_related('student')
-    serializer_class = StudentAddressSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter]
-    filterset_fields = ['region', 'district', 'student', 'branch']
-    search_fields = ['student__first_name', 'student__last_name', 'address', 'district', 'parent_name', 'parent_phone']
-    pagination_class = None
-
-
-# ─────────────────────────────────────────────────────────────
-# 5. O'QUVCHI MUROJAATLARI VIEWSET
-# ─────────────────────────────────────────────────────────────
-class StudentAppealViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    queryset = StudentAppeal.objects.all().select_related('student', 'responded_by')
-    serializer_class = StudentAppealSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['status', 'appeal_type', 'student', 'is_escalated_to_owner', 'branch']
-    search_fields = ['student__first_name', 'student__last_name', 'student__phone', 'message', 'response']
-    ordering_fields = ['created_at', 'status', 'appeal_type']
-    ordering = ['-created_at']
-
-    @decorators.action(detail=True, methods=['post'])
-    def accept(self, request, pk=None):
-        """Murojaatni ma'muriyat tomonidan qabul qilish / ko'rib chiqishga o'tkazish"""
-        appeal = self.get_object()
-        appeal.status = 'in_progress'
-        appeal.responded_by = request.user
-        appeal.responded_at = timezone.now()
-        appeal.save(update_fields=['status', 'responded_by', 'responded_at'])
-
-        # Talabaga xabar berish
-        if appeal.student and appeal.student.telegram_chat_id:
-            try:
-                from academics.telegram_bot import send_telegram_message, get_student_bot_token
-                token = get_student_bot_token(appeal.organization)
-                if token:
-                    msg = (
-                        f"📢 <b>Murojaatingiz holati yangilandi!</b>\n\n"
-                        f"Murojaat raqami: <b>#{appeal.id}</b>\n"
-                        f"Turi: <b>{appeal.get_appeal_type_display()}</b>\n"
-                        f"Yangi holati: <b>Ko'rib chiqilmoqda 🔄</b>\n\n"
-                        f"Sizning murojaatingiz ma'muriyat tomonidan qabul qilindi va mutaxassislarimiz tomonidan o'rganilmoqda."
-                    )
-                    send_telegram_message(token, appeal.student.telegram_chat_id, msg)
-            except Exception as e_tg:
-                print(f"[ACCEPT_APPEAL_TG_ERR]: {e_tg}")
-
-        serializer = self.get_serializer(appeal)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    @decorators.action(detail=True, methods=['post'])
-    def resolve(self, request, pk=None):
-        """Murojaatni hal etish va talabaga javob qaytarish"""
-        appeal = self.get_object()
-        response_text = request.data.get('response', '').strip()
-        status_val = request.data.get('status', 'resolved')
-        if status_val not in ['resolved', 'rejected']:
-            status_val = 'resolved'
-
-        appeal.status = status_val
-        appeal.response = response_text
-        appeal.responded_by = request.user
-        appeal.responded_at = timezone.now()
-        appeal.save(update_fields=['status', 'response', 'responded_by', 'responded_at'])
-
-        # Talabaga javob xabari yuborish
-        if appeal.student and appeal.student.telegram_chat_id:
-            try:
-                from academics.telegram_bot import send_telegram_message, get_student_bot_token
-                token = get_student_bot_token(appeal.organization)
-                if token:
-                    status_text = "Hal etildi / Bajarildi ✅" if status_val == 'resolved' else "Ko'rib chiqildi 📋"
-                    msg = (
-                        f"📢 <b>Murojaatingizga javob berildi!</b>\n\n"
-                        f"Murojaat raqami: <b>#{appeal.id}</b>\n"
-                        f"Turi: <b>{appeal.get_appeal_type_display()}</b>\n"
-                        f"Holati: <b>{status_text}</b>\n\n"
-                    )
-                    if response_text:
-                        msg += f"✍️ <b>Ma'muriyat javobi:</b>\n<i>\"{response_text}\"</i>\n\n"
-                    msg += "SmartTalim tizimi orqali faol ishtirokingiz uchun minnatdormiz!"
-                    send_telegram_message(token, appeal.student.telegram_chat_id, msg)
-            except Exception as e_tg:
-                print(f"[RESOLVE_APPEAL_TG_ERR]: {e_tg}")
-
-        serializer = self.get_serializer(appeal)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-class StudentTransactionsViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    """Talabalar to'lovlari / tranzaksiyalari uchun to'liq CRUD ViewSet"""
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
-    permission_page_name = "Barcha to'lovlar"
-    from finance.serializers import PaymentSerializer
-    serializer_class = PaymentSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['student', 'cashbox', 'payment_method']
-    search_fields = ['student__first_name', 'student__last_name', 'comment']
-    ordering_fields = ['date', 'amount', 'created_at']
-    ordering = ['-date', '-created_at']
+    def get_serializer_class(self):
+        from accounts.serializers import EmployeeSerializer
+        return EmployeeSerializer
 
     def get_queryset(self):
-        from finance.models import Payment
-        org_id = self.get_organization_id()
-        if not org_id:
-            return Payment.objects.none()
-        queryset = Payment.objects.filter(organization_id=org_id).select_related('student', 'cashbox')
-        branch_id = self.get_branch_id()
-        if branch_id:
-            queryset = queryset.filter(branch_id=branch_id)
-        student_id = (
-            self.request.query_params.get('student') or
-            self.request.query_params.get('student_id') or
-            self.request.query_params.get('id')
-        )
-        if student_id:
-            queryset = queryset.filter(student_id=student_id)
-        return queryset
-
-    def perform_create(self, serializer):
-        from finance.models import Cashbox
-        branch_id = self.get_branch_id()
-        cashbox = None
-        cashbox_id = self.request.data.get('cashbox') or self.request.data.get('cashbox_id')
-        if cashbox_id:
-            cashbox = Cashbox.objects.filter(id=cashbox_id).first()
-        serializer.save(
-            organization=self.get_organization(),
-            branch_id=branch_id if branch_id else None,
-            cashbox=cashbox
-        )
-
-
-class TeacherViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    """O'qituvchilar ro'yxati va boshqaruvi (/api/v1/academics/teachers/)"""
-    permission_classes = [permissions.IsAuthenticated]
-    permission_page_name = 'Xodimlar'
-    from accounts.serializers import EmployeeSerializer
-    serializer_class = EmployeeSerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter]
-    search_fields = ['first_name', 'last_name', 'phone', 'email', 'specialty']
-
-    def get_queryset(self):
-        from accounts.models import User
-        org = self.get_organization()
-        if not org:
-            return User.objects.none()
-        branch_id = self.get_branch_id()
-        qs = User.objects.filter(organization=org, is_active=True)
-        if branch_id:
-            qs = qs.filter(branch_id=branch_id)
+        from django.contrib.auth import get_user_model
         from django.db.models import Q
-        return qs.filter(
+        User = get_user_model()
+        return User.objects.filter(
+            organization_id=self.get_organization_id()
+        ).filter(
             Q(role__iexact='teacher') |
-            Q(position__icontains='teacher') |
             Q(position__icontains="o'qituvchi") |
-            Q(position__icontains='oqituvchi') |
-            Q(position__icontains='ustoz') |
-            (Q(specialty__isnull=False) & ~Q(specialty=''))
+            Q(position__icontains="oqituvchi") |
+            Q(position__icontains="teacher") |
+            Q(position__icontains="ustoz")
         ).exclude(is_superuser=True).distinct()
 
 
@@ -3245,12 +2462,10 @@ class LessonCalendarAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        from academics.models import GroupLesson
+        from academics.models import GroupLesson, Group
         from academics.serializers import GroupLessonListSerializer
         org_id = getattr(request.user, 'organization_id', None)
-        qs = GroupLesson.objects.filter(group__organization_id=org_id).select_related(
-            'group', 'group__teacher', 'group__room', 'group__course'
-        )
+        qs = GroupLesson.objects.filter(group__organization_id=org_id).select_related('group', 'group__teacher', 'group__room', 'group__course')
 
         group_id = request.query_params.get('group') or request.query_params.get('group_id')
         teacher_id = request.query_params.get('teacher') or request.query_params.get('teacher_id')
@@ -3334,22 +2549,16 @@ class CoursesReportAPIView(TenantViewSetMixin, APIView):
 
 
 class LeaveReasonsReportAPIView(TenantViewSetMixin, APIView):
-    """Ketish sabablari hisoboti (/api/v1/academics/reports/leave-reasons/ va /reports/student-leaves/)"""
+    """Ketish sabablari hisoboti (/api/v1/academics/reports/leave-reasons/)"""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        return self._build_report(request)
-
-    def post(self, request):
-        return self._build_report(request)
-
-    def _build_report(self, request):
         from academics.models import StudentArchive
         from django.db.models import Count
         org_id = self.get_organization_id() or getattr(request.user, 'organization_id', None)
         archives = StudentArchive.objects.filter(organization_id=org_id)
-        start_date = request.query_params.get('start_date') or request.data.get('start_date')
-        end_date = request.query_params.get('end_date') or request.data.get('end_date')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
         if start_date:
             archives = archives.filter(archived_at__date__gte=start_date)
         if end_date:

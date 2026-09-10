@@ -8,12 +8,12 @@ from communication.views import (
 router = DefaultRouter()
 router.register(r'providers', SmsProviderViewSet, basename='sms-provider')
 router.register(r'sms-messages', SMSMessagesViewSet, basename='sms-message')
-router.register(r'sms-schedules', SmsSchedulesViewSet, basename='sms-schedule')
-router.register(r'sms-templates', SmsTemplatesViewSet, basename='sms-template')
-router.register(r'notification-schedules', NotificationScheduleViewSet, basename='notification-schedule')
 router.register(r'messages', SMSMessagesViewSet, basename='comm-message')
+router.register(r'sms-schedules', SmsSchedulesViewSet, basename='sms-schedule')
 router.register(r'schedules', SmsSchedulesViewSet, basename='comm-schedule')
+router.register(r'sms-templates', SmsTemplatesViewSet, basename='sms-template')
 router.register(r'templates', SmsTemplatesViewSet, basename='comm-template')
+router.register(r'notification-schedules', NotificationScheduleViewSet, basename='notification-schedule')
 
 urlpatterns = [
     path('', include(router.urls)),

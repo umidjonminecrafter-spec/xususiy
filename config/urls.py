@@ -12,15 +12,10 @@ from drf_spectacular.views import (
     SpectacularRedocView,
 )
 
-from django.http import JsonResponse
-from academics.views import TelegramWebhookView, BuildingViewSet
-from accounts.views import EmployeeViewSet
-
-def health_check(request):
-    return JsonResponse({"status": "healthy", "service": "SmartTalim Backend"})
+from academics.views import TelegramWebhookView
+from organizations.views import BranchViewSet
 
 urlpatterns = [
-    path('', health_check, name='health-check'),
     path('admin/', admin.site.urls),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
 
@@ -46,7 +41,6 @@ urlpatterns = [
     # Versioned app endpoints
     path('api/v1/accounts/', include('accounts.urls')),
     path('api/v1/academics/', include('academics.urls')),
-    path('api/v1/students/', include('academics.student_urls')),
     path('api/v1/finance/', include('finance.urls')),
     
     # CRM supports /api/v1/crm/ and /api/v1/crm/crm/
@@ -64,10 +58,8 @@ urlpatterns = [
     path('api/v1/analytics/', include('analytics.urls')),
     path('api/v1/support/', include('support.urls')),
     path('api/v1/kpi/', include('kpi.urls')),
-    path('api/v1/settings/buildings/', BuildingViewSet.as_view({'get': 'list', 'post': 'create'}), name='settings-buildings-list'),
-    path('api/v1/settings/buildings/<int:pk>/', BuildingViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='settings-buildings-detail'),
-    path('api/v1/users/teachers/', EmployeeViewSet.as_view({'get': 'list', 'post': 'create'}), name='users-teachers-list'),
-    path('api/v1/users/teachers/<int:pk>/', EmployeeViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='users-teachers-detail'),
+    path('api/v1/settings/buildings/', BranchViewSet.as_view({'get': 'list', 'post': 'create'}), name='settings-buildings-list'),
+    path('api/v1/settings/buildings/<int:pk>/', BranchViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='settings-buildings-detail'),
 ]
 
 if settings.DEBUG:

@@ -21,7 +21,7 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'organization',
-                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_type', 'hourly_rate', 'salary_percentage', 'branches', 'branches_detail')
+                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'branches', 'branches_detail')
         read_only_fields = ('id', 'role', 'organization', 'branch')
 
 
@@ -156,27 +156,20 @@ class EmployeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'password', 'email', 'first_name', 'last_name', 'phone', 'role', 'position',
-                  'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_type', 'hourly_rate', 'salary_percentage',
+                  'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
                   'salary_percentage_detail', 'branches', 'branches_detail', 'groups', 'groups_detail')
         read_only_fields = ('id', 'organization', 'branch')
 
     # 🚀 1-YANGILIK: Abdulmajidga xatolik chiroyli "400 Bad Request" bo'lib borishi uchun:
     def validate(self, attrs):
         role = attrs.get('role')
-        salary_type = attrs.get('salary_type', 'percentage')
         salary_percentage = attrs.get('salary_percentage')
-        hourly_rate = attrs.get('hourly_rate')
 
         # to_internal_value dan kelgan rolni ham tekshiramiz
-        if role == 'teacher':
-            if salary_type == 'percentage' and not salary_percentage:
-                raise serializers.ValidationError({
-                    "salary_percentage": "Foizli o'qituvchi yaratish uchun ish haqi foizini yuborish majburiy!"
-                })
-            elif salary_type == 'hourly' and (hourly_rate is None or hourly_rate <= 0):
-                raise serializers.ValidationError({
-                    "hourly_rate": "Soatbay o'qituvchi yaratish uchun 1 soat dars narxini kiritish majburiy!"
-                })
+        if role == 'teacher' and not salary_percentage:
+            raise serializers.ValidationError({
+                "salary_percentage": "O'qituvchi yaratish uchun ish haqi foizini yuborish majburiy!"
+            })
 
         # Telefon raqam formatini va takrorlanmasligini qo'lda tekshiramiz (frontedga xato 'phone' maydonida borishi uchun)
         phone = attrs.get('phone')

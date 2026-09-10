@@ -1,6 +1,5 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from academics.views import BuildingViewSet
 from organizations.views import (
     OrganizationViewSet, BranchViewSet, TariffViewSet, SubscriptionViewSet, OrganizationLoginView
 )
@@ -11,7 +10,7 @@ from organizations.views import UpdateBranchLocationAPIView, GlobalSearchAPIView
 
 router = DefaultRouter()
 router.register(r'branches', BranchViewSet, basename='branch')
-router.register(r'buildings', BuildingViewSet, basename='org-building')
+router.register(r'buildings', BranchViewSet, basename='building')
 router.register(r'subscriptions', SubscriptionViewSet, basename='subscription')
 router.register(r'tariffs', TariffViewSet, basename='tariff')
 router.register(r'organizations', OrganizationViewSet, basename='organization-double')
@@ -23,6 +22,6 @@ urlpatterns = [
     path('billing/', include('billing.urls')),
     path('sms/send/', send_register_code, name='send_sms_code'),
     path('sms/verify/', verify_register_code, name='verify_sms_code'),
-    path('global-search/', GlobalSearchAPIView.as_view(), name='global-search'),
     path('', include(router.urls)),
+    path('global-search/', GlobalSearchAPIView.as_view(), name='global-search'),
 ]

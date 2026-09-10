@@ -31,12 +31,8 @@ class BackupScheduler(threading.Thread):
         from organizations.models import BackupSetting
         from organizations.backup import run_backup_for_setting
 
-        try:
-            tables = connection.introspection.table_names()
-            if 'organizations_backupsetting' not in tables:
-                return
-        except Exception:
-            return
+        # PostgreSQL/Neon ulanishini thread-safe (oqimlar uchun xavfsiz) yangilash
+        connection.close()
 
         active_settings = BackupSetting.objects.filter(is_active=True)
         now = timezone.now()

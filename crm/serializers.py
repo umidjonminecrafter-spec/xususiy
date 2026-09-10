@@ -4,23 +4,6 @@ from crm.models import Pipeline, Source, LostReason, Section, LeadForm, Lead, CR
 from academics.models import BotMessageTemplate
 
 
-def _get_filtered_leads_count(obj, context):
-    request = context.get('request') if context else None
-    qs = obj.leads.filter(is_archived=False)
-    if request:
-        branch_id = (
-            request.query_params.get('branch')
-            or request.query_params.get('branch_id')
-            or request.headers.get('x-branch-id')
-            or request.headers.get('X-Branch-ID')
-        )
-        if not branch_id and request.user and request.user.is_authenticated:
-            branch_id = getattr(request.user, 'branch_id', None)
-        if branch_id:
-            qs = qs.filter(branch_id=branch_id)
-    return qs.count()
-
-
 class SectionSerializer(serializers.ModelSerializer):
     leads_count = serializers.SerializerMethodField()
     lead_count = serializers.SerializerMethodField()
@@ -31,7 +14,7 @@ class SectionSerializer(serializers.ModelSerializer):
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
     def get_leads_count(self, obj):
-        return _get_filtered_leads_count(obj, self.context)
+        return obj.leads.filter(is_archived=False).count()
 
     def get_lead_count(self, obj):
         return self.get_leads_count(obj)
@@ -48,7 +31,7 @@ class PipelineSerializer(serializers.ModelSerializer):
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
     def get_leads_count(self, obj):
-        return _get_filtered_leads_count(obj, self.context)
+        return obj.leads.filter(is_archived=False).count()
 
     def get_lead_count(self, obj):
         return self.get_leads_count(obj)
@@ -64,7 +47,7 @@ class SourceSerializer(serializers.ModelSerializer):
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
     def get_leads_count(self, obj):
-        return _get_filtered_leads_count(obj, self.context)
+        return obj.leads.filter(is_archived=False).count()
 
     def get_lead_count(self, obj):
         return self.get_leads_count(obj)
@@ -196,7 +179,6 @@ class PublicLeadSubmitSerializer(serializers.Serializer):
         # Avtomatik Lid ochamiz
         lead = Lead.objects.create(
             organization=form_obj.organization,
-            branch=form_obj.branch,
             name=self.validated_data['name'],
             phone=self.validated_data['phone'],
             pipeline=form_obj.pipeline,

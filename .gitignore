@@ -24,5 +24,4 @@ env/
 *.swp
 *.swo
 .DS_Store
-.env.*
-*.sqlite3
+smart_backend-1/

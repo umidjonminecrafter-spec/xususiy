@@ -32,6 +32,13 @@ class BoardViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     serializer_class = BoardSerializer
     permission_classes = [permissions.IsAuthenticated, HasBoardPermission]
 
+    def get_queryset(self):
+        return super().get_queryset().prefetch_related(
+            'columns__items__assigned_to',
+            'columns__items__members',
+            'columns__items__labels'
+        )
+
 class ColumnViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Column.objects.all()
@@ -39,6 +46,13 @@ class ColumnViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['board_id']
     permission_classes = [permissions.IsAuthenticated, HasBoardPermission]
+
+    def get_queryset(self):
+        return super().get_queryset().prefetch_related(
+            'items__assigned_to',
+            'items__members',
+            'items__labels'
+        )
 
 class ItemViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
@@ -48,6 +62,13 @@ class ItemViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     filterset_fields = ['column_id', 'board_id', 'assigned_to']
     search_fields = ['title', 'description']
     permission_classes = [permissions.IsAuthenticated, HasBoardPermission]
+
+    def get_queryset(self):
+        return super().get_queryset().select_related(
+            'assigned_to', 'column', 'board'
+        ).prefetch_related(
+            'members', 'labels'
+        )
 
     def perform_create(self, serializer):
         super().perform_create(serializer)

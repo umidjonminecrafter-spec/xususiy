@@ -2,61 +2,8 @@ from django.contrib import admin
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
     Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, StaffSalaryPercent,
-    TeacherWorkLog, Cashbox, CashTransaction, Transaction, FinanceSetting, FinanceAction
+    Cashbox, CashTransaction, Transaction, FinanceAction, FinanceSetting, TransactionCategory
 )
-
-
-@admin.register(Cashbox)
-class CashboxAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'balance', 'branch', 'organization', 'is_archived', 'created_at')
-    list_filter = ('is_archived', 'organization', 'branch')
-    search_fields = ('name',)
-    fields = ('name', 'balance', 'branch', 'organization', 'is_archived')
-
-    def save_model(self, request, obj, form, change):
-        if not obj.organization_id and not change:
-            user_org_id = getattr(request.user, 'organization_id', None)
-            if user_org_id:
-                obj.organization_id = user_org_id
-        super().save_model(request, obj, form, change)
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-        user_org_id = getattr(request.user, 'organization_id', None)
-        if user_org_id:
-            return qs.filter(organization_id=user_org_id)
-        return qs.none()
-
-
-@admin.register(CashTransaction)
-class CashTransactionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'cashbox', 'transaction_type', 'payment_method', 'amount', 'date', 'category_name', 'organization', 'created_at')
-    list_filter = ('transaction_type', 'payment_method', 'date', 'organization')
-    search_fields = ('category_name', 'comment', 'cashbox__name')
-    date_hierarchy = 'date'
-
-
-@admin.register(Transaction)
-class TransactionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'cashbox', 'type', 'category', 'payment_method', 'amount', 'student', 'employee', 'created_at', 'organization', 'branch')
-    list_filter = ('type', 'category', 'payment_method', 'organization', 'branch')
-    search_fields = ('description', 'student__first_name', 'student__last_name', 'employee__username', 'cashbox__name')
-    date_hierarchy = 'created_at'
-
-
-@admin.register(FinanceSetting)
-class FinanceSettingAdmin(admin.ModelAdmin):
-    list_display = ('id', 'organization', 'is_bonus_enabled', 'is_penalty_enabled', 'is_auto_discount_enabled', 'extra_lesson_rate')
-    list_filter = ('organization', 'is_bonus_enabled', 'is_penalty_enabled', 'is_auto_discount_enabled')
-
-
-@admin.register(FinanceAction)
-class FinanceActionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'action_type', 'target_type', 'amount', 'student', 'employee', 'reason', 'created_at', 'organization')
-    list_filter = ('action_type', 'target_type', 'organization')
-    search_fields = ('reason', 'student__first_name', 'student__last_name', 'employee__username')
 
 
 @admin.register(StaffSalaryPercent)
@@ -152,8 +99,125 @@ class TeacherSalaryCalculationAdmin(admin.ModelAdmin):
     list_filter = ('period',)
 
 
-@admin.register(TeacherWorkLog)
-class TeacherWorkLogAdmin(admin.ModelAdmin):
-    list_display = ('id', 'date', 'teacher', 'branch', 'group', 'hours', 'hourly_rate', 'total_amount', 'is_substitution', 'original_teacher')
-    list_filter = ('date', 'branch', 'is_substitution')
-    search_fields = ('teacher__first_name', 'teacher__last_name', 'note', 'substitution_reason')
+@admin.register(Cashbox)
+class CashboxAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'branch', 'balance', 'is_archived', 'organization')
+    list_filter = ('is_archived', 'branch', 'organization')
+    search_fields = ('name',)
+    readonly_fields = ('balance',)
+
+    def save_model(self, request, obj, form, change):
+        if not obj.organization_id and not change:
+            user_org_id = getattr(request.user, 'organization_id', None)
+            if user_org_id:
+                obj.organization_id = user_org_id
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        user_org_id = getattr(request.user, 'organization_id', None)
+        if user_org_id:
+            return qs.filter(organization_id=user_org_id)
+        return qs.none()
+
+
+@admin.register(CashTransaction)
+class CashTransactionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'transaction_type', 'cashbox', 'amount', 'payment_method', 'date', 'employee', 'student', 'category_name', 'organization')
+    list_filter = ('transaction_type', 'payment_method', 'date', 'organization', 'cashbox')
+    search_fields = ('comment', 'category_name', 'employee__first_name', 'employee__last_name', 'student__first_name', 'student__last_name')
+
+    def save_model(self, request, obj, form, change):
+        if not obj.organization_id and not change:
+            user_org_id = getattr(request.user, 'organization_id', None)
+            if user_org_id:
+                obj.organization_id = user_org_id
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        user_org_id = getattr(request.user, 'organization_id', None)
+        if user_org_id:
+            return qs.filter(organization_id=user_org_id)
+        return qs.none()
+
+
+@admin.register(Transaction)
+class TransactionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'type', 'category', 'cashbox', 'amount', 'student', 'employee', 'created_at', 'organization')
+    list_filter = ('type', 'category', 'cashbox', 'created_at', 'organization')
+    search_fields = ('description', 'student__first_name', 'student__last_name', 'employee__username')
+    readonly_fields = ('created_at',)
+
+    def save_model(self, request, obj, form, change):
+        if not obj.organization_id and not change:
+            user_org_id = getattr(request.user, 'organization_id', None)
+            if user_org_id:
+                obj.organization_id = user_org_id
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        user_org_id = getattr(request.user, 'organization_id', None)
+        if user_org_id:
+            return qs.filter(organization_id=user_org_id)
+        return qs.none()
+
+
+@admin.register(FinanceAction)
+class FinanceActionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'action_type', 'target_type', 'amount', 'student', 'employee', 'created_at', 'organization')
+    list_filter = ('action_type', 'target_type', 'created_at', 'organization')
+    search_fields = ('reason', 'student__first_name', 'student__last_name', 'employee__first_name', 'employee__last_name')
+    readonly_fields = ('created_at',)
+
+    def save_model(self, request, obj, form, change):
+        if not obj.organization_id and not change:
+            user_org_id = getattr(request.user, 'organization_id', None)
+            if user_org_id:
+                obj.organization_id = user_org_id
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        user_org_id = getattr(request.user, 'organization_id', None)
+        if user_org_id:
+            return qs.filter(organization_id=user_org_id)
+        return qs.none()
+
+
+@admin.register(FinanceSetting)
+class FinanceSettingAdmin(admin.ModelAdmin):
+    list_display = ('id', 'organization', 'is_count_bonus_enabled', 'is_auto_discount_enabled')
+    list_filter = ('is_count_bonus_enabled', 'is_auto_discount_enabled', 'organization')
+
+    def save_model(self, request, obj, form, change):
+        if not obj.organization_id and not change:
+            user_org_id = getattr(request.user, 'organization_id', None)
+            if user_org_id:
+                obj.organization_id = user_org_id
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        user_org_id = getattr(request.user, 'organization_id', None)
+        if user_org_id:
+            return qs.filter(organization_id=user_org_id)
+        return qs.none()
+
+
+@admin.register(TransactionCategory)
+class TransactionCategoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'type')
+    list_filter = ('type',)
+    search_fields = ('name',)

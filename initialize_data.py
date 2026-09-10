@@ -15,7 +15,7 @@ from organizations.models import (
 )
 from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher, 
-    Attendance, LessonSchedule, Building, SchoolClass, ClassStudent, Parent, StudentAddress, Homework
+    Attendance, LessonSchedule
 )
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Cashbox, Payment, Expense, 
@@ -205,7 +205,7 @@ student, _ = Student.objects.get_or_create(
         "first_name": "Azizbek",
         "last_name": "Sobirov",
         "email": "azizbek@example.com",
-        "balance": Decimal("0.00"),
+        "balance": Decimal("600000.00"),
         "birth_date": datetime.date(2006, 5, 20),
         "address": "Toshkent sh., Yunusobod 4-mavze"
     }
@@ -359,113 +359,6 @@ FAQItem.objects.get_or_create(
 ReceiptSetting.objects.get_or_create(organization=org, defaults={"hide_logo": False, "hide_balance": False})
 ExamSetting.objects.get_or_create(organization=org, defaults={"include_active_students": True})
 FinanceSetting.objects.get_or_create(organization=org, branch=branch, defaults={"is_bonus_enabled": True})
-
-# 19. Yangi modellar: Bino, Sinf, Sinf o'quvchisi, Ota-ona, Yashash manzili, Uyga vazifa
-# A. Bino
-building, _ = Building.objects.get_or_create(
-    organization=org,
-    branch=branch,
-    name="1-Bino (Asosiy)",
-    defaults={
-        "address": "Bunyodkor shoh ko'chasi 15-uy",
-        "capacity": 350
-    }
-)
-print(f"Bino: {building.name}")
-
-# B. Kurs rangi va faolligi
-course.color = "#4F46E5"
-course.is_active = True
-course.save()
-
-# C. Sinf
-school_class, _ = SchoolClass.objects.get_or_create(
-    organization=org,
-    branch=branch,
-    grade_level="4",
-    section="A",
-    academic_year="2026-2027",
-    defaults={
-        "language": "uz",
-        "teacher": teacher,
-        "room": room,
-    }
-)
-print(f"Sinf: {school_class.name} ({school_class.get_language_display()})")
-
-# D. Sinf o'quvchisi
-class_student, _ = ClassStudent.objects.get_or_create(
-    school_class=school_class,
-    student=student,
-    defaults={
-        "organization": org,
-        "branch": branch,
-        "is_active": True
-    }
-)
-print(f"Sinf o'quvchisi biriktirildi: {student.full_name} -> {school_class.name}")
-
-# E. Ota-ona
-parent, _ = Parent.objects.get_or_create(
-    organization=org,
-    branch=branch,
-    student=student,
-    full_name="Karimov Anvar Rustamovich",
-    defaults={
-        "relation": "father",
-        "phone": "+998901234567",
-        "extra_phone": "+998934567890",
-        "workplace": "IT Park dasturchi",
-        "address": "Toshkent sh., Yunusobod tumani, 14-mavze",
-        "comment": "Faol ota-ona"
-    }
-)
-print(f"Ota-ona: {parent.full_name} ({parent.get_relation_display()})")
-
-# F. O'quvchi yashash manzili
-student_address, _ = StudentAddress.objects.get_or_create(
-    student=student,
-    defaults={
-        "organization": org,
-        "branch": branch,
-        "region": "Toshkent shahri",
-        "district": "Yunusobod tumani",
-        "address": "14-mavze, 22-uy, 45-xonadon",
-        "parent_name": "Karimov Anvar",
-        "parent_phone": "+998901234567",
-        "student_phone": "+998909998877",
-        "notes": "Markazga yaqin yashaydi"
-    }
-)
-from django.utils import timezone
-
-# G. Uyga vazifa
-homework, _ = Homework.objects.get_or_create(
-    organization=org,
-    branch=branch,
-    group=group,
-    title="Unit 1: Present Simple vs Continuous",
-    defaults={
-        "teacher": teacher,
-        "created_by": teacher,
-        "description": "Student's Book 14-bet, 1-5 mashqlarni to'liq bajarish va yangi so'zlarni yodlash.",
-        "text": "Student's Book 14-bet, 1-5 mashqlarni to'liq bajarish va yangi so'zlarni yodlash.",
-        "deadline": timezone.now() + datetime.timedelta(days=3),
-        "due_date": (datetime.date.today() + datetime.timedelta(days=3))
-    }
-)
-print(f"Uyga vazifa: {homework.title} ({group.name})")
-
-# 16. Talabalarni avtomatik to'ldirish (agar talabalar 100 dan kam bo'lsa)
-try:
-    current_count = Student.objects.filter(organization=org).count()
-    if current_count < 100:
-        print(f"Bazadagi talabalar soni ({current_count}) 100 dan kam. 114 ta talaba avtomatik kiritilmoqda...")
-        from seed_114_students import seed_students
-        seed_students(114)
-        print(f"Baza muvaffaqiyatli to'ldirildi! Jami talabalar: {Student.objects.filter(organization=org).count()} ta.")
-except Exception as e_seed:
-    print(f"[XATO] Talabalarni to'ldirishda xatolik: {e_seed}")
 
 print("=" * 60)
 print("Barcha ma'lumotlar muvaffaqiyatli tayyorlandi!")

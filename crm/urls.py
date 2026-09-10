@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from crm.views import (
     PipelineViewSet, SourceViewSet, LostReasonViewSet, SectionViewSet, LeadFormViewSet, LeadViewSet,
-    CRMActivityViewSet, CRMLeadLostViewSet, CRMLeadsHistoryViewSet
+    CRMActivityViewSet, CRMLeadLostViewSet
 )
 
 from crm.views import SMSTemplateListCreateAPIView, SMSTemplateRetrieveUpdateDestroyAPIView, \
@@ -22,7 +22,6 @@ router.register(r'sections', SectionViewSet, basename='section')
 router.register(r'lead-forms', LeadFormViewSet, basename='lead-form')
 router.register(r'activities', CRMActivityViewSet, basename='activity')
 router.register(r'lost-leads', CRMLeadLostViewSet, basename='lost-lead')
-router.register(r'crm-leads-history', CRMLeadsHistoryViewSet, basename='crm-leads-history')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -33,6 +32,7 @@ urlpatterns = [
     # 🚀 Ommaviy xabar yuborish (SMS yuborish tugmasi)
     path('sms/send-bulk/', SendBulkSMSAPIView.as_view(), name='sms-send-bulk'),
     path('lead/history/', LeadHistoryAPIView.as_view(), name='crm-lead-history'),
+    path('crm-leads-history/', LeadHistoryAPIView.as_view(), name='crm-leads-history'),
 
 # Adminlar paneli uchun yo'llar
     path('forms/', LeadFormListCreateAPIView.as_view(), name='lead-form-list-create'),

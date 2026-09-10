@@ -11,14 +11,11 @@ from .views import (
     StaffProfileAPIView, StaffScheduleAPIView, BotMessageTemplateViewSet, TelegramWebhookView, SetLessonTopicAPIView,
     CancelOrRestoreLessonAPIView, RescheduleLessonAPIView, GroupLessonListAPIView, BirthdayCalendarAPIView,
     StudentEvaluationLevelViewSet, CourseMaterialViewSet, CheckBotRegistrationAPIView,
-    BuildingViewSet, SchoolClassViewSet, ParentViewSet, StudentAddressViewSet, StudentAppealViewSet,
-    StudentTransactionsViewSet, TeacherViewSet,
-    LessonCalendarAPIView, LessonStatisticsAPIView,
+    TeacherViewSet, LessonCalendarAPIView, LessonStatisticsAPIView,
     CoursesReportAPIView, LeaveReasonsReportAPIView, TeachersReportAPIView
 )
-from finance.views import TeacherSalaryPaymentsView
 from .views import StudentFieldSettingViewSet
-from finance.views import TeacherSalaryCalculationViewSet, TeacherSalaryRuleViewSet, TeacherWorkLogViewSet
+from finance.views import TeacherSalaryCalculationViewSet, TeacherSalaryRuleViewSet
 
 
 student_field_settings = StudentFieldSettingViewSet.as_view({
@@ -42,16 +39,9 @@ router.register(r'group-teachers', GroupTeacherViewSet, basename='group-teacher'
 router.register(r'lesson-schedules', LessonScheduleViewSet, basename='lesson-schedule')
 router.register(r'student-balances', StudentBalancesViewSet, basename='student-balance')
 router.register(r'attendances', AttendanceViewSet, basename='attendance')
-router.register(r'student-transactions', StudentTransactionsViewSet, basename='student-transaction')
-router.register(r'teachers', TeacherViewSet, basename='academic-teacher')
-router.register(r'teacher-salary-payments', TeacherSalaryPaymentsView, basename='academic-teacher-salary-payments')
+router.register(r'attendences', AttendanceViewSet, basename='attendence')
 
 # New ViewSets
-router.register(r'buildings', BuildingViewSet, basename='building')
-router.register(r'classes', SchoolClassViewSet, basename='school-class')
-router.register(r'parents', ParentViewSet, basename='parent')
-router.register(r'addresses', StudentAddressViewSet, basename='student-address')
-router.register(r'student-appeals', StudentAppealViewSet, basename='student-appeal')
 router.register(r'holidays', HolidayViewSet, basename='holiday')
 router.register(r'balance-history', BalanceHistoryViewSet, basename='balance-history')
 router.register(r'exams', ExamViewSet, basename='exam')
@@ -62,28 +52,26 @@ router.register(r'online-lessons', OnlineLessonViewSet, basename='online-lesson'
 router.register(r'student-group-leaves', StudentGroupLeaveViewSet, basename='student-group-leave')
 router.register(r'student-pricings', StudentPricingViewSet, basename='student-pricing')
 router.register(r'archive', StudentArchiveViewSet, basename='student-archive')
-router.register(r'homework', HomeworkViewSet, basename='homework-single')
 router.register(r'homeworks', HomeworkViewSet, basename='homework')
 router.register(r'bot-message-templates', BotMessageTemplateViewSet, basename='bot-message-template')
 
+# Teachers nested routes (to match /api/v1/academics/teachers/...)
 router.register(r'teachers/salary-calculations', TeacherSalaryCalculationViewSet, basename='academic-teacher-salary-calc')
 router.register(r'teachers/salary-payments', TeacherSalaryPaymentViewSet, basename='academic-teacher-salary-payment')
 router.register(r'teachers/salary-rules', TeacherSalaryRuleViewSet, basename='academic-teacher-salary-rule')
-router.register(r'teachers/work-logs', TeacherWorkLogViewSet, basename='academic-teacher-work-log')
+router.register(r'teachers', TeacherViewSet, basename='academic-teacher')
 router.register(r'evaluation-levels', StudentEvaluationLevelViewSet, basename='evaluation-levels')
 router.register(r'course-materials', CourseMaterialViewSet, basename='course-material')
 
 urlpatterns = [
-    path('student-transactions/', StudentTransactionsViewSet.as_view({'get': 'list', 'post': 'create'}), name='student-transactions'),
-    path('student-transactions/<int:pk>/', StudentTransactionsViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='student-transactions-detail'),
-    path('reports/courses/', CoursesReportAPIView.as_view(), name='reports-courses'),
-    path('reports/leave-reasons/', LeaveReasonsReportAPIView.as_view(), name='reports-leave-reasons'),
-    path('reports/student-leaves/', LeaveReasonsReportAPIView.as_view(), name='reports-student-leaves'),
-    path('reports/teachers/', TeachersReportAPIView.as_view(), name='reports-teachers'),
-    path('lessons/calendar/', LessonCalendarAPIView.as_view(), name='lessons-calendar'),
-    path('lessons/<int:lesson_id>/statistics/', LessonStatisticsAPIView.as_view(), name='lesson-statistics'),
+    path('student-transactions/', StudentTransactionsView.as_view(), name='student-transactions'),
     path('attendences/group/<int:group_id>/', GroupAttendanceView.as_view(), name='group-attendance'),
     path('attendances/group/<int:group_id>/', GroupAttendanceView.as_view(), name='group-attendance-alt'),
+    path('lessons/calendar/', LessonCalendarAPIView.as_view(), name='lessons-calendar'),
+    path('lessons/<int:lesson_id>/statistics/', LessonStatisticsAPIView.as_view(), name='lesson-statistics'),
+    path('reports/courses/', CoursesReportAPIView.as_view(), name='reports-courses'),
+    path('reports/leave-reasons/', LeaveReasonsReportAPIView.as_view(), name='reports-leave-reasons'),
+    path('reports/teachers/', TeachersReportAPIView.as_view(), name='reports-teachers'),
     path(
         'student-field-settings/',
         student_field_settings,

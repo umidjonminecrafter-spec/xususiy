@@ -2,8 +2,7 @@ from rest_framework import serializers
 from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, LessonSchedule,
     BalanceHistory, Exam, ExamResult, LeaveReason, LessonTime, OnlineLesson, StudentGroupLeave, StudentPricing,
-    StudentArchive, Holiday, Homework, StudentEvaluationLevel, CourseMaterial,
-    Building, SchoolClass, ClassStudent, Parent, StudentAddress, StudentAppeal
+    StudentArchive, Holiday, Homework, StudentEvaluationLevel, CourseMaterial
 )
 from accounts.serializers import UserSerializer
 from .models import StudentFieldSetting, GroupLesson
@@ -112,13 +111,11 @@ class RoomSerializer(serializers.ModelSerializer):
 
 class StudentSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
-    branch_name = serializers.CharField(source='branch.name', read_only=True, default='')
 
     class Meta:
         model = Student
         fields = [
-            'id', 'branch', 'branch_name', 'first_name', 'last_name', 'phone', 'email', 'balance',
-            'school_class',
+            'id', 'first_name', 'last_name', 'phone', 'email', 'balance',
             'referred_by', 'moderator', 'debt_limit',
             'student_login', 'parent_login', 'password',
             'telegram_chat_id', 'category', 'birth_date', 'application',
@@ -187,12 +184,8 @@ class StudentSerializer(serializers.ModelSerializer):
                 if self.instance:
                     student_qs = student_qs.exclude(pk=self.instance.pk)
 
-                allow_shared_phone = self.context.get("allow_shared_phone", False)
                 if student_qs.exists():
-                    # Agar allow_shared_phone bo'lsa va ism boshqa bo'lsa (aka-uka/opa-singil), o'tkazamiz
-                    # Agar ism ham bir xil bo'lsa yoki allow_shared_phone ruxsat berilmagan bo'lsa, xatolik beramiz
-                    if not allow_shared_phone or student_qs.filter(first_name__iexact=first_name).exists():
-                        errors["phone"] = "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
+                    errors["phone"] = "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
                 else:
                     # 2. Xodimlar/Foydalanuvchilar ro'yxatida tekshiramiz (student bo'lmagan xodimlar)
                     user_qs = User.objects.filter(
@@ -254,14 +247,6 @@ class StudentSerializer(serializers.ModelSerializer):
 
         if 'phone_number' in data and 'phone' not in data:
             data['phone'] = data['phone_number']
-
-        if 'school_class_id' in data and 'school_class' not in data:
-            data['school_class'] = data['school_class_id']
-        elif 'class_id' in data and 'school_class' not in data:
-            data['school_class'] = data['class_id']
-        elif 'class' in data and 'school_class' not in data:
-            data['school_class'] = data['class']
-
         return super().to_internal_value(data)
 
     def create(self, validated_data):
@@ -270,37 +255,10 @@ class StudentSerializer(serializers.ModelSerializer):
 
         student = super().create(validated_data)
 
-        if student.school_class:
-            from academics.models import ClassStudent
-            ClassStudent.objects.update_or_create(
-                student=student,
-                school_class=student.school_class,
-                defaults={
-                    'is_active': True,
-                    'organization': student.organization,
-                    'branch': student.branch
-                }
-            )
-
         if phone:
             from accounts.models import User
             existing_user = User.objects.filter(username=phone).first()
-            other_student = Student.objects.filter(phone=phone, organization=student.organization).exclude(id=student.id).first()
-            if existing_user and other_student and existing_user.first_name != student.first_name:
-                # Aka-uka holati: eski talabaning akkauntini buzmay, yangi unikal username bilan yaratamiz
-                unique_username = f"{phone}_{student.id}"
-                User.objects.create_user(
-                    username=unique_username,
-                    password=password or "smarttalim123",
-                    email=student.email or '',
-                    first_name=student.first_name,
-                    last_name=student.last_name or '',
-                    phone=student.phone,
-                    role='student',
-                    organization=student.organization,
-                    branch=student.branch
-                )
-            elif existing_user:
+            if existing_user:
                 # Reactivate and update existing user
                 existing_user.is_active = True
                 existing_user.first_name = student.first_name
@@ -331,29 +289,11 @@ class StudentSerializer(serializers.ModelSerializer):
         old_phone = instance.phone
         student = super().update(instance, validated_data)
 
-        from academics.models import ClassStudent
-        if student.school_class:
-            ClassStudent.objects.update_or_create(
-                student=student,
-                school_class=student.school_class,
-                defaults={
-                    'is_active': True,
-                    'organization': student.organization,
-                    'branch': student.branch
-                }
-            )
-            ClassStudent.objects.filter(student=student).exclude(school_class=student.school_class).update(is_active=False)
-        elif 'school_class' in validated_data and validated_data['school_class'] is None:
-            ClassStudent.objects.filter(student=student).update(is_active=False)
-
         from accounts.models import User
-        user = User.objects.filter(username=old_phone).first() or User.objects.filter(username=f"{old_phone}_{instance.id}").first()
+        user = User.objects.filter(username=old_phone).first()
         if user:
             if student.phone:
-                if User.objects.filter(username=student.phone).exclude(pk=user.pk).exists():
-                    user.username = f"{student.phone}_{instance.id}"
-                else:
-                    user.username = student.phone
+                user.username = student.phone
                 user.phone = student.phone
             user.first_name = student.first_name
             user.last_name = student.last_name or ''
@@ -368,22 +308,6 @@ class StudentSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         rep = super().to_representation(instance)
         rep['full_name'] = f"{instance.first_name} {instance.last_name}".strip()
-
-        if instance.school_class:
-            rep['school_class_name'] = str(instance.school_class)
-            rep['class_name'] = str(instance.school_class)
-            rep['school_class_detail'] = {
-                'id': instance.school_class.id,
-                'name': str(instance.school_class),
-                'grade_level': instance.school_class.grade_level,
-                'section': instance.school_class.section,
-                'language': getattr(instance.school_class, 'language', 'uz'),
-                'academic_year': getattr(instance.school_class, 'academic_year', '')
-            }
-        else:
-            rep['school_class_name'] = None
-            rep['class_name'] = None
-            rep['school_class_detail'] = None
 
         # Check hide_student_data setting for teachers
         request = self.context.get('request')
@@ -699,9 +623,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField(read_only=True)
 
     def get_student_name(self, obj):
-        if obj.student:
-            return f"{obj.student.first_name} {obj.student.last_name or ''}".strip()
-        return "Noma'lum"
+        return str(obj.student) if obj.student else None
 
     class Meta:
         model = Attendance
@@ -910,21 +832,13 @@ class HolidaySerializer(serializers.ModelSerializer):
 
 
 class HomeworkSerializer(serializers.ModelSerializer):
-    group_name = serializers.CharField(source='group.name', read_only=True, default='')
-    teacher_name = serializers.SerializerMethodField(read_only=True)
+    group_name = serializers.CharField(source='group.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
 
     class Meta:
         model = Homework
         fields = '__all__'
         read_only_fields = ('organization', 'created_by', 'created_at', 'updated_at')
-
-    def get_teacher_name(self, obj):
-        if obj.teacher:
-            return obj.teacher.get_full_name() or getattr(obj.teacher, 'full_name', None) or obj.teacher.username
-        if obj.created_by:
-            return obj.created_by.get_full_name() or obj.created_by.username
-        return ''
 
 
 class StudentFieldSettingSerializer(serializers.ModelSerializer):
@@ -1024,118 +938,3 @@ class CourseMaterialSerializer(serializers.ModelSerializer):
             rep['file_url'] = None
             rep['file_name'] = None
         return rep
-
-
-# ─────────────────────────────────────────────────────────────
-# 1. BINO SERIALIZER
-# ─────────────────────────────────────────────────────────────
-class BuildingSerializer(serializers.ModelSerializer):
-    branch_name = serializers.CharField(source='branch.name', read_only=True, default='')
-
-    class Meta:
-        model = Building
-        fields = '__all__'
-        read_only_fields = ('organization', 'created_at', 'updated_at')
-
-
-# ─────────────────────────────────────────────────────────────
-# 2. SINF SERIALIZER
-# ─────────────────────────────────────────────────────────────
-class SchoolClassSerializer(serializers.ModelSerializer):
-    name = serializers.CharField(read_only=True)
-    teacher_name = serializers.SerializerMethodField(read_only=True)
-    room_name = serializers.CharField(source='room.name', read_only=True, default='')
-    branch_name = serializers.CharField(source='branch.name', read_only=True, default='')
-    students_count = serializers.SerializerMethodField(read_only=True)
-
-    class Meta:
-        model = SchoolClass
-        fields = [
-            'id', 'branch', 'branch_name', 'name', 'grade_level', 'section', 'language',
-            'teacher', 'teacher_name', 'room', 'room_name',
-            'academic_year', 'students_count', 'created_at'
-        ]
-        read_only_fields = ('organization', 'created_at', 'updated_at')
-
-    def get_teacher_name(self, obj):
-        if obj.teacher:
-            return obj.teacher.get_full_name() or getattr(obj.teacher, 'full_name', None) or obj.teacher.username
-        return ''
-
-    def get_students_count(self, obj):
-        return obj.students.filter(is_active=True).count()
-
-
-# ─────────────────────────────────────────────────────────────
-# 3. SINF TARKIBIDAGI TALABA SERIALIZER
-# ─────────────────────────────────────────────────────────────
-class ClassStudentSerializer(serializers.ModelSerializer):
-    student_id = serializers.IntegerField(source='student.id', read_only=True)
-    full_name = serializers.CharField(source='student.full_name', read_only=True)
-    phone = serializers.CharField(source='student.phone', read_only=True)
-    balance = serializers.DecimalField(source='student.balance', max_digits=12, decimal_places=2, read_only=True)
-
-    class Meta:
-        model = ClassStudent
-        fields = ['id', 'student_id', 'full_name', 'phone', 'balance', 'is_active', 'joined_at']
-        read_only_fields = ('organization', 'created_at', 'updated_at')
-
-
-# ─────────────────────────────────────────────────────────────
-# 4. OTA-ONA SERIALIZER
-# ─────────────────────────────────────────────────────────────
-class ParentSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source='student.full_name', read_only=True)
-    relation_display = serializers.CharField(source='get_relation_display', read_only=True)
-
-    class Meta:
-        model = Parent
-        fields = '__all__'
-        read_only_fields = ('organization', 'created_at', 'updated_at')
-
-
-# ─────────────────────────────────────────────────────────────
-# 5. O'QUVCHI MANZILI SERIALIZER
-# ─────────────────────────────────────────────────────────────
-class StudentAddressSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source='student.full_name', read_only=True)
-
-    class Meta:
-        model = StudentAddress
-        fields = '__all__'
-        read_only_fields = ('organization', 'created_at', 'updated_at')
-
-
-# ─────────────────────────────────────────────────────────────
-# 6. O'QUVCHI MUROJAATI SERIALIZER
-# ─────────────────────────────────────────────────────────────
-class StudentAppealSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source='student.full_name', read_only=True)
-    student_phone = serializers.CharField(source='student.phone', read_only=True)
-    appeal_type_display = serializers.CharField(source='get_appeal_type_display', read_only=True)
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
-    responded_by_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = StudentAppeal
-        fields = [
-            'id', 'student', 'student_name', 'student_phone',
-            'appeal_type', 'appeal_type_display',
-            'message', 'status', 'status_display',
-            'response', 'responded_by', 'responded_by_name', 'responded_at',
-            'is_escalated_to_owner', 'escalated_at',
-            'satisfaction_poll_sent', 'satisfaction_poll_sent_at',
-            'student_satisfied', 'satisfaction_responded_at',
-            'organization', 'branch', 'created_at', 'updated_at'
-        ]
-        read_only_fields = (
-            'organization', 'created_at', 'updated_at',
-            'is_escalated_to_owner', 'escalated_at',
-            'satisfaction_poll_sent', 'satisfaction_poll_sent_at',
-            'student_satisfied', 'satisfaction_responded_at'
-        )
-
-    def get_responded_by_name(self, obj):
-        if obj.responded_by:
-            return obj.responded_by.get_full_name() or obj.responded_by.username
-        return None

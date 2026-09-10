@@ -83,7 +83,7 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             kwargs['created_by'] = self.request.user
 
         branch_id = self.get_branch_id()
-        if branch_id and 'branch' not in serializer.validated_data and 'branch_id' not in serializer.validated_data:
+        if branch_id:
             kwargs['branch_id'] = branch_id
 
         serializer.save(**kwargs)
@@ -103,7 +103,7 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
         # Branch filtri
         if branch_id:
-            queryset = queryset.filter(branch_id=branch_id)
+            queryset = queryset.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
 
         if self.action == 'archived':
             return queryset.filter(is_archived=True)
@@ -171,7 +171,7 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                     kwargs = {'organization_id': org_id}
                     if request.user and request.user.is_authenticated:
                         kwargs['created_by'] = request.user
-                    if branch_id and 'branch' not in serializer.validated_data and 'branch_id' not in serializer.validated_data:
+                    if branch_id:
                         kwargs['branch_id'] = branch_id
                     serializer.save(**kwargs)
                     success_count += 1
@@ -267,38 +267,37 @@ class CRMActivityViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
 class LeadHistoryAPIView(APIView):
     """
-    Muayyan lidning tarixini (o'zgarishlar xronologiyasini) olib beruvchi API
+    Muayyan lidning yoki umumiy lidlar tarixini (o'zgarishlar xronologiyasini) olib beruvchi API
     """
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        lead_id = request.query_params.get('lead_id')
+        lead_id = request.query_params.get('lead_id') or request.query_params.get('lead')
+        org_id = getattr(request.user, 'organization_id', None)
 
-        if not lead_id:
-            return Response(
-                {"error": "lead_id parametri yuborilishi majburiy!"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        if lead_id and str(lead_id).isdigit():
+            try:
+                lead = Lead.objects.get(id=lead_id)
+                history = CRMLeadsHistory.objects.filter(lead=lead).order_by('-created_at')
+                serializer = CRMLeadsHistorySerializer(history, many=True)
+                return Response({
+                    "lead_id": lead.id,
+                    "lead_name": lead.name,
+                    "history": serializer.data
+                }, status=status.HTTP_200_OK)
+            except Lead.DoesNotExist:
+                return Response(
+                    {"error": "Lid topilmadi!"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
-        try:
-            # Lid mavjudligini tekshiramiz
-            lead = Lead.objects.get(id=lead_id)
-
-            # Shunga tegishli tarixlarni vaqt bo'yicha eng yangisini tepaga saralab olamiz
-            history = CRMLeadsHistory.objects.filter(lead=lead).order_by('-created_at')
-
-            serializer = CRMLeadsHistorySerializer(history, many=True)
-
-            return Response({
-                "lead_id": lead.id,
-                "lead_name": lead.name,
-                "history": serializer.data
-            }, status=status.HTTP_200_OK)
-
-        except Lead.DoesNotExist:
-            return Response(
-                {"error": "Lid topilmadi!"},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        # Umumiy lidlar tarixi (lead_id ko'rsatilmaganda)
+        qs = CRMLeadsHistory.objects.all()
+        if org_id:
+            qs = qs.filter(lead__organization_id=org_id)
+        history = qs.order_by('-created_at')[:100]
+        serializer = CRMLeadsHistorySerializer(history, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class CRMLeadLostViewSet(TenantViewSetMixin, CreateListRetrieveViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
@@ -489,23 +488,3 @@ class PublicLeadSubmitAPIView(APIView):
                 "message": "Ma'lumotlar qabul qilindi, tez orada aloqaga chiqamiz!"
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class CRMLeadsHistoryViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
-    permission_page_name = 'Lidlar'
-    queryset = CRMLeadsHistory.objects.all()
-    serializer_class = CRMLeadsHistorySerializer
-    filter_backends = [DjangoFilterBackend, SearchFilter]
-    filterset_fields = ['lead']
-    search_fields = ['change_description', 'lead__name']
-
-    def get_queryset(self):
-        org_id = self.get_organization_id()
-        qs = CRMLeadsHistory.objects.all()
-        if org_id:
-            qs = qs.filter(lead__organization_id=org_id)
-        lead_id = self.request.query_params.get('lead') or self.request.query_params.get('lead_id')
-        if lead_id and str(lead_id).isdigit():
-            qs = qs.filter(lead_id=int(lead_id))
-        return qs.order_by('-created_at')
