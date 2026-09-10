@@ -43,6 +43,8 @@ def send_telegram_message(token, chat_id, text, reply_markup=None):
 STUDENT_BOT_TOKEN = "8987298254:AAEGTUlbiXG1_ZO41JnowqIRWkqVOxbB2iY"
 REPORT_BOT_TOKEN = "8697561524:AAHyj2sGeNuYS5K8omuZoDdmtTBXz0Oob94"
 STAFF_BOT_TOKEN = "8905500199:AAHcQuEV7k5IlvrZI7ixA8HNS_UZ8TRPgZA"
+FORGOT_PASSWORD_BOT_TOKEN = "8768977551:AAELJeRFsjT3ZnIRt1uOJGeWmGFVOf1xLOQ"
+FORGOT_PASSWORD_BOT_USERNAME = "forgotpasssword_bot"
 
 
 def get_student_bot_token(organization=None):
@@ -102,7 +104,7 @@ def get_verification_bot_token(organization=None):
     setting = TelegramNotificationSetting.objects.filter(verification_bot_token__isnull=False).exclude(verification_bot_token="").first()
     if setting and setting.verification_bot_token:
         return setting.verification_bot_token
-    return None
+    return FORGOT_PASSWORD_BOT_TOKEN
 
 
 def get_auth_bot_info(organization=None, role=None):
@@ -119,38 +121,15 @@ def get_auth_bot_info(organization=None, role=None):
     token = None
     username = None
 
-    if setting:
-        if role == 'student' and setting.student_bot_token:
-            token = setting.student_bot_token
-            username = setting.student_bot_username
-        elif role in ['teacher', 'admin', 'manager', 'owner', 'employee', 'receptionist'] and setting.staff_bot_token:
-            token = setting.staff_bot_token
-            username = setting.staff_bot_username
-        
-        if not token and setting.verification_bot_token:
-            token = setting.verification_bot_token
-            username = setting.verification_bot_username
-        if not token and setting.staff_bot_token:
-            token = setting.staff_bot_token
-            username = setting.staff_bot_username
-        if not token and setting.bot_token:
-            token = setting.bot_token
-            username = setting.bot_username
+    if setting and setting.verification_bot_token:
+        token = setting.verification_bot_token
+        username = setting.verification_bot_username
 
     if not token:
-        token = STAFF_BOT_TOKEN
-        
-    if not username and token:
-        try:
-            r = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=3)
-            if r.status_code == 200:
-                data = r.json()
-                if data.get('ok'):
-                    username = data['result']['username']
-        except Exception:
-            pass
+        token = FORGOT_PASSWORD_BOT_TOKEN
+        username = FORGOT_PASSWORD_BOT_USERNAME
 
-    clean_username = (username or "SmartTalimBot").lstrip("@")
+    clean_username = (username or FORGOT_PASSWORD_BOT_USERNAME).lstrip("@")
     return token, clean_username
 
 
