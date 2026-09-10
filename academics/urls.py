@@ -11,8 +11,12 @@ from .views import (
     StaffProfileAPIView, StaffScheduleAPIView, BotMessageTemplateViewSet, TelegramWebhookView, SetLessonTopicAPIView,
     CancelOrRestoreLessonAPIView, RescheduleLessonAPIView, GroupLessonListAPIView, BirthdayCalendarAPIView,
     StudentEvaluationLevelViewSet, CourseMaterialViewSet, CheckBotRegistrationAPIView,
-    BuildingViewSet, SchoolClassViewSet, ParentViewSet, StudentAddressViewSet, StudentAppealViewSet
+    BuildingViewSet, SchoolClassViewSet, ParentViewSet, StudentAddressViewSet, StudentAppealViewSet,
+    StudentTransactionsViewSet, TeacherViewSet,
+    LessonCalendarAPIView, LessonStatisticsAPIView,
+    CoursesReportAPIView, LeaveReasonsReportAPIView, TeachersReportAPIView
 )
+from finance.views import TeacherSalaryPaymentsView
 from .views import StudentFieldSettingViewSet
 from finance.views import TeacherSalaryCalculationViewSet, TeacherSalaryRuleViewSet, TeacherWorkLogViewSet
 
@@ -38,6 +42,9 @@ router.register(r'group-teachers', GroupTeacherViewSet, basename='group-teacher'
 router.register(r'lesson-schedules', LessonScheduleViewSet, basename='lesson-schedule')
 router.register(r'student-balances', StudentBalancesViewSet, basename='student-balance')
 router.register(r'attendances', AttendanceViewSet, basename='attendance')
+router.register(r'student-transactions', StudentTransactionsViewSet, basename='student-transaction')
+router.register(r'teachers', TeacherViewSet, basename='academic-teacher')
+router.register(r'teacher-salary-payments', TeacherSalaryPaymentsView, basename='academic-teacher-salary-payments')
 
 # New ViewSets
 router.register(r'buildings', BuildingViewSet, basename='building')
@@ -67,7 +74,14 @@ router.register(r'evaluation-levels', StudentEvaluationLevelViewSet, basename='e
 router.register(r'course-materials', CourseMaterialViewSet, basename='course-material')
 
 urlpatterns = [
-    path('student-transactions/', StudentTransactionsView.as_view(), name='student-transactions'),
+    path('student-transactions/', StudentTransactionsViewSet.as_view({'get': 'list', 'post': 'create'}), name='student-transactions'),
+    path('student-transactions/<int:pk>/', StudentTransactionsViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='student-transactions-detail'),
+    path('reports/courses/', CoursesReportAPIView.as_view(), name='reports-courses'),
+    path('reports/leave-reasons/', LeaveReasonsReportAPIView.as_view(), name='reports-leave-reasons'),
+    path('reports/student-leaves/', LeaveReasonsReportAPIView.as_view(), name='reports-student-leaves'),
+    path('reports/teachers/', TeachersReportAPIView.as_view(), name='reports-teachers'),
+    path('lessons/calendar/', LessonCalendarAPIView.as_view(), name='lessons-calendar'),
+    path('lessons/<int:lesson_id>/statistics/', LessonStatisticsAPIView.as_view(), name='lesson-statistics'),
     path('attendences/group/<int:group_id>/', GroupAttendanceView.as_view(), name='group-attendance'),
     path('attendances/group/<int:group_id>/', GroupAttendanceView.as_view(), name='group-attendance-alt'),
     path(

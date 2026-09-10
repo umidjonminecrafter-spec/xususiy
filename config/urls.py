@@ -13,7 +13,8 @@ from drf_spectacular.views import (
 )
 
 from django.http import JsonResponse
-from academics.views import TelegramWebhookView
+from academics.views import TelegramWebhookView, BuildingViewSet
+from accounts.views import EmployeeViewSet
 
 def health_check(request):
     return JsonResponse({"status": "healthy", "service": "SmartTalim Backend"})
@@ -63,6 +64,10 @@ urlpatterns = [
     path('api/v1/analytics/', include('analytics.urls')),
     path('api/v1/support/', include('support.urls')),
     path('api/v1/kpi/', include('kpi.urls')),
+    path('api/v1/settings/buildings/', BuildingViewSet.as_view({'get': 'list', 'post': 'create'}), name='settings-buildings-list'),
+    path('api/v1/settings/buildings/<int:pk>/', BuildingViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='settings-buildings-detail'),
+    path('api/v1/users/teachers/', EmployeeViewSet.as_view({'get': 'list', 'post': 'create'}), name='users-teachers-list'),
+    path('api/v1/users/teachers/<int:pk>/', EmployeeViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='users-teachers-detail'),
 ]
 
 if settings.DEBUG:

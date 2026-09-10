@@ -689,7 +689,12 @@ class TeacherSalaryPaymentSerializer(serializers.ModelSerializer):
 
 
 class AttendanceSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source='student.__str__', read_only=True)
+    student_name = serializers.SerializerMethodField(read_only=True)
+
+    def get_student_name(self, obj):
+        if obj.student:
+            return f"{obj.student.first_name} {obj.student.last_name or ''}".strip()
+        return "Noma'lum"
 
     class Meta:
         model = Attendance

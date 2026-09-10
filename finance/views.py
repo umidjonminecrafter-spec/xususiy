@@ -1649,7 +1649,6 @@ class TeacherSalaryPaymentsView(TenantViewSetMixin, viewsets.ModelViewSet):
     serializer_class = TeacherSalaryPaymentSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['teacher']
-    pagination_class = None
 
     def perform_create(self, serializer):
         cashbox_id = self.request.data.get('cashbox') or self.request.data.get('cashbox_id')
@@ -1674,16 +1673,61 @@ class TeacherSalaryPaymentsView(TenantViewSetMixin, viewsets.ModelViewSet):
         serializer.save(**extra)
 
     def create(self, request, *args, **kwargs):
-        from finance.models import Cashbox
+        from finance.models import Cashbox, Transaction
         from decimal import Decimal
-        cashbox_id = request.data.get('cashbox') or request.data.get('cashbox_id')
-        amount = request.data.get('amount')
+        from django.db import transaction as db_transaction
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
 
-        if cashbox_id and amount is not None:
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        calc_id = (
+            data.get('calculation_id') or
+            data.get('calculation') or
+            data.get('salary_calculation_id') or
+            data.get('salary_calculation') or
+            data.get('calc_id')
+        )
+        calc_obj = None
+        if calc_id:
+            from finance.models import TeacherSalaryCalculation
+            calc_obj = TeacherSalaryCalculation.objects.filter(id=calc_id).first()
+            if calc_obj:
+                if not data.get('teacher'):
+                    data['teacher'] = calc_obj.teacher_id
+                if not data.get('period'):
+                    data['period'] = calc_obj.period
+
+        if not data.get('teacher') and data.get('teacher_id'):
+            data['teacher'] = data.get('teacher_id')
+
+        if not data.get('period'):
+            data['period'] = '2026-09'
+
+        cashbox_id = data.get('cashbox') or data.get('cashbox_id')
+        amount = data.get('amount')
+        org_id = self.get_organization_id() or getattr(request.user, 'organization_id', None)
+
+        if not cashbox_id:
+            cb_default = Cashbox.objects.filter(organization_id=org_id).first()
+            if cb_default:
+                cashbox_id = cb_default.id
+                data['cashbox'] = cb_default.id
+
+        cashbox = None
+        if cashbox_id:
+            cashbox = Cashbox.objects.filter(id=cashbox_id).first()
+
+        if not cashbox:
+            return Response({
+                "detail": "Oylik to'lash uchun kassa tanlanishi shart!",
+                "cashbox": "Oylik to'lash uchun kassa tanlanishi shart!"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        payout_amount = Decimal('0.00')
+        if amount is not None:
             try:
                 payout_amount = Decimal(str(amount))
-                cashbox = Cashbox.objects.filter(id=cashbox_id).first()
-                if cashbox and Decimal(str(cashbox.balance or 0)) < payout_amount:
+                if Decimal(str(cashbox.balance or 0)) < payout_amount:
                     bal_str = f"{int(cashbox.balance):,} UZS".replace(",", " ")
                     payout_str = f"{int(payout_amount):,} UZS".replace(",", " ")
                     return Response({
@@ -1691,9 +1735,61 @@ class TeacherSalaryPaymentsView(TenantViewSetMixin, viewsets.ModelViewSet):
                         "cashbox": f"Kassada mablag' yetarli emas! (Joriy balans: {bal_str})"
                     }, status=status.HTTP_400_BAD_REQUEST)
             except (ValueError, TypeError):
-                pass
+                return Response({"detail": "Noto'g'ri summa kiritildi."}, status=status.HTTP_400_BAD_REQUEST)
 
-        return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+
+        with db_transaction.atomic():
+            self.perform_create(serializer)
+            instance = serializer.instance
+            payment_id = instance.id
+            teacher_id = data.get('teacher') or getattr(instance, 'teacher_id', None)
+            period = data.get('period') or getattr(instance, 'period', '2026-09')
+
+            teacher_obj = User.objects.filter(id=teacher_id).first() if teacher_id else None
+
+            # Aniq tanlangan kassa bo'yicha chiqim tranzaksiyasini yaratish/yangilash
+            tx = None
+            if payment_id:
+                tx = Transaction.objects.filter(description__endswith=f"(SglID: {payment_id})").first()
+
+            if tx:
+                tx.cashbox = cashbox
+                tx.amount = payout_amount
+                tx.save(update_fields=['cashbox', 'amount'])
+            else:
+                sgl_tag = f" (SglID: {payment_id})" if payment_id else ""
+                Transaction.objects.create(
+                    organization_id=org_id,
+                    cashbox=cashbox,
+                    amount=payout_amount,
+                    type='EXPENSE',
+                    category='SALARY',
+                    employee=teacher_obj,
+                    description=f"O'qituvchi maosh to'lovi: {teacher_obj}{sgl_tag}"
+                )
+
+            # Kassa balansini yangilash
+            cashbox.balance = Decimal(str(cashbox.balance or 0)) - payout_amount
+            cashbox.save(update_fields=['balance'])
+
+            # Agar hisob-kitob mavjud bo'lsa, uni to'langan qilib yangilash
+            calc = calc_obj
+            if not calc and teacher_id and period:
+                calc = TeacherSalaryCalculation.objects.filter(
+                    organization_id=org_id,
+                    teacher_id=teacher_id,
+                    period=period
+                ).first()
+            if calc:
+                curr_paid = Decimal(str(calc.details.get('paid_amount', 0.0))) + payout_amount
+                calc.details['paid_amount'] = float(curr_paid)
+                calc.details['is_paid'] = True
+                calc.save(update_fields=['details'])
+
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     @decorators.action(detail=False, methods=['get'])
     def summary(self, request):
@@ -2443,36 +2539,63 @@ class AdvancedPaymentReportAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """To'lovlar uchun o'qituvchi, sana va kassa bo'yicha o'ta tez ishlaydigan filter"""
-        org_id = getattr(request.user, 'organization_id', None)
-        queryset = Payment.objects.filter(organization_id=org_id).select_related('student', 'cashbox', 'employee')
+        """To'lovlar uchun o'qituvchi, sana va kassa bo'yicha o'ta tez va xavfsiz filter"""
+        try:
+            org_id = getattr(request.user, 'organization_id', None) or request.query_params.get('org_id')
+            queryset = Payment.objects.all().select_related('student', 'cashbox', 'employee')
+            if org_id and str(org_id).isdigit():
+                queryset = queryset.filter(organization_id=int(org_id))
+            elif org_id:
+                queryset = queryset.filter(organization_id=org_id)
 
-        # Filter: Branch bo'yicha (filiallararo ma'lumotlar aralashib ketmasligi uchun)
-        branch_id = get_active_branch_id(request)
-        if branch_id:
-            queryset = queryset.filter(branch_id=branch_id)
+            branch_id = get_active_branch_id(request)
+            if branch_id and str(branch_id).isdigit():
+                queryset = queryset.filter(branch_id=int(branch_id))
 
-        # 1. Sana bo'yicha filter (Sana oralig'i)
-        start_date = request.query_params.get('start_date')
-        end_date = request.query_params.get('end_date')
-        if start_date and end_date:
-            queryset = queryset.filter(date__range=[start_date, end_date])
+            start_date = request.query_params.get('start_date') or request.query_params.get('from_date')
+            end_date = request.query_params.get('end_date') or request.query_params.get('to_date')
+            if start_date and end_date:
+                queryset = queryset.filter(date__range=[start_date, end_date])
+            elif start_date:
+                queryset = queryset.filter(date__gte=start_date)
+            elif end_date:
+                queryset = queryset.filter(date__lte=end_date)
 
-        # 2. Kassa bo'yicha filter
-        cashbox_id = request.query_params.get('cashbox_id')
-        if cashbox_id:
-            queryset = queryset.filter(cashbox_id=cashbox_id)
+            cashbox_id = request.query_params.get('cashbox_id') or request.query_params.get('cashbox')
+            if cashbox_id and str(cashbox_id).isdigit():
+                queryset = queryset.filter(cashbox_id=int(cashbox_id))
 
-        # 3. O'QITUVCHI BO'YICHA FILTER (Eng muhimi va tez ishlaydigani)
-        # O'quvchi o'qituvchining faol guruhlarida bormi yoki yo'qligini StudentGroup orqali bog'lab tekshiradi
-        teacher_id = request.query_params.get('teacher_id')
-        if teacher_id:
-            queryset = queryset.filter(
-                student__student_groups__group__teacher_id=teacher_id
-            ).distinct()
+            teacher_id = request.query_params.get('teacher_id') or request.query_params.get('teacher')
+            if teacher_id and str(teacher_id).isdigit():
+                queryset = queryset.filter(
+                    student__student_groups__group__teacher_id=int(teacher_id)
+                ).distinct()
 
-        serializer = PaymentSerializer(queryset, many=True)
-        return Response(serializer.data)
+            search_query = request.query_params.get('search') or request.query_params.get('q')
+            if search_query:
+                from django.db.models import Q
+                queryset = queryset.filter(
+                    Q(student__first_name__icontains=search_query) |
+                    Q(student__last_name__icontains=search_query) |
+                    Q(comment__icontains=search_query)
+                )
+
+            queryset = queryset.order_by('-date', '-id')
+
+            page = request.query_params.get('page')
+            if page:
+                from rest_framework.pagination import PageNumberPagination
+                paginator = PageNumberPagination()
+                paginator.page_size = 20
+                paginated_qs = paginator.paginate_queryset(queryset, request)
+                serializer = PaymentSerializer(paginated_qs, many=True)
+                return paginator.get_paginated_response(serializer.data)
+
+            serializer = PaymentSerializer(queryset, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            logger.error(f"AdvancedPaymentReportAPIView xatoligi: {e}")
+            return Response({"error": "Hisobotni yuklashda xatolik", "detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class TransactionCreateAPIView(APIView):
@@ -4019,3 +4142,57 @@ def temp_log_view(request):
     with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
         lines = f.readlines()[-150:]
     return HttpResponse("<pre>" + "".join(lines) + "</pre>")
+
+class LeadsReportDetailedView(TenantViewSetMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated, HasOrganizationPagePermission]
+    permission_page_name = 'Lidlar hisoboti'
+    """
+    Lidlar bo'yicha batafsil hisobot (bosqichlar, manbalar, statuslar va umumiy konversiya)
+    """
+
+    def get(self, request):
+        org_id = self.get_organization_id() or getattr(request.user, 'organization_id', None)
+        if not org_id:
+            return Response({"detail": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        start_date = request.query_params.get('start_date') or request.query_params.get('from_date')
+        end_date = request.query_params.get('end_date') or request.query_params.get('to_date')
+
+        from crm.models import Lead, Source
+        leads_qs = Lead.objects.filter(organization_id=org_id)
+
+        if start_date:
+            leads_qs = leads_qs.filter(created_at__date__gte=start_date)
+        if end_date:
+            leads_qs = leads_qs.filter(created_at__date__lte=end_date)
+
+        total_count = leads_qs.count()
+        won_count = leads_qs.filter(status='won').count()
+        lost_count = leads_qs.filter(status='lost').count()
+        active_count = leads_qs.filter(status__in=['new', 'in_progress', 'contacted']).count()
+
+        sources_summary = []
+        for s in Source.objects.filter(organization_id=org_id):
+            s_leads = leads_qs.filter(source=s)
+            s_count = s_leads.count()
+            if s_count > 0:
+                s_won = s_leads.filter(status='won').count()
+                sources_summary.append({
+                    "id": s.id,
+                    "name": s.name,
+                    "total": s_count,
+                    "won": s_won,
+                    "conversion_rate": round((s_won / s_count * 100), 1)
+                })
+
+        conversion_rate = round((won_count / total_count * 100), 1) if total_count > 0 else 0.0
+
+        return Response({
+            "total_leads": total_count,
+            "won_leads": won_count,
+            "lost_leads": lost_count,
+            "active_leads": active_count,
+            "conversion_rate": conversion_rate,
+            "sources": sources_summary,
+            "results": list(leads_qs.values('id', 'name', 'phone', 'status', 'created_at')[:100])
+        }, status=status.HTTP_200_OK)

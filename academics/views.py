@@ -173,6 +173,24 @@ class RoomViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
+    @decorators.action(detail=False, methods=['get'], url_path='available')
+    def available(self, request):
+        """Bo'sh xonalar ro'yxati (ixtiyoriy vaqt va kun bo'yicha filter)"""
+        queryset = self.filter_queryset(self.get_queryset())
+        day = request.query_params.get('day_type') or request.query_params.get('day')
+        time_id = request.query_params.get('lesson_time') or request.query_params.get('time_id') or request.query_params.get('lesson_time_id')
+        if day and time_id:
+            from academics.models import Group
+            occupied_room_ids = Group.objects.filter(
+                organization_id=self.get_organization_id(),
+                status='active',
+                day_type=day,
+                lesson_time_id=time_id
+            ).values_list('room_id', flat=True)
+            queryset = queryset.exclude(id__in=occupied_room_ids)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
 
 class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
@@ -184,7 +202,11 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     pagination_class = None
 
     def get_queryset(self):
-        queryset = super().get_queryset().exclude(is_archived=True)
+        is_archived_param = self.request.query_params.get('is_archived') or self.request.query_params.get('archived')
+        if is_archived_param and str(is_archived_param).lower() in ('true', '1'):
+            queryset = super().get_queryset().filter(is_archived=True)
+        else:
+            queryset = super().get_queryset().exclude(is_archived=True)
         group_id = self.request.query_params.get('group') or self.request.query_params.get('group_id')
         if group_id:
             queryset = queryset.filter(student_groups__group_id=group_id)
@@ -546,6 +568,49 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 for att in attendances
             ]
         }, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        student = self.get_object()
+        reason = request.data.get('reason') or "Arxivlangan"
+        comment = request.data.get('comment') or ""
+        StudentArchive.objects.create(
+            organization=student.organization,
+            branch=student.branch,
+            first_name=student.first_name,
+            last_name=student.last_name,
+            phone=student.phone,
+            email=student.email,
+            role="Student",
+            reason=reason,
+            comment=comment,
+            archived_by=request.user.get_full_name() or request.user.username if request.user.is_authenticated else "Tizim"
+        )
+        student.is_archived = True
+        student.save(update_fields=['is_archived', 'updated_at'])
+        from accounts.models import User
+        if student.phone:
+            username = f"{student.phone}_{student.organization_id}"
+            qs = User.objects.filter(username=username, role='student')
+            if not qs.exists():
+                qs = User.objects.filter(username=student.phone, role='student')
+            qs.update(is_active=False)
+        return Response({"status": "archived", "id": student.id, "is_archived": True}, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=True, methods=['post'])
+    def restore(self, request, pk=None):
+        student = self.get_object()
+        student.is_archived = False
+        student.save(update_fields=['is_archived', 'updated_at'])
+        from accounts.models import User
+        if student.phone:
+            username = f"{student.phone}_{student.organization_id}"
+            qs = User.objects.filter(username=username, role='student')
+            if not qs.exists():
+                qs = User.objects.filter(username=student.phone, role='student')
+            qs.update(is_active=True)
+        StudentArchive.objects.filter(phone=student.phone, organization=student.organization).delete()
+        return Response({"status": "restored", "id": student.id, "is_archived": False}, status=status.HTTP_200_OK)
 
     @decorators.action(detail=False, methods=['post'], url_path='import-excel')
     def import_excel(self, request):
@@ -1139,6 +1204,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+
+
+
+
 class GroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     permission_page_name = 'Guruhlar'
@@ -1197,6 +1266,14 @@ class GroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 "detail": "Guruhda talabalar borligi sababli uni o'chirish mumkin emas. Avval talabalarni guruhdan chiqaring."
             }, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
+
+    @decorators.action(detail=True, methods=['get'])
+    def students(self, request, pk=None):
+        group = self.get_object()
+        student_groups = group.group_students.select_related('student').filter(student__isnull=False)
+        students = [sg.student for sg in student_groups if sg.student]
+        serializer = StudentSerializer(students, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @decorators.action(detail=True, methods=['post'])
     def archive(self, request, pk=None):
@@ -1577,6 +1654,8 @@ class GroupAttendanceView(TenantViewSetMixin, APIView):
             attendances = Attendance.objects.filter(group_id=group_id, organization_id=org_id)
         serializer = AttendanceSerializer(attendances, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 
     def post(self, request, group_id):
         org_id = self.get_organization_id()
@@ -3087,3 +3166,249 @@ class StudentAppealViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
         serializer = self.get_serializer(appeal)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class StudentTransactionsViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    """Talabalar to'lovlari / tranzaksiyalari uchun to'liq CRUD ViewSet"""
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
+    permission_page_name = "Barcha to'lovlar"
+    from finance.serializers import PaymentSerializer
+    serializer_class = PaymentSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['student', 'cashbox', 'payment_method']
+    search_fields = ['student__first_name', 'student__last_name', 'comment']
+    ordering_fields = ['date', 'amount', 'created_at']
+    ordering = ['-date', '-created_at']
+
+    def get_queryset(self):
+        from finance.models import Payment
+        org_id = self.get_organization_id()
+        if not org_id:
+            return Payment.objects.none()
+        queryset = Payment.objects.filter(organization_id=org_id).select_related('student', 'cashbox')
+        branch_id = self.get_branch_id()
+        if branch_id:
+            queryset = queryset.filter(branch_id=branch_id)
+        student_id = (
+            self.request.query_params.get('student') or
+            self.request.query_params.get('student_id') or
+            self.request.query_params.get('id')
+        )
+        if student_id:
+            queryset = queryset.filter(student_id=student_id)
+        return queryset
+
+    def perform_create(self, serializer):
+        from finance.models import Cashbox
+        branch_id = self.get_branch_id()
+        cashbox = None
+        cashbox_id = self.request.data.get('cashbox') or self.request.data.get('cashbox_id')
+        if cashbox_id:
+            cashbox = Cashbox.objects.filter(id=cashbox_id).first()
+        serializer.save(
+            organization=self.get_organization(),
+            branch_id=branch_id if branch_id else None,
+            cashbox=cashbox
+        )
+
+
+class TeacherViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    """O'qituvchilar ro'yxati va boshqaruvi (/api/v1/academics/teachers/)"""
+    permission_classes = [permissions.IsAuthenticated]
+    permission_page_name = 'Xodimlar'
+    from accounts.serializers import EmployeeSerializer
+    serializer_class = EmployeeSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    search_fields = ['first_name', 'last_name', 'phone', 'email', 'specialty']
+
+    def get_queryset(self):
+        from accounts.models import User
+        org = self.get_organization()
+        if not org:
+            return User.objects.none()
+        branch_id = self.get_branch_id()
+        qs = User.objects.filter(organization=org, is_active=True)
+        if branch_id:
+            qs = qs.filter(branch_id=branch_id)
+        from django.db.models import Q
+        return qs.filter(
+            Q(role__iexact='teacher') |
+            Q(position__icontains='teacher') |
+            Q(position__icontains="o'qituvchi") |
+            Q(position__icontains='oqituvchi') |
+            Q(position__icontains='ustoz') |
+            (Q(specialty__isnull=False) & ~Q(specialty=''))
+        ).exclude(is_superuser=True).distinct()
+
+
+class LessonCalendarAPIView(APIView):
+    """Darslar kalendari endpointi (/api/v1/academics/lessons/calendar/)"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from academics.models import GroupLesson
+        from academics.serializers import GroupLessonListSerializer
+        org_id = getattr(request.user, 'organization_id', None)
+        qs = GroupLesson.objects.filter(group__organization_id=org_id).select_related(
+            'group', 'group__teacher', 'group__room', 'group__course'
+        )
+
+        group_id = request.query_params.get('group') or request.query_params.get('group_id')
+        teacher_id = request.query_params.get('teacher') or request.query_params.get('teacher_id')
+        room_id = request.query_params.get('room') or request.query_params.get('room_id')
+        start_date = request.query_params.get('start_date') or request.query_params.get('from_date')
+        end_date = request.query_params.get('end_date') or request.query_params.get('to_date')
+
+        if group_id and str(group_id).isdigit():
+            qs = qs.filter(group_id=int(group_id))
+        if teacher_id and str(teacher_id).isdigit():
+            qs = qs.filter(group__teacher_id=int(teacher_id))
+        if room_id and str(room_id).isdigit():
+            qs = qs.filter(group__room_id=int(room_id))
+        if start_date:
+            qs = qs.filter(date__gte=start_date)
+        if end_date:
+            qs = qs.filter(date__lte=end_date)
+
+        serializer = GroupLessonListSerializer(qs.order_by('date')[:500], many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class LessonStatisticsAPIView(APIView):
+    """Dars davomat statistikasi (/api/v1/academics/lessons/{id}/statistics/)"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, lesson_id=None):
+        from academics.models import GroupLesson, Attendance
+        lesson = GroupLesson.objects.filter(id=lesson_id).select_related('group').first()
+        if not lesson:
+            return Response({"error": "Dars topilmadi"}, status=status.HTTP_404_NOT_FOUND)
+
+        group = lesson.group
+        enrolled_count = group.group_students.exclude(student__is_archived=True).count()
+
+        atts = Attendance.objects.filter(group=group, date=lesson.date)
+        present_count = atts.filter(status='present').count()
+        late_count = atts.filter(status='late').count()
+        absent_count = atts.filter(status='absent').count()
+        excused_count = atts.filter(status='excused').count()
+        attended_total = present_count + late_count
+
+        attendance_rate = round((attended_total / enrolled_count * 100), 1) if enrolled_count > 0 else 0.0
+
+        return Response({
+            "lesson_id": lesson.id,
+            "group_name": group.name,
+            "date": lesson.date.isoformat(),
+            "topic": getattr(lesson, 'title', None) or getattr(lesson, 'topic', '') or "",
+            "enrolled_count": enrolled_count,
+            "present_count": present_count,
+            "late_count": late_count,
+            "absent_count": absent_count,
+            "excused_count": excused_count,
+            "attended_total": attended_total,
+            "attendance_rate": attendance_rate
+        }, status=status.HTTP_200_OK)
+
+
+class CoursesReportAPIView(TenantViewSetMixin, APIView):
+    """Kurslar bo'yicha tahliliy hisobot (/api/v1/academics/reports/courses/)"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from academics.models import Course, Group, StudentGroup
+        org_id = self.get_organization_id() or getattr(request.user, 'organization_id', None)
+        courses = Course.objects.filter(organization_id=org_id)
+        report = []
+        for c in courses:
+            groups = Group.objects.filter(course=c, organization_id=org_id, status='active')
+            students_count = StudentGroup.objects.filter(group__course=c, organization_id=org_id).exclude(student__is_archived=True).count()
+            report.append({
+                "id": c.id,
+                "name": c.name,
+                "price": float(c.price) if c.price else 0.0,
+                "active_groups_count": groups.count(),
+                "students_count": students_count,
+                "estimated_monthly_revenue": float(c.price or 0) * students_count
+            })
+        return Response(report, status=status.HTTP_200_OK)
+
+
+class LeaveReasonsReportAPIView(TenantViewSetMixin, APIView):
+    """Ketish sabablari hisoboti (/api/v1/academics/reports/leave-reasons/ va /reports/student-leaves/)"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return self._build_report(request)
+
+    def post(self, request):
+        return self._build_report(request)
+
+    def _build_report(self, request):
+        from academics.models import StudentArchive
+        from django.db.models import Count
+        org_id = self.get_organization_id() or getattr(request.user, 'organization_id', None)
+        archives = StudentArchive.objects.filter(organization_id=org_id)
+        start_date = request.query_params.get('start_date') or request.data.get('start_date')
+        end_date = request.query_params.get('end_date') or request.data.get('end_date')
+        if start_date:
+            archives = archives.filter(archived_at__date__gte=start_date)
+        if end_date:
+            archives = archives.filter(archived_at__date__lte=end_date)
+
+        total_leaves = archives.count()
+        breakdown = archives.values('reason').annotate(count=Count('id')).order_by('-count')
+
+        results = []
+        for b in breakdown:
+            r_name = b['reason'] or "Noma'lum sabab"
+            cnt = b['count']
+            percent = round((cnt / total_leaves * 100), 1) if total_leaves > 0 else 0.0
+            results.append({
+                "reason": r_name,
+                "count": cnt,
+                "percentage": percent
+            })
+
+        return Response({
+            "total_leaves": total_leaves,
+            "breakdown": results
+        }, status=status.HTTP_200_OK)
+
+
+class TeachersReportAPIView(TenantViewSetMixin, APIView):
+    """O'qituvchilar hisoboti (/api/v1/academics/reports/teachers/)"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from django.contrib.auth import get_user_model
+        from django.db.models import Q
+        from academics.models import Group, StudentGroup, Attendance
+        User = get_user_model()
+        org_id = self.get_organization_id() or getattr(request.user, 'organization_id', None)
+        teachers = User.objects.filter(organization_id=org_id).filter(
+            Q(role__iexact='teacher') |
+            Q(position__icontains="o'qituvchi") |
+            Q(position__icontains="oqituvchi") |
+            Q(position__icontains="teacher") |
+            Q(position__icontains="ustoz")
+        ).exclude(is_superuser=True).distinct()
+
+        report = []
+        for t in teachers:
+            groups_count = Group.objects.filter(teacher=t, organization_id=org_id, status='active').count()
+            students_count = StudentGroup.objects.filter(group__teacher=t, organization_id=org_id).exclude(student__is_archived=True).count()
+            atts = Attendance.objects.filter(group__teacher=t, organization_id=org_id)
+            total_atts = atts.count()
+            present_atts = atts.filter(status__in=['present', 'late']).count()
+            att_rate = round((present_atts / total_atts * 100), 1) if total_atts > 0 else 0.0
+
+            report.append({
+                "id": t.id,
+                "name": t.get_full_name() or t.username,
+                "phone": t.phone,
+                "active_groups_count": groups_count,
+                "students_count": students_count,
+                "attendance_rate": att_rate
+            })
+
+        return Response(report, status=status.HTTP_200_OK)

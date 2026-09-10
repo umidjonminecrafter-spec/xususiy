@@ -24,3 +24,5 @@ env/
 *.swp
 *.swo
 .DS_Store
+.env.*
+*.sqlite3

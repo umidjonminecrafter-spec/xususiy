@@ -419,38 +419,57 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
                 rule_type = 'fixed'
 
         att_charges = details.get('attendance_charges', {})
-        davomat_count = len(att_charges)
-        davomat_summa = 0.0
+        davomat_count = details.get('davomat_count') or details.get('attendance_count') or len(att_charges)
+        lessons_count = details.get('lessons_count') or details.get('lesson_count') or 0
+        davomat_summa = float(details.get('davomat_summa', 0.0))
 
-        if att_charges:
+        if att_charges and davomat_summa == 0.0:
             try:
                 davomat_summa = float(sum(Decimal(str(v)) for v in att_charges.values()))
             except Exception:
                 davomat_summa = 0.0
 
-        if rule_type == 'percentage' and davomat_summa == 0.0 and instance.teacher_id and instance.period:
+        if (davomat_count == 0 or lessons_count == 0 or (rule_type == 'percentage' and davomat_summa == 0.0)) and instance.teacher_id and instance.period:
             try:
                 year, month = map(int, instance.period.split('-'))
                 from academics.models import Attendance
-                atts = Attendance.objects.filter(
+                atts_qs = Attendance.objects.filter(
                     group__teacher_id=instance.teacher_id,
                     organization_id=instance.organization_id,
                     date__year=year,
-                    date__month=month,
-                    status__in=['present', 'late']
+                    date__month=month
                 )
-                davomat_count = atts.count()
-                from finance.models import Transaction
-                rate_str = details.get('rate') or (str(instance.teacher.salary_percentage.percent) if instance.teacher and instance.teacher.salary_percentage else '50')
-                rate = Decimal(rate_str)
-                tot = Decimal('0.00')
-                for a in atts:
-                    tx = Transaction.objects.filter(description__startswith=f"Davomat #{a.id}:").first()
-                    if tx and tx.amount > 0:
-                        tot += round(tx.amount * (rate / Decimal('100.00')), 2)
-                davomat_summa = float(tot)
+                if davomat_count == 0:
+                    davomat_count = atts_qs.filter(status__in=['present', 'late']).count()
+                if lessons_count == 0:
+                    lessons_count = atts_qs.values('group_id', 'date').distinct().count()
+
+                if rule_type == 'percentage' and davomat_summa == 0.0:
+                    from finance.models import Transaction
+                    rate_str = details.get('rate') or (str(instance.teacher.salary_percentage.percent) if instance.teacher and instance.teacher.salary_percentage else '50')
+                    rate = Decimal(rate_str)
+                    atts_present = atts_qs.filter(status__in=['present', 'late'])
+                    att_ids = list(atts_present.values_list('id', flat=True))
+                    if att_ids:
+                        tx_sum = Transaction.objects.filter(
+                            organization_id=instance.organization_id,
+                            description__startswith='Davomat #'
+                        ).filter(
+                            description__in=[f"Davomat #{aid}:" for aid in att_ids]
+                        ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
+                        if tx_sum > 0:
+                            davomat_summa = float(round(tx_sum * (rate / Decimal('100.00')), 2))
+                        else:
+                            from academics.models import StudentGroup
+                            sg_prices = dict(StudentGroup.objects.filter(group__teacher_id=instance.teacher_id, organization_id=instance.organization_id).values_list('student_id', 'price'))
+                            tot_share = Decimal('0.00')
+                            for a in atts_present.select_related('group__course'):
+                                p = sg_prices.get(a.student_id) or (a.group.course.price if a.group and a.group.course else Decimal('0.00'))
+                                if p:
+                                    tot_share += round((p / Decimal('12.00')) * (rate / Decimal('100.00')), 2)
+                            davomat_summa = float(tot_share)
             except Exception:
-                davomat_summa = 0.0
+                pass
 
         # Olingan barcha pullar (avans + to'langan maosh)
         total_taken = paid_amount + advance
@@ -496,7 +515,8 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
         rep['davomat_count'] = davomat_count
         rep['attendances_count'] = davomat_count
         rep['att_count'] = davomat_count
-        rep['lessons_count'] = davomat_count
+        rep['lessons_count'] = lessons_count
+        rep['lesson_count'] = lessons_count
 
         # DAVOMATDAN... shows total gross attendance earnings for this month
         rep['davomatdan'] = round(davomat_summa, 2)
@@ -930,4 +950,4 @@ class QuickSubstitutionSerializer(serializers.Serializer):
     substitute_hourly_rate = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
 
     reason = serializers.CharField(required=False, allow_blank=True, default="O'rinbosarlik (zamen)")
-    note = serializers.CharField(required=False, allow_blank=True, default="")
+    note = serializers.CharField(required=False, allow_blank=True, default="")

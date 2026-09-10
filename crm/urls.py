@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from crm.views import (
     PipelineViewSet, SourceViewSet, LostReasonViewSet, SectionViewSet, LeadFormViewSet, LeadViewSet,
-    CRMActivityViewSet, CRMLeadLostViewSet
+    CRMActivityViewSet, CRMLeadLostViewSet, CRMLeadsHistoryViewSet
 )
 
 from crm.views import SMSTemplateListCreateAPIView, SMSTemplateRetrieveUpdateDestroyAPIView, \
@@ -22,6 +22,7 @@ router.register(r'sections', SectionViewSet, basename='section')
 router.register(r'lead-forms', LeadFormViewSet, basename='lead-form')
 router.register(r'activities', CRMActivityViewSet, basename='activity')
 router.register(r'lost-leads', CRMLeadLostViewSet, basename='lost-lead')
+router.register(r'crm-leads-history', CRMLeadsHistoryViewSet, basename='crm-leads-history')
 
 urlpatterns = [
     path('', include(router.urls)),

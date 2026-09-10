@@ -11,6 +11,9 @@ router.register(r'sms-messages', SMSMessagesViewSet, basename='sms-message')
 router.register(r'sms-schedules', SmsSchedulesViewSet, basename='sms-schedule')
 router.register(r'sms-templates', SmsTemplatesViewSet, basename='sms-template')
 router.register(r'notification-schedules', NotificationScheduleViewSet, basename='notification-schedule')
+router.register(r'messages', SMSMessagesViewSet, basename='comm-message')
+router.register(r'schedules', SmsSchedulesViewSet, basename='comm-schedule')
+router.register(r'templates', SmsTemplatesViewSet, basename='comm-template')
 
 urlpatterns = [
     path('', include(router.urls)),

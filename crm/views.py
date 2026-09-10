@@ -489,3 +489,23 @@ class PublicLeadSubmitAPIView(APIView):
                 "message": "Ma'lumotlar qabul qilindi, tez orada aloqaga chiqamiz!"
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CRMLeadsHistoryViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    permission_page_name = 'Lidlar'
+    queryset = CRMLeadsHistory.objects.all()
+    serializer_class = CRMLeadsHistorySerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ['lead']
+    search_fields = ['change_description', 'lead__name']
+
+    def get_queryset(self):
+        org_id = self.get_organization_id()
+        qs = CRMLeadsHistory.objects.all()
+        if org_id:
+            qs = qs.filter(lead__organization_id=org_id)
+        lead_id = self.request.query_params.get('lead') or self.request.query_params.get('lead_id')
+        if lead_id and str(lead_id).isdigit():
+            qs = qs.filter(lead_id=int(lead_id))
+        return qs.order_by('-created_at')

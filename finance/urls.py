@@ -9,7 +9,7 @@ from finance.views import (
     TeacherDebtsView, TeacherDebtsSummaryView, AllDebtsView, CashboxViewSet, FinanceReportView,
     WithdrawalViewSet, ConversionReportsFunnelView, CRMLeadsListView,
     ConversionReportsOverviewView, ConversionReportsLostReasonsView, ConversionReportsPipelineTransitionsView,
-    LeadsReportPieChartView, LeadsReportBarChartView, LeadsReportStatisticsView, CompanyProfitChartView,
+    LeadsReportPieChartView, LeadsReportBarChartView, LeadsReportStatisticsView, CompanyProfitChartView, LeadsReportDetailedView,
     FinanceActionViewSet, temp_log_view, TeacherWorkLogViewSet
 )
 
@@ -80,6 +80,7 @@ urlpatterns = [
     path('leads-report/pie-chart/', LeadsReportPieChartView.as_view(), name='leads-report-pie-chart'),
     path('leads-report/bar-chart/', LeadsReportBarChartView.as_view(), name='leads-report-bar-chart'),
     path('leads-report/statistics/', LeadsReportStatisticsView.as_view(), name='leads-report-statistics'),
+    path('leads-report/detailed-report/', LeadsReportDetailedView.as_view(), name='leads-report-detailed'),
 
     path('reports/cash-flow/', CashFlowReportView.as_view(), name='report-cash-flow'),
     path('reports/employee-balance/', EmployeeFinanceBalanceReportView.as_view(), name='report-employee-balance'),
