@@ -44,6 +44,23 @@ class User(AbstractUser):
     telegram_chat_id = models.CharField(max_length=100, null=True, blank=True, verbose_name="Telegram Chat ID")
     telegram_language = models.CharField(max_length=5, default='uz', choices=[('uz', "O'zbekcha"), ('ru', 'Русский')], verbose_name="Telegram tili")
 
+    hourly_rate = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0.0,
+        null=True,
+        blank=True,
+        verbose_name="1 soat dars narxi (soatbay)"
+    )
+    salary_type = models.CharField(
+        max_length=20,
+        choices=[('percentage', 'Foizli'), ('hourly', 'Soatbay'), ('fixed', "O'zgarmas oylik")],
+        default='percentage',
+        null=True,
+        blank=True,
+        verbose_name="Oylik hisoblash turi"
+    )
+
     # 🚀 O'qituvchi xodim yaratilayotganda moliya foiz stavkasini biriktirish (1-rasm)
     salary_percentage = models.ForeignKey(
         'finance.StaffSalaryPercent',

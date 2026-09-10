@@ -215,30 +215,29 @@ StudentGroup.objects.get_or_create(organization=org, branch=branch, student=stud
 GroupTeacher.objects.get_or_create(organization=org, branch=branch, group=group, teacher=teacher)
 
 # 12. Dars jadvali va Davomat
-LessonSchedule.objects.get_or_create(
-    organization=org,
-    branch=branch,
-    group=group,
-    day_type="odd",
-    defaults={
-        "room_name": "101-xona (Cambridge)",
-        "teacher": teacher,
-        "start_time": datetime.time(14, 0),
-        "end_time": datetime.time(15, 30)
-    }
-)
-Attendance.objects.get_or_create(
-    organization=org,
-    branch=branch,
-    group=group,
-    student=student,
-    date=datetime.date.today(),
-    defaults={
-        "status": "present",
-        "grade": 5,
-        "reason": "Darsda faol qatnashdi"
-    }
-)
+if not LessonSchedule.objects.filter(organization=org, branch=branch, group=group, day_type="odd").exists():
+    LessonSchedule.objects.create(
+        organization=org,
+        branch=branch,
+        group=group,
+        day_type="odd",
+        room_name="101-xona (Cambridge)",
+        teacher=teacher,
+        start_time=datetime.time(14, 0),
+        end_time=datetime.time(15, 30)
+    )
+
+if not Attendance.objects.filter(organization=org, branch=branch, group=group, student=student, date=datetime.date.today()).exists():
+    Attendance.objects.create(
+        organization=org,
+        branch=branch,
+        group=group,
+        student=student,
+        date=datetime.date.today(),
+        status="present",
+        grade=5,
+        reason="Darsda faol qatnashdi"
+    )
 
 # 13. Kassa va To'lov
 cashbox, _ = Cashbox.objects.get_or_create(
