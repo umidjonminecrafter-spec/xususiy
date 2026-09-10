@@ -362,3 +362,28 @@ class EmployeeSerializer(serializers.ModelSerializer):
             rep['position'] = role_to_pos.get(instance.role, 'Xodim')
         rep['gender'] = 'Erkak' if instance.gender == 'M' else ('Ayol' if instance.gender == 'F' else 'Erkak')
         return rep
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    phone = serializers.CharField(required=True, max_length=50)
+
+    def validate_phone(self, value):
+        from academics.telegram_bot import normalize_phone
+        norm = normalize_phone(value)
+        if not norm:
+            raise serializers.ValidationError("Noto'g'ri telefon raqam formati kiritildi.")
+        return norm
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    session_token = serializers.CharField(required=True, max_length=64)
+    otp_code = serializers.CharField(required=False, allow_blank=True, max_length=10)
+    new_password = serializers.CharField(required=True, min_length=6, write_only=True)
+    confirm_password = serializers.CharField(required=False, allow_blank=True, min_length=6, write_only=True)
+
+    def validate(self, attrs):
+        new_pwd = attrs.get('new_password')
+        confirm_pwd = attrs.get('confirm_password')
+        if confirm_pwd and new_pwd != confirm_pwd:
+            raise serializers.ValidationError({"confirm_password": "Yangi parollar bir-biriga mos kelmadi."})
+        return attrs

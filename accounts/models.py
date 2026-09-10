@@ -90,3 +90,32 @@ class User(AbstractUser):
 
     def __str__(self):
         return f"{self.username} ({self.role})"
+
+
+class PasswordResetSession(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="password_reset_sessions",
+        verbose_name="Foydalanuvchi"
+    )
+    phone = models.CharField(max_length=50, verbose_name="Telefon raqam")
+    token = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Sessiya tokeni")
+    otp_code = models.CharField(max_length=6, verbose_name="6 xonali tasdiqlash kodi")
+    is_verified = models.BooleanField(default=False, verbose_name="Telegram orqali tasdiqlanganmi")
+    is_used = models.BooleanField(default=False, verbose_name="Parol tiklashda ishlatilganmi")
+    attempts = models.IntegerField(default=0, verbose_name="Urinishlar soni")
+    expires_at = models.DateTimeField(verbose_name="Amal qilish muddati")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Yaratilgan vaqt")
+
+    class Meta:
+        verbose_name = "Parolni tiklash sessiyasi"
+        verbose_name_plural = "Parolni tiklash sessiyalari"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Reset for {self.phone} ({self.token[:8]}...) - Verified: {self.is_verified}"
+
+    def is_expired(self):
+        from django.utils import timezone
+        return timezone.now() > self.expires_at

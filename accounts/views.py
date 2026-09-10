@@ -344,3 +344,194 @@ class MessageEmployeesView(APIView):
         for item in data:
             item['full_name'] = f"{item.get('first_name', '')} {item.get('last_name', '')}".strip() or item.get('username', '')
         return Response(data, status=status.HTTP_200_OK)
+
+
+import random
+import secrets
+import datetime
+from django.utils import timezone
+from accounts.models import PasswordResetSession
+from accounts.serializers import PasswordResetRequestSerializer, PasswordResetConfirmSerializer
+
+
+class PasswordResetRequestView(APIView):
+    """
+    Parolni unutganda telefon raqam kiritiladi.
+    - Agar foydalanuvchi botga ulangan bo'lsa (telegram_chat_id bor): darhol 6 xonali OTP yuboriladi.
+    - Agar botga ulanmagan bo'lsa: Deep-link bot havolasi generatsiya qilinadi.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        phone_normalized = serializer.validated_data['phone']
+        digits = "".join(c for c in phone_normalized if c.isdigit())
+        last9 = digits[-9:] if len(digits) >= 9 else digits
+
+        from django.db.models import Q
+        users = User.objects.filter(
+            Q(phone=phone_normalized) |
+            Q(phone__endswith=last9) |
+            Q(username=phone_normalized) |
+            Q(username__startswith=phone_normalized)
+        )
+
+        if not users.exists():
+            return Response({
+                "detail": f"Ushbu {phone_normalized} telefon raqamiga biriktirilgan foydalanuvchi topilmadi."
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        user = users.first()
+
+        # Eski ishlatilmagan sessiyalarni bekor qilish
+        PasswordResetSession.objects.filter(phone=phone_normalized, is_used=False).update(is_used=True)
+
+        # 6 xonali OTP kod va sessiya tokeni yaratish
+        otp_code = f"{random.randint(100000, 999999)}"
+        session_token = secrets.token_hex(16)
+        expires_at = timezone.now() + datetime.timedelta(minutes=5)
+
+        reset_session = PasswordResetSession.objects.create(
+            user=user,
+            phone=phone_normalized,
+            token=session_token,
+            otp_code=otp_code,
+            expires_at=expires_at
+        )
+
+        from academics.telegram_bot import get_auth_bot_info, send_telegram_message
+
+        bot_token, bot_username = get_auth_bot_info(organization=user.organization, role=user.role)
+        is_linked = bool(user.telegram_chat_id)
+
+        if is_linked:
+            # Bot orqali 6 xonali kodni yuboramiz
+            msg = (
+                f"🔐 <b>SmartTalim: Parolni tiklash</b>\n\n"
+                f"Sizning tasdiqlash kodingiz: <code>{otp_code}</code>\n\n"
+                f"⏱ Ushbu kod 5 daqiqa davomida amal qiladi.\n"
+                f"⚠️ Kodni hech kimga bermang."
+            )
+            sent = send_telegram_message(bot_token, user.telegram_chat_id, msg)
+            if not sent:
+                from academics.telegram_bot import send_telegram_to_user
+                send_telegram_to_user(user.organization, user, msg)
+
+            return Response({
+                "success": True,
+                "status": "otp_sent",
+                "is_linked": True,
+                "phone": phone_normalized,
+                "session_token": session_token,
+                "expires_at": expires_at.isoformat(),
+                "message": "6 xonali tasdiqlash kodi Telegram botingizga yuborildi."
+            }, status=status.HTTP_200_OK)
+        else:
+            # Deep-link yaratamiz
+            telegram_link = f"https://t.me/{bot_username}?start=reset_{session_token}"
+            return Response({
+                "success": True,
+                "status": "bot_link_required",
+                "is_linked": False,
+                "phone": phone_normalized,
+                "session_token": session_token,
+                "bot_username": f"@{bot_username}",
+                "telegram_link": telegram_link,
+                "expires_at": expires_at.isoformat(),
+                "message": f"Siz hali @{bot_username} botimizga ulanmagansiz. Iltimos, Telegram orqali telefon raqamingizni tasdiqlang."
+            }, status=status.HTTP_200_OK)
+
+
+class PasswordResetCheckStatusView(APIView):
+    """
+    Foydalanuvchi botda start bosib raqamini tasdiqlaganligini tekshirish (Polling uchun)
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        session_token = request.query_params.get('session_token') or request.query_params.get('token')
+        if not session_token:
+            return Response({"detail": "session_token parametri majburiy."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            session = PasswordResetSession.objects.get(token=session_token)
+        except PasswordResetSession.DoesNotExist:
+            return Response({"detail": "Sessiya topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+
+        if session.is_used:
+            return Response({"status": "used", "is_verified": False, "detail": "Ushbu sessiya allaqachon ishlatilgan."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if session.is_expired():
+            return Response({"status": "expired", "is_verified": False, "detail": "Sessiya muddati tugagan."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "status": "verified" if session.is_verified else "pending",
+            "is_verified": session.is_verified,
+            "phone": session.phone
+        }, status=status.HTTP_200_OK)
+
+
+class PasswordResetConfirmView(APIView):
+    """
+    6 xonali OTP kod va yangi parolni qabul qilib, foydalanuvchi parolini yangilaydi.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = serializer.validated_data['session_token']
+        otp_code = serializer.validated_data.get('otp_code', '').strip()
+        new_password = serializer.validated_data['new_password']
+
+        try:
+            session = PasswordResetSession.objects.get(token=session_token)
+        except PasswordResetSession.DoesNotExist:
+            return Response({"detail": "Sessiya topilmadi yoki yaroqsiz."}, status=status.HTTP_404_NOT_FOUND)
+
+        if session.is_used:
+            return Response({"detail": "Ushbu parolni tiklash havolasi allaqachon ishlatilgan."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if session.is_expired():
+            return Response({"detail": "Kodning amal qilish muddati tugagan. Qaytadan 'Parolni unutdingizmi?' tugmasini bosing."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if session.attempts >= 5:
+            return Response({"detail": "Ko'p marta noto'g'ri urinish qilindi. Iltimos, qaytadan so'rov yuboring."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Agar botda raqam tasdiqlanmagan bo'lsa, kiritilgan 6 xonali kod tekshiriladi
+        if not session.is_verified:
+            if not otp_code or otp_code != session.otp_code:
+                session.attempts += 1
+                session.save(update_fields=['attempts'])
+                return Response({"detail": "Kiritilgan tasdiqlash kodi noto'g'ri."}, status=status.HTTP_400_BAD_REQUEST)
+            session.is_verified = True
+
+        # Yangi parolni o'rnatish
+        user = session.user
+        user.set_password(new_password)
+        user.save()
+
+        # Sessiyani ishlatildi deb belgilash
+        session.is_used = True
+        session.save(update_fields=['is_used', 'is_verified'])
+
+        # Telegram botga muvaffaqiyatli o'zgargani haqida xabar yuborish
+        if user.telegram_chat_id:
+            from academics.telegram_bot import get_auth_bot_info, send_telegram_message
+            bot_token, _ = get_auth_bot_info(organization=user.organization, role=user.role)
+            send_telegram_message(
+                bot_token,
+                user.telegram_chat_id,
+                "✅ <b>SmartTalim:</b> Parolingiz muvaffaqiyatli yangilandi!\nEndi yangi parolingiz orqali tizimga kirishingiz mumkin."
+            )
+
+        return Response({
+            "success": True,
+            "message": "Parolingiz muvaffaqiyatli o'zgartirildi! Endi yangi parol bilan tizimga kirishingiz mumkin."
+        }, status=status.HTTP_200_OK)
+

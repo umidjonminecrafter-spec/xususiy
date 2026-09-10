@@ -105,6 +105,55 @@ def get_verification_bot_token(organization=None):
     return None
 
 
+def get_auth_bot_info(organization=None, role=None):
+    """
+    Parolni tiklash yoki avtorizatsiya uchun mos bot tokeni va username'ini qaytaradi
+    """
+    from organizations.models import TelegramNotificationSetting
+    setting = None
+    if organization:
+        setting = TelegramNotificationSetting.objects.filter(organization=organization).first()
+    if not setting:
+        setting = TelegramNotificationSetting.objects.filter(is_active=True).first() or TelegramNotificationSetting.objects.first()
+
+    token = None
+    username = None
+
+    if setting:
+        if role == 'student' and setting.student_bot_token:
+            token = setting.student_bot_token
+            username = setting.student_bot_username
+        elif role in ['teacher', 'admin', 'manager', 'owner', 'employee', 'receptionist'] and setting.staff_bot_token:
+            token = setting.staff_bot_token
+            username = setting.staff_bot_username
+        
+        if not token and setting.verification_bot_token:
+            token = setting.verification_bot_token
+            username = setting.verification_bot_username
+        if not token and setting.staff_bot_token:
+            token = setting.staff_bot_token
+            username = setting.staff_bot_username
+        if not token and setting.bot_token:
+            token = setting.bot_token
+            username = setting.bot_username
+
+    if not token:
+        token = STAFF_BOT_TOKEN
+        
+    if not username and token:
+        try:
+            r = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=3)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get('ok'):
+                    username = data['result']['username']
+        except Exception:
+            pass
+
+    clean_username = (username or "SmartTalimBot").lstrip("@")
+    return token, clean_username
+
+
 def get_support_bot_token(organization=None):
     from organizations.models import TelegramNotificationSetting
     if organization:
@@ -515,6 +564,29 @@ def handle_telegram_update(bot_type, token, update_data):
     if phone_raw:
         phone_normalized = normalize_phone(phone_raw)
 
+        # 🚀 Parolni tiklash (Password Reset) sessiyasini tekshirish va tasdiqlash
+        from accounts.models import PasswordResetSession
+        active_reset = PasswordResetSession.objects.filter(
+            phone=phone_normalized,
+            is_used=False
+        ).order_by('-created_at').first()
+
+        if active_reset and not active_reset.is_expired():
+            active_reset.is_verified = True
+            active_reset.save(update_fields=['is_verified'])
+            if active_reset.user:
+                active_reset.user.telegram_chat_id = chat_id
+                active_reset.user.save(update_fields=['telegram_chat_id'])
+
+            reset_msg = (
+                f"✅ <b>Telefon raqamingiz muvaffaqiyatli tasdiqlandi!</b>\n\n"
+                f"🔒 Parolni tiklash kodingiz: <code>{active_reset.otp_code}</code>\n\n"
+                f"Ushbu kodni dasturga kiriting va yangi parolingizni o'rnating.\n"
+                f"⏱ Kod 5 daqiqa davomida amal qiladi."
+            )
+            send_telegram_message(token, chat_id, reset_msg)
+            return
+
         if bot_type == 'verification':
             students = find_students_by_phone(phone_raw)
             users = find_users_by_phone(phone_raw)
@@ -678,7 +750,45 @@ def handle_telegram_update(bot_type, token, update_data):
 
 
     # 2. Buyruqlar yoki menyu tugmalarini bosganda
-    if text == "/start":
+    if text.startswith("/start"):
+        # 🔗 Deep-link orqali parolni tiklash yoki avtorizatsiya
+        if text.startswith("/start reset_") or text.startswith("/start auth_"):
+            prefix = "/start reset_" if text.startswith("/start reset_") else "/start auth_"
+            reset_token = text[len(prefix):].strip()
+            from accounts.models import PasswordResetSession
+            session = PasswordResetSession.objects.filter(token=reset_token, is_used=False).first()
+            if not session or session.is_expired():
+                msg = (
+                    "⚠️ <b>Havola eskirgan!</b>\n\n"
+                    "Ushbu parolni tiklash havolasi muddati tugagan yoki noto'g'ri.\n"
+                    "Iltimos, dasturda qaytadan 'Parolni unutdingizmi?' tugmasini bosing."
+                )
+                send_telegram_message(token, chat_id, msg)
+                return
+
+            # Agar bu foydalanuvchining chat_id si allaqachon shu chat bo'lsa:
+            if session.user and session.user.telegram_chat_id == str(chat_id):
+                session.is_verified = True
+                session.save(update_fields=['is_verified'])
+                msg = (
+                    f"🔐 <b>SmartTalim: Parolni tiklash</b>\n\n"
+                    f"Sizning hisobingiz tasdiqlandi!\n"
+                    f"🔒 Parolni tiklash kodingiz: <code>{session.otp_code}</code>\n\n"
+                    f"Ushbu kodni dasturga kiriting va yangi parolingizni o'rnating.\n"
+                    f"⏱ Kod 5 daqiqa davomida amal qiladi."
+                )
+                send_telegram_message(token, chat_id, msg)
+                return
+
+            # Aks holda telefon raqamini tasdiqlash tugmasini chiqaramiz
+            msg = (
+                f"🔐 <b>SmartTalim: Parolni tiklash</b>\n\n"
+                f"Siz <code>{session.phone}</code> raqami uchun parolni tiklashni so'radingiz.\n\n"
+                f"Ushbu hisob haqiqatan sizga tegishli ekanligini tasdiqlash uchun quyidagi <b>📱 Telefon raqamni tasdiqlash</b> tugmasini bosing:"
+            )
+            send_telegram_message(token, chat_id, msg, get_contact_keyboard("📱 Telefon raqamni tasdiqlash"))
+            return
+
         # 🌟 Yangi: Agar foydalanuvchi allaqachon bog'langan bo'lsa menyuni qayta yuborish
         if bot_type == 'student' and Student.objects.filter(telegram_chat_id=chat_id).exists():
             student = Student.objects.filter(telegram_chat_id=chat_id).first()
