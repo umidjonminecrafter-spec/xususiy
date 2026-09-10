@@ -359,6 +359,29 @@ ReceiptSetting.objects.get_or_create(organization=org, defaults={"hide_logo": Fa
 ExamSetting.objects.get_or_create(organization=org, defaults={"include_active_students": True})
 FinanceSetting.objects.get_or_create(organization=org, branch=branch, defaults={"is_bonus_enabled": True})
 
+# 19. Telegram Bot Webhooklarini avtomatik sozlash
+print("Telegram Webhooklarini sozlash...")
+import requests
+active_bots = [
+    ('student', '8987298254:AAEGTUlbiXG1_ZO41JnowqIRWkqVOxbB2iY'),
+    ('staff', '8905500199:AAHcQuEV7k5IlvrZI7ixA8HNS_UZ8TRPgZA'),
+    ('reports', '8697561524:AAHyj2sGeNuYS5K8omuZoDdmtTBXz0Oob94'),
+    ('verification', '8768977551:AAELJeRFsjT3ZnIRt1uOJGeWmGFVOf1xLOQ'),
+]
+base_render_url = 'https://xususiy.onrender.com'
+for b_type, b_token in active_bots:
+    try:
+        w_url = f"{base_render_url}/api/telegram/webhook/{b_type}/{b_token}/"
+        w_res = requests.post(
+            f"https://api.telegram.org/bot{b_token}/setWebhook",
+            data={"url": w_url, "drop_pending_updates": False},
+            timeout=5
+        ).json()
+        print(f"  🤖 {b_type.upper()} bot webhook: {w_res.get('description', w_res)}")
+    except Exception as e_w:
+        print(f"  ⚠️ Webhook sozlashda xatolik ({b_type}): {str(e_w)}")
+
 print("=" * 60)
 print("Barcha ma'lumotlar muvaffaqiyatli tayyorlandi!")
 print("=" * 60)
+
