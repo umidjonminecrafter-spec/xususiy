@@ -40,8 +40,6 @@ class Course(TenantModel):
     code = models.CharField(max_length=50, null=True, blank=True)
     lesson_time = models.CharField(max_length=50, null=True, blank=True)
     image = models.ImageField(upload_to='course_images/', null=True, blank=True)
-    color = models.CharField(max_length=30, blank=True, default="", verbose_name="Fan rangi (HEX/RGB)")
-    is_active = models.BooleanField(default=True, verbose_name="Faol / Nofaol")
 
     def __str__(self):
         return self.name
@@ -88,14 +86,6 @@ class Student(TenantModel):
     student_login = models.CharField(null=True, blank=True,)
     parent_login = models.CharField(null=True, blank=True,)
     is_archived = models.BooleanField(default=False)
-    school_class = models.ForeignKey(
-        'academics.SchoolClass',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='students_list',
-        verbose_name="Sinfi"
-    )
 
     def __str__(self):
         if self.last_name:
@@ -136,7 +126,6 @@ class StudentFieldSetting(TenantModel):
         ("payment_date", "To'lov sanasi"),
         ("address", "Uy manzili"),
         ("target_university", "Maqsad qilgan universitet"),
-        ("school_class", "Sinf"),
         ("organization", "Tashkilot"),
         ("father_name", "Otasining ismi"),
         ("father_phone", "Otasining telefon raqami"),
@@ -280,11 +269,6 @@ class Attendance(TenantModel):
                 self.branch_id = self.group.branch_id
             if not self.organization_id and self.group.organization_id:
                 self.organization_id = self.group.organization_id
-        if self.student:
-            if not self.branch_id and self.student.branch_id:
-                self.branch_id = self.student.branch_id
-            if not self.organization_id and self.student.organization_id:
-                self.organization_id = self.student.organization_id
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -529,23 +513,13 @@ class Holiday(TenantModel):
 
 
 class Homework(TenantModel):
-    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="homeworks", verbose_name="Guruh")
-    teacher = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="teaching_homeworks",
-        verbose_name="O'qituvchi"
-    )
-    title = models.CharField(max_length=255, verbose_name="Mavzu")
-    description = models.TextField(null=True, blank=True, verbose_name="Topshiriq tavsifi")
-    text = models.TextField(null=True, blank=True, verbose_name="Topshiriq tavsifi (eski)")
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="homeworks")
+    title = models.CharField(max_length=255)
+    text = models.TextField(null=True, blank=True)
     image = models.ImageField(upload_to='group_homeworks/images/', null=True, blank=True)
     video = models.FileField(upload_to='group_homeworks/videos/', null=True, blank=True)
-    file = models.FileField(upload_to='homeworks/', null=True, blank=True, verbose_name="Biriktirilgan fayl")
-    deadline = models.DateTimeField(null=True, blank=True, verbose_name="Topshirish muddati")
-    due_date = models.DateField(null=True, blank=True, verbose_name="Topshirish sanasi (eski)")
+    file = models.FileField(upload_to='group_homeworks/files/', null=True, blank=True)
+    due_date = models.DateField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -555,28 +529,6 @@ class Homework(TenantModel):
     )
 
     def save(self, *args, **kwargs):
-        # Sync description and text
-        if self.description and not self.text:
-            self.text = self.description
-        elif self.text and not self.description:
-            self.description = self.text
-
-        # Sync deadline and due_date
-        if self.deadline and not self.due_date:
-            self.due_date = self.deadline.date()
-        elif self.due_date and not self.deadline:
-            import datetime
-            from django.utils import timezone
-            self.deadline = timezone.make_aware(
-                datetime.datetime.combine(self.due_date, datetime.time(23, 59, 59))
-            )
-
-        # Sync teacher and created_by
-        if self.teacher and not self.created_by:
-            self.created_by = self.teacher
-        elif self.created_by and not self.teacher:
-            self.teacher = self.created_by
-
         if self.group:
             if not self.branch_id and self.group.branch_id:
                 self.branch_id = self.group.branch_id
@@ -585,7 +537,7 @@ class Homework(TenantModel):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.group.name if self.group else 'Guruh'} - {self.title}"
+        return f"{self.group.name} - {self.title}"
 
 
 
@@ -721,69 +673,8 @@ class BotMessageTemplate(TenantModel):
     def __str__(self):
         return f"[{self.get_target_audience_display()}] {self.title}"
 
-@receiver(post_save, sender=Attendance)
-def notify_parent_attendance(sender, instance, created, **kwargs):
-    """
-    Davomat o'zgartirilganda yoki yaratilganda ota-onaga Telegram orqali xabar beradi.
-    """
-    student = instance.student
-    if not student:
-        return
-
-    # Ota-onaning Telegram chat ID'larini yig'amiz
-    parent_chats = []
-    if student.father_telegram_chat_id:
-        parent_chats.append(student.father_telegram_chat_id)
-    if student.mother_telegram_chat_id:
-        parent_chats.append(student.mother_telegram_chat_id)
-
-    if not parent_chats:
-        return
-
-    from organizations.models import TelegramNotificationSetting
-    setting = TelegramNotificationSetting.objects.filter(organization=student.organization).first()
-    if not setting or not setting.parent_bot_token:
-        return
-
-    # Davomat statusiga qarab xabar tayyorlaymiz
-    if instance.status == 'present':
-        status_text = "darsga keldi. ✅"
-    elif instance.status == 'absent':
-        status_text = "darsga kelmadi! ❌"
-    elif instance.status == 'late':
-        status_text = "darsga kechikib keldi. ⚠️"
-    elif instance.status == 'excused':
-        status_text = "darsga sababli kelmadi. 📁"
-    else:
-        return
-
-    # Shablonni qidiramiz
-    shablon = BotMessageTemplate.objects.filter(
-        organization=student.organization, template_type='parent_check_in', is_active=True
-    ).first()
-
-    default_text = "Hurmatli ota-ona, farzandingiz {first_name} bugun {status_text}"
-    shablon_text = shablon.text if shablon else default_text
-
-    # O'zgaruvchilarni almashtiramiz
-    tayyor_matn = shablon_text.replace("{first_name}", student.first_name)
-    tayyor_matn = tayyor_matn.replace("{last_name}", student.last_name or "")
-    tayyor_matn = tayyor_matn.replace("{group_name}", instance.group.name if instance.group else "")
-    tayyor_matn = tayyor_matn.replace("{status_text}", status_text)
-
-    # Telegram bot orqali jo'natish
-    import requests
-    for chat_id in parent_chats:
-        try:
-            url = f"https://api.telegram.org/bot{setting.parent_bot_token}/sendMessage"
-            payload = {
-                'chat_id': chat_id,
-                'text': tayyor_matn,
-                'parse_mode': 'HTML'
-            }
-            requests.post(url, json=payload, timeout=5)
-        except Exception as e:
-            print(f"Error sending attendance notification to parent {chat_id}: {str(e)}")
+# NOTE: notify_parent_attendance olib tashlandi — notify_attendance_saved (pastda)
+# ham o'quvchi botiga, ham ota-ona botiga xabar yuboradi. Bu dublikat edi.
 
 class StudentEvaluationLevel(TenantModel):
     """O'quvchilarni baholash darajalari (Nomi, Min/Max foiz va Rangi)"""
@@ -829,7 +720,6 @@ def sync_group_lesson_with_lms(sender, instance, created, **kwargs):
     if not online_lesson:
         OnlineLesson.objects.create(
             organization=instance.organization,
-            branch=instance.branch,
             group=instance.group,
             title=instance.title,
             is_published=True
@@ -837,6 +727,52 @@ def sync_group_lesson_with_lms(sender, instance, created, **kwargs):
 
 
 import datetime
+
+
+def generate_group_lessons(group_instance):
+    """Guruhning boshlanish va tugash sanasi oralig'idagi dars kunlarini yaratadi"""
+    if not group_instance.start_date or not group_instance.end_date:
+        return
+
+    current_date = group_instance.start_date
+    delta = datetime.timedelta(days=1)
+
+    # Guruhning dars kunlari turi (Juft / Toq / Har kuni)
+    # Kodingizdagi day_type qiymatlariga qarab moslashtiring (masalan: 'even', 'odd')
+    day_type = getattr(group_instance, 'day_type', '').lower()
+
+    lessons_to_create = []
+
+    while current_date <= group_instance.end_date:
+        # Hafta kuni indeksi: 0=Dushanba, 1=Seshanba, 2=Chorshanba, 3=Payshanba, 4=Juma, 5=Shanba, 6=Yakshanba
+        weekday = current_date.weekday()
+
+        should_create = False
+        if 'even' in day_type or 'juft' in day_type:  # Se-Pay-Sha
+            if weekday in [1, 3, 5]:
+                should_create = True
+        elif 'odd' in day_type or 'toq' in day_type:  # Du-Chor-Ju
+            if weekday in [0, 2, 4]:
+                should_create = True
+        else:  # Agar aniq belgilanmagan bo'lsa, Yakshanbadan tashqari hamma kunlar
+            if weekday != 6:
+                should_create = True
+
+        if should_create:
+            # Agar bu sana uchun dars allaqachon yaratilmagan bo'lsa
+            if not GroupLesson.objects.filter(group=group_instance, date=current_date).exists():
+                lessons_to_create.append(
+                    GroupLesson(
+                        organization=group_instance.organization,
+                        group=group_instance,
+                        date=current_date
+                    )
+                )
+
+        current_date += delta
+
+    if lessons_to_create:
+        GroupLesson.objects.bulk_create(lessons_to_create)
 
 
 def generate_group_lessons(group_instance):
@@ -880,7 +816,6 @@ def generate_group_lessons(group_instance):
                 lessons_to_create.append(
                     GroupLesson(
                         organization=group_instance.organization,
-                        branch=group_instance.branch,
                         group=group_instance,
                         date=current_date
                     )
@@ -1048,6 +983,12 @@ def charge_attendance(student, group, date, attendance_id, organization):
     
     if tx:
         old_amount = tx.amount
+        diff = lesson_cost - old_amount
+        
+        # Agar ko'proq pul yechilishi kerak bo'lsa, balansi yetishini tekshiramiz
+        if diff > 0 and Decimal(str(student.balance)) < diff:
+            print(f"[BALANCE_WARNING] Talaba {student} balansida mablag' yetarli emas: "
+                  f"balans={student.balance}, kerak={diff}")
         
         # Update transaction
         tx.amount = lesson_cost
@@ -1057,9 +998,26 @@ def charge_attendance(student, group, date, attendance_id, organization):
         tx.save()
         
         # Adjust student's balance
-        student.balance = Decimal(str(student.balance)) - (lesson_cost - old_amount)
+        student.balance = Decimal(str(student.balance)) - diff
         student.save(update_fields=['balance'])
+        
+        # BalanceHistory yaratish (telegram xabar uchun)
+        if diff != 0:
+            try:
+                BalanceHistory.objects.create(
+                    organization=organization,
+                    student=student,
+                    amount=-diff,
+                    transaction_type=f"Davomat yangilandi ({group.name})"
+                )
+            except Exception:
+                pass
     else:
+        # Balans yetishini tekshirish
+        if Decimal(str(student.balance)) < lesson_cost:
+            print(f"[BALANCE_WARNING] Talaba {student} balansida mablag' yetarli emas: "
+                  f"balans={student.balance}, kerak={lesson_cost}")
+        
         # Create new transaction
         Transaction.objects.create(
             organization=organization,
@@ -1149,6 +1107,17 @@ def refund_attendance(student, group, date, attendance_id, organization):
         # Refund student's balance
         student.balance = Decimal(str(student.balance)) + amount_to_refund
         student.save(update_fields=['balance'])
+        
+        # BalanceHistory yaratish — telegram xabar uchun
+        try:
+            BalanceHistory.objects.create(
+                organization=organization,
+                student=student,
+                amount=amount_to_refund,
+                transaction_type=f"Davomat qaytarildi ({group.name})"
+            )
+        except Exception:
+            pass
 
     # Remove teacher salary calculation for this attendance
     if group.teacher:
@@ -1304,8 +1273,11 @@ def attendance_post_delete(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=BalanceHistory)
-def notify_balance_deduction(sender, instance, created, **kwargs):
-    if created and instance.student and instance.amount and instance.amount < 0:
+def notify_balance_change(sender, instance, created, **kwargs):
+    """
+    Har qanday balans o'zgarishida (yechish YOKI qo'shish) o'quvchi va ota-ona botiga xabar yuboradi.
+    """
+    if created and instance.student and instance.amount and instance.amount != 0:
         try:
             from academics.telegram_bot import send_telegram_message, get_student_bot_token
             from organizations.models import TelegramNotificationSetting
@@ -1315,13 +1287,14 @@ def notify_balance_deduction(sender, instance, created, **kwargs):
 
             student = instance.student
             amount_formatted = f"{int(abs(instance.amount)):,}".replace(",", " ")
-            reason = instance.transaction_type or "Balansdan yechildi"
+            reason = instance.transaction_type or "Balans o'zgarishi"
+            is_deduction = instance.amount < 0
 
             # Format exact time (HH:MM:SS)
             created_at = getattr(instance, 'created_at', None) or django_timezone.now()
             exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
 
-            # Who deducted it (Operator/Admin/Teacher)
+            # Who did it (Operator/Admin/Teacher)
             operator_name = getattr(instance, '_operator_name', None)
             if not operator_name and hasattr(instance, 'created_by') and instance.created_by:
                 operator_name = instance.created_by.get_full_name() or instance.created_by.username
@@ -1345,39 +1318,60 @@ def notify_balance_deduction(sender, instance, created, **kwargs):
                 if matched_user:
                     student_chat_id = matched_user.telegram_chat_id
 
+            balance_formatted = f"{int(student.balance):,}".replace(",", " ")
+
             if student_chat_id:
                 student_token = get_student_bot_token(instance.organization)
 
-                st_msg = (
-                    f"<b>📉 Balansingizdan pul yechildi!</b>\n\n"
-                    f"💸 <b>Yechilgan summa:</b> {amount_formatted} UZS\n"
-                    f"📝 <b>Sabab:</b> {reason}\n"
-                    f"👤 <b>Yechgan xodim:</b> {operator_name}\n"
-                    f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
-                    f"💵 <b>Yangi balansingiz:</b> {int(student.balance):,} UZS".replace(",", " ")
-                )
+                if is_deduction:
+                    st_msg = (
+                        f"<b>📉 Balansingizdan pul yechildi!</b>\n\n"
+                        f"💸 <b>Yechilgan summa:</b> {amount_formatted} UZS\n"
+                        f"📝 <b>Sabab:</b> {reason}\n"
+                        f"👤 <b>Yechgan:</b> {operator_name}\n"
+                        f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
+                        f"💵 <b>Yangi balansingiz:</b> {balance_formatted} UZS"
+                    )
+                else:
+                    st_msg = (
+                        f"<b>📈 Balansingiz to'ldirildi!</b>\n\n"
+                        f"💰 <b>Qo'shilgan summa:</b> {amount_formatted} UZS\n"
+                        f"📝 <b>Sabab:</b> {reason}\n"
+                        f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
+                        f"💵 <b>Yangi balansingiz:</b> {balance_formatted} UZS"
+                    )
                 send_telegram_message(student_token, student_chat_id, st_msg)
 
             # Also notify parent bot if linked
             setting = TelegramNotificationSetting.objects.filter(organization=instance.organization).first()
             parent_token = setting.parent_bot_token or setting.bot_token if setting else None
             if parent_token:
-                parent_msg = (
-                    f"<b>📉 Farzandingiz balansidan pul yechildi!</b>\n\n"
-                    f"👶 <b>Farzand:</b> {student.first_name} {student.last_name or ''}\n"
-                    f"💸 <b>Yechilgan summa:</b> {amount_formatted} UZS\n"
-                    f"📝 <b>Sabab:</b> {reason}\n"
-                    f"👤 <b>Yechgan xodim:</b> {operator_name}\n"
-                    f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
-                    f"💵 <b>Balans:</b> {int(student.balance):,} UZS".replace(",", " ")
-                )
+                if is_deduction:
+                    parent_msg = (
+                        f"<b>📉 Farzandingiz balansidan pul yechildi!</b>\n\n"
+                        f"👶 <b>Farzand:</b> {student.first_name} {student.last_name or ''}\n"
+                        f"💸 <b>Yechilgan summa:</b> {amount_formatted} UZS\n"
+                        f"📝 <b>Sabab:</b> {reason}\n"
+                        f"👤 <b>Yechgan:</b> {operator_name}\n"
+                        f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
+                        f"💵 <b>Balans:</b> {balance_formatted} UZS"
+                    )
+                else:
+                    parent_msg = (
+                        f"<b>📈 Farzandingiz balansiga pul tushdi!</b>\n\n"
+                        f"👶 <b>Farzand:</b> {student.first_name} {student.last_name or ''}\n"
+                        f"💰 <b>Qo'shilgan summa:</b> {amount_formatted} UZS\n"
+                        f"📝 <b>Sabab:</b> {reason}\n"
+                        f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>\n"
+                        f"💵 <b>Balans:</b> {balance_formatted} UZS"
+                    )
                 if student.father_telegram_chat_id:
                     send_telegram_message(parent_token, student.father_telegram_chat_id, parent_msg)
                 if student.mother_telegram_chat_id:
                     send_telegram_message(parent_token, student.mother_telegram_chat_id, parent_msg)
 
         except Exception as e:
-            print(f"Error sending balance deduction telegram notification: {str(e)}")
+            print(f"Error sending balance change telegram notification: {str(e)}")
 
 
 @receiver(post_save, sender=ExamResult)
@@ -1522,113 +1516,71 @@ def notify_homework_created(sender, instance, created, **kwargs):
 def notify_attendance_saved(sender, instance, created, **kwargs):
     if instance.student and instance.group:
         try:
-            from django.utils import timezone as django_timezone
-
-            # Kelgusidagi darslar (placeholderlar) uchun avtomatik xabar yubormaymiz
-            today = django_timezone.now().date()
-            if instance.date and instance.date > today:
-                return
-
-            from academics.telegram_bot import send_telegram_message, get_student_bot_token, get_parent_bot_token
+            from academics.telegram_bot import send_telegram_message, get_student_bot_token
+            from organizations.models import TelegramNotificationSetting
             from accounts.models import User
             from django.db.models import Q
+            from django.utils import timezone as django_timezone
 
             student = instance.student
             group = instance.group
-            org = instance.organization or getattr(group, 'organization', None) or getattr(student, 'organization', None)
-
-            # 1. Talabaning Telegram chat ID sini aniqlash
-            student_chat_id = getattr(student, 'telegram_chat_id', None)
-            if not student_chat_id and student.phone:
-                digits = "".join(c for c in student.phone if c.isdigit())
-                last_9 = digits[-9:] if len(digits) >= 9 else digits
-                if last_9:
-                    other_st = Student.objects.filter(
-                        phone__icontains=last_9,
-                        telegram_chat_id__isnull=False
-                    ).exclude(telegram_chat_id='').order_by('-id').first()
-                    if other_st and other_st.telegram_chat_id:
-                        student_chat_id = other_st.telegram_chat_id
-
-                if not student_chat_id:
-                    matched_user = User.objects.filter(
-                        (Q(phone=student.phone) | Q(username=student.phone) |
-                         (Q(phone__icontains=last_9) if last_9 else Q()) |
-                         (Q(username__icontains=last_9) if last_9 else Q())),
-                        telegram_chat_id__isnull=False
-                    ).exclude(telegram_chat_id='').first()
-                    if matched_user and matched_user.telegram_chat_id:
-                        student_chat_id = matched_user.telegram_chat_id
-
-                # Kelgusidagi so'rovlar uchun student yozuviga saqlab qo'yish
-                if student_chat_id and not student.telegram_chat_id:
-                    student.telegram_chat_id = str(student_chat_id)
-                    student.save(update_fields=['telegram_chat_id'])
 
             status_map = {
-                'present': "✅ Darsda qatnashdi (Keldi)",
-                'late': "⏰ Darsga kechikib keldi",
-                'absent': "❌ Darsga kelmadi (Sababsiz)",
-                'excused': "📋 Darsga qatnashmadi (Sababli)"
+                'present': "✅ Keldi (Darsda)",
+                'late': "⏰ Kechikdi",
+                'absent': "❌ Kelmadi (Sababsiz)",
+                'excused': "📋 Sababli kelmadi"
             }
-            status_text = status_map.get(str(instance.status).lower(), instance.status)
+            status_text = status_map.get(instance.status, instance.status)
 
             teacher_name = "O'qituvchi"
             if group.teacher:
                 teacher_name = group.teacher.get_full_name() or group.teacher.username
-            else:
-                from academics.models import GroupTeacher
-                gt = GroupTeacher.objects.filter(group=group).select_related('teacher').first()
-                if gt and gt.teacher:
-                    teacher_name = gt.teacher.get_full_name() or gt.teacher.username
 
-            course_name = group.course.name if getattr(group, 'course', None) else ""
-            group_display = f"{group.name} ({course_name})" if course_name else group.name
+            created_at = getattr(instance, 'created_at', None) or django_timezone.now()
+            exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
 
-            date_str = instance.date.strftime("%d.%m.%Y") if hasattr(instance.date, 'strftime') else str(instance.date)
-            exact_time = django_timezone.localtime(django_timezone.now()).strftime("%d.%m.%Y %H:%M")
+            grade_str = str(instance.grade) if instance.grade is not None else "Qo'yilmagan"
+            reason_str = instance.reason if instance.reason else "Yo'q"
 
-            grade_line = f"⭐ <b>Dars bahosi:</b> {instance.grade} ball\n" if instance.grade is not None else ""
-            reason_line = f"📝 <b>Sabab / Izoh:</b> {instance.reason}\n" if instance.reason else ""
-            balance_val = int(student.balance or 0)
-            balance_str = f"{balance_val:,} UZS".replace(",", " ")
-            org_name = org.name if org else "SmartTalim"
+            student_chat_id = getattr(student, 'telegram_chat_id', None)
+            if not student_chat_id and student.phone:
+                digits = "".join(c for c in student.phone if c.isdigit())
+                last_9 = digits[-9:] if len(digits) >= 9 else digits
+                matched_user = User.objects.filter(
+                    Q(phone=student.phone) | Q(username=student.phone) |
+                    (Q(phone__icontains=last_9) if last_9 else Q()) |
+                    (Q(username__icontains=last_9) if last_9 else Q())
+                ).filter(role='student', telegram_chat_id__isnull=False).first()
+                if matched_user:
+                    student_chat_id = matched_user.telegram_chat_id
 
-            # 1. Talaba botiga yuborish
             if student_chat_id:
-                student_token = get_student_bot_token(org)
+                student_token = get_student_bot_token(instance.organization)
                 st_msg = (
-                    f"<b>📊 DAVOMAT QAYD ETILDI!</b>\n\n"
-                    f"Hurmatli <b>{student.first_name}</b>, dars davomatingiz belgilandi:\n\n"
-                    f"🏢 <b>O'quv markaz:</b> {org_name}\n"
-                    f"👥 <b>Guruh / Fan:</b> {group_display}\n"
+                    f"<b>📊 Davomat Qayd Etildi!</b>\n\n"
+                    f"👥 <b>Guruh:</b> {group.name}\n"
                     f"📌 <b>Holatingiz:</b> {status_text}\n"
-                    f"📅 <b>Dars sanasi:</b> {date_str}\n"
-                    f"{grade_line}"
-                    f"{reason_line}"
+                    f"📅 <b>Dars sanasi:</b> {instance.date}\n"
+                    f"⭐ <b>Dars bahosi:</b> {grade_str}\n"
+                    f"📝 <b>Izoh:</b> {reason_str}\n"
                     f"👤 <b>O'qituvchi:</b> {teacher_name}\n"
-                    f"💰 <b>Joriy balansingiz:</b> <code>{balance_str}</code>\n"
-                    f"🕒 <b>Qayd etilgan vaqt:</b> <code>{exact_time}</code>\n\n"
-                    f"<i>SmartTalim tizimi orqali tasdiqlangan.</i>"
+                    f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
                 )
                 send_telegram_message(student_token, student_chat_id, st_msg)
 
-            # 2. Ota-onaning botiga yuborish
-            parent_token = get_parent_bot_token(org)
-            if parent_token and (student.father_telegram_chat_id or student.mother_telegram_chat_id):
+            setting = TelegramNotificationSetting.objects.filter(organization=instance.organization).first()
+            parent_token = setting.parent_bot_token or setting.bot_token if setting else None
+            if parent_token:
                 parent_msg = (
-                    f"<b>📊 FARZANDINGIZ DAVOMATI QAYD ETILDI!</b>\n\n"
-                    f"Hurmatli ota-ona, farzandingiz <b>{student.first_name} {student.last_name or ''}</b> ning dars davomati belgilandi:\n\n"
-                    f"🏢 <b>O'quv markaz:</b> {org_name}\n"
-                    f"👥 <b>Guruh / Fan:</b> {group_display}\n"
+                    f"<b>📊 Farzandingiz Davomati Qayd Etildi!</b>\n\n"
+                    f"👶 <b>Farzand:</b> {student.first_name} {student.last_name or ''}\n"
+                    f"👥 <b>Guruh:</b> {group.name}\n"
                     f"📌 <b>Holati:</b> {status_text}\n"
-                    f"📅 <b>Dars sanasi:</b> {date_str}\n"
-                    f"{grade_line}"
-                    f"{reason_line}"
+                    f"📅 <b>Dars sanasi:</b> {instance.date}\n"
+                    f"⭐ <b>Baho:</b> {grade_str}\n"
                     f"👤 <b>O'qituvchi:</b> {teacher_name}\n"
-                    f"💰 <b>Farzandingiz balansi:</b> <code>{balance_str}</code>\n"
-                    f"🕒 <b>Qayd etilgan vaqt:</b> <code>{exact_time}</code>\n\n"
-                    f"<i>SmartTalim tizimi orqali tasdiqlangan.</i>"
+                    f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
                 )
                 if student.father_telegram_chat_id:
                     send_telegram_message(parent_token, student.father_telegram_chat_id, parent_msg)
@@ -1659,243 +1611,4 @@ def notify_new_student_to_report_bot(sender, instance, created, **kwargs):
             send_telegram_payment_notification(instance.organization, text, 'other_payments')
         except Exception as e:
             print(f"Error sending student notification to report bot: {str(e)}")
-
-
-# ─────────────────────────────────────────────────────────────
-# 1. BINOLAR (BUILDINGS) MODELI
-# ─────────────────────────────────────────────────────────────
-class Building(TenantModel):
-    name = models.CharField(max_length=255, verbose_name="Bino nomi")
-    address = models.CharField(max_length=500, blank=True, null=True, verbose_name="Manzili")
-    capacity = models.PositiveIntegerField(default=0, verbose_name="Sig'imi")
-
-    def __str__(self):
-        return self.name
-
-    class Meta:
-        verbose_name = "Bino"
-        verbose_name_plural = "Binolar"
-
-
-# ─────────────────────────────────────────────────────────────
-# 2. SINFLAR (SCHOOL CLASSES) MODELI
-# ─────────────────────────────────────────────────────────────
-class SchoolClass(TenantModel):
-    LANGUAGE_CHOICES = (
-        ('uz', "O'zbek"),
-        ('ru', "Rus"),
-        ('en', "Ingliz"),
-    )
-    grade_level = models.CharField(max_length=10, verbose_name="Sinf darajasi (masalan: 1, 4, 11)")
-    section = models.CharField(max_length=10, verbose_name="Sinf harfi (masalan: A, B, C)")
-    language = models.CharField(max_length=10, choices=LANGUAGE_CHOICES, default='uz', verbose_name="Ta'lim tili")
-    teacher = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='led_classes',
-        verbose_name="Sinf rahbari"
-    )
-    room = models.ForeignKey(
-        'academics.Room',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='classes',
-        verbose_name="Biriktirilgan xona"
-    )
-    academic_year = models.CharField(max_length=20, default="2026-2027", verbose_name="O'quv yili")
-
-    @property
-    def name(self):
-        return f"{self.grade_level}-{self.section}"
-
-    def __str__(self):
-        return self.name
-
-    class Meta:
-        verbose_name = "Sinf"
-        verbose_name_plural = "Sinflar"
-        unique_together = ('organization', 'branch', 'grade_level', 'section', 'academic_year')
-
-
-# ─────────────────────────────────────────────────────────────
-# 3. SINF O'QUVCHILARI (CLASS - STUDENT INTERMEDIATE)
-# ─────────────────────────────────────────────────────────────
-class ClassStudent(TenantModel):
-    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='students')
-    student = models.ForeignKey('academics.Student', on_delete=models.CASCADE, related_name='enrolled_classes')
-    is_active = models.BooleanField(default=True)
-    joined_at = models.DateField(auto_now_add=True)
-
-    class Meta:
-        verbose_name = "Sinf o'quvchisi"
-        verbose_name_plural = "Sinf o'quvchilari"
-        unique_together = ('school_class', 'student')
-
-    def save(self, *args, **kwargs):
-        if self.school_class:
-            if not self.branch_id and self.school_class.branch_id:
-                self.branch_id = self.school_class.branch_id
-            if not self.organization_id and self.school_class.organization_id:
-                self.organization_id = self.school_class.organization_id
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.student} in {self.school_class}"
-
-
-# ─────────────────────────────────────────────────────────────
-# 4. OTA-ONALAR (PARENTS / GUARDIANS) MODELI
-# ─────────────────────────────────────────────────────────────
-class Parent(TenantModel):
-    RELATION_CHOICES = (
-        ('father', 'Otasi'),
-        ('mother', 'Onasi'),
-        ('guardian', 'Vasiy'),
-        ('other', 'Boshqa'),
-    )
-    student = models.ForeignKey('academics.Student', on_delete=models.CASCADE, related_name='parents', verbose_name="O'quvchisi")
-    full_name = models.CharField(max_length=255, verbose_name="F.I.O")
-    relation = models.CharField(max_length=20, choices=RELATION_CHOICES, default='father', verbose_name="Qarindoshlik darajasi")
-    phone = models.CharField(max_length=30, verbose_name="Asosiy telefon")
-    extra_phone = models.CharField(max_length=30, blank=True, null=True, verbose_name="Qo'shimcha telefon")
-    workplace = models.CharField(max_length=255, blank=True, null=True, verbose_name="Ish joyi / Kasbi")
-    address = models.CharField(max_length=500, blank=True, null=True, verbose_name="Manzili")
-    comment = models.TextField(blank=True, null=True, verbose_name="Izoh")
-
-    class Meta:
-        verbose_name = "Ota-ona"
-        verbose_name_plural = "Ota-onalar"
-
-    def save(self, *args, **kwargs):
-        if self.student:
-            if not self.branch_id and self.student.branch_id:
-                self.branch_id = self.student.branch_id
-            if not self.organization_id and self.student.organization_id:
-                self.organization_id = self.student.organization_id
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.full_name} ({self.get_relation_display()})"
-
-
-# ─────────────────────────────────────────────────────────────
-# 5. O'QUVCHILAR YASHASH MANZILLARI (STUDENT ADDRESSES)
-# ─────────────────────────────────────────────────────────────
-class StudentAddress(TenantModel):
-    student = models.OneToOneField('academics.Student', on_delete=models.CASCADE, related_name='address_info', verbose_name="O'quvchi")
-    region = models.CharField(max_length=100, default="Toshkent shahri", verbose_name="Viloyat / Shahar")
-    district = models.CharField(max_length=100, verbose_name="Tuman / Shahar")
-    address = models.CharField(max_length=500, verbose_name="To'liq manzil (Ko'cha, uy, xonadon)")
-    parent_name = models.CharField(max_length=255, blank=True, null=True, verbose_name="Ota-ona F.I.O")
-    parent_phone = models.CharField(max_length=30, blank=True, null=True, verbose_name="Ota-ona telefoni")
-    student_phone = models.CharField(max_length=30, blank=True, null=True, verbose_name="O'quvchi telefoni")
-    notes = models.TextField(blank=True, null=True, verbose_name="Qo'shimcha izoh")
-
-    class Meta:
-        verbose_name = "O'quvchi manzili"
-        verbose_name_plural = "O'quvchilar manzillari"
-
-    def save(self, *args, **kwargs):
-        if self.student:
-            if not self.branch_id and self.student.branch_id:
-                self.branch_id = self.student.branch_id
-            if not self.organization_id and self.student.organization_id:
-                self.organization_id = self.student.organization_id
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.student} - {self.district}"
-
-
-class StudentAppeal(TenantModel):
-    STATUS_CHOICES = (
-        ('pending', 'Kutilmoqda (Qabul qilinmagan)'),
-        ('in_progress', 'Ko\'rib chiqilmoqda (Qabul qilingan)'),
-        ('resolved', 'Hal etildi'),
-        ('rejected', 'Rad etildi'),
-    )
-    APPEAL_TYPES = (
-        ('complaint', 'Shikoyat'),
-        ('suggestion', 'Taklif'),
-        ('request', 'Talab / Ariza'),
-        ('other', 'Boshqa'),
-    )
-
-    student = models.ForeignKey(
-        'academics.Student',
-        on_delete=models.CASCADE,
-        related_name='appeals',
-        verbose_name="O'quvchi"
-    )
-    appeal_type = models.CharField(
-        max_length=50,
-        choices=APPEAL_TYPES,
-        default='complaint',
-        verbose_name="Murojaat turi"
-    )
-    message = models.TextField(verbose_name="Murojaat matni")
-    status = models.CharField(
-        max_length=50,
-        choices=STATUS_CHOICES,
-        default='pending',
-        verbose_name="Holati"
-    )
-    response = models.TextField(null=True, blank=True, verbose_name="Ma'muriyat javobi")
-    responded_by = models.ForeignKey(
-        'accounts.User',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='responded_appeals',
-        verbose_name="Javob bergan xodim"
-    )
-    responded_at = models.DateTimeField(null=True, blank=True, verbose_name="Javob berilgan vaqt")
-    
-    is_escalated_to_owner = models.BooleanField(
-        default=False,
-        verbose_name="Tashkilot egasiga hisobot bot orqali yuborilgan"
-    )
-    escalated_at = models.DateTimeField(null=True, blank=True, verbose_name="Egasiga yuborilgan vaqt")
-
-    # 3 kunlik qayta aloqa so'rovi (Satisfaction poll)
-    satisfaction_poll_sent = models.BooleanField(
-        default=False,
-        verbose_name="3 kunlik qoniqish so'rovi talabaga yuborilgan"
-    )
-    satisfaction_poll_sent_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        verbose_name="Qoniqish so'rovi yuborilgan vaqt"
-    )
-    student_satisfied = models.BooleanField(
-        null=True,
-        blank=True,
-        verbose_name="Talaba muammo hal bo'lganini tasdiqladi (True=Ha, False=Yo'q)"
-    )
-    satisfaction_responded_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        verbose_name="Talaba javob bergan vaqt"
-    )
-
-    class Meta:
-        verbose_name = "O'quvchi murojaati"
-        verbose_name_plural = "O'quvchilar murojaatlari"
-        ordering = ['-created_at']
-
-    def save(self, *args, **kwargs):
-        if self.student:
-            if not self.branch_id and self.student.branch_id:
-                self.branch_id = self.student.branch_id
-            if not self.organization_id and self.student.organization_id:
-                self.organization_id = self.student.organization_id
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.student.first_name} - {self.get_appeal_type_display()} ({self.status})"
-
-
 

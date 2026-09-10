@@ -3,8 +3,7 @@ from rest_framework.exceptions import ValidationError
 
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
-    Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, Cashbox,
-    TeacherWorkLog
+    Payment, Sale, Bonus, Fine, Salary, TeacherSalaryRule, TeacherSalaryCalculation, Cashbox
 )
 from .models import FinanceSetting, StaffSalaryPercent,CashTransaction,TransactionCategory
 class ExpenseCategorySerializer(serializers.ModelSerializer):
@@ -81,10 +80,6 @@ class ExpenseSerializer(serializers.ModelSerializer):
         comment = data.get('comment', '') or data.get('izoh', '')
         name = data.get('name', '') or data.get('title', '') or data.get('nomi', '')
 
-        if 'payment_method' in data:
-            from finance.models import normalize_payment_method
-            data['payment_method'] = normalize_payment_method(data['payment_method'])
-
         packed_data = {
             'recipient': recipient,
             'payment_type': payment_type,
@@ -125,7 +120,7 @@ class ExpenseSerializer(serializers.ModelSerializer):
                         "cashbox": "Siz faqat o'zingizga biriktirilgan filial kassasidan xarajat qila olasiz! Boshqa filial kassasidan pul sarflash taqiqlanadi."
                     })
 
-            # 2. Kassa balansi tekshiruvi: Xarajat uchun kassada yetarli pul bo'lishi shart! Kassa manfiy bo'lishi taqiqlanadi!
+            # 2. Kassa balansi tekshiruvi: Xarajat uchun kassada yetarli pul bo'lishi shart!
             if amount is not None:
                 amount_dec = Decimal(str(amount))
                 cb_balance = Decimal(str(cashbox.balance or 0))
@@ -151,9 +146,6 @@ class ExpenseSerializer(serializers.ModelSerializer):
         # Default fallbacks
         rep['recipient'] = ''
         rep['payment_type'] = instance.cashbox_id if instance.cashbox else None
-        rep['payment_method'] = getattr(instance, 'payment_method', 'naqd')
-        rep['branch_id'] = instance.branch_id or (instance.cashbox.branch_id if instance.cashbox else None)
-        rep['branch_name'] = instance.branch.name if instance.branch else (instance.cashbox.branch.name if instance.cashbox and instance.cashbox.branch else None)
         rep['comment'] = instance.description or ''
         rep['izoh'] = instance.description or ''
         rep['name'] = instance.description or ''
@@ -344,6 +336,8 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
     def get_bonus(self, obj):
+        if hasattr(obj, '_cached_bonus'):
+            return obj._cached_bonus
         if not obj.teacher_id or not obj.period:
             return 0.0
         try:
@@ -354,11 +348,14 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
                 date__year=year,
                 date__month=month
             ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
-            return float(val)
+            obj._cached_bonus = float(val)
+            return obj._cached_bonus
         except Exception:
             return 0.0
 
     def get_penalty(self, obj):
+        if hasattr(obj, '_cached_penalty'):
+            return obj._cached_penalty
         if not obj.teacher_id or not obj.period:
             return 0.0
         try:
@@ -369,11 +366,14 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
                 date__year=year,
                 date__month=month
             ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
-            return float(val)
+            obj._cached_penalty = float(val)
+            return obj._cached_penalty
         except Exception:
             return 0.0
 
     def get_advance(self, obj):
+        if hasattr(obj, '_cached_advance'):
+            return obj._cached_advance
         if not obj.teacher_id or not obj.period:
             return 0.0
         try:
@@ -387,24 +387,26 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
                 created_at__year=year,
                 created_at__month=month
             ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
-            return float(val)
+            obj._cached_advance = float(val)
+            return obj._cached_advance
         except Exception:
             return 0.0
 
     def get_paid_amount(self, obj):
+        if hasattr(obj, '_cached_paid_amount'):
+            return obj._cached_paid_amount
         if not obj.teacher_id or not obj.period:
             return 0.0
         try:
             year, month = map(int, obj.period.split('-'))
             from academics.models import TeacherSalaryPayment
             from django.db.models import Q
-            p_filter = Q(organization_id=obj.organization_id, teacher_id=obj.teacher_id) & (
-                Q(period=obj.period) | Q(paid_at__year=year, paid_at__month=month)
-            )
-            if obj.branch_id:
-                p_filter = p_filter & (Q(branch_id=obj.branch_id) | Q(branch__isnull=True))
-            val = TeacherSalaryPayment.objects.filter(p_filter).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
-            return float(val)
+            val = TeacherSalaryPayment.objects.filter(
+                Q(organization_id=obj.organization_id, teacher_id=obj.teacher_id) &
+                (Q(period=obj.period) | Q(paid_at__year=year, paid_at__month=month))
+            ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
+            obj._cached_paid_amount = float(val)
+            return obj._cached_paid_amount
         except Exception:
             return 0.0
 
@@ -432,6 +434,7 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
             else:
                 rule_type = 'fixed'
 
+        # 🎯 Davomat va darslar sonini olish (details dan yoki bazadan)
         att_charges = details.get('attendance_charges', {})
         davomat_count = details.get('davomat_count') or details.get('attendance_count') or len(att_charges)
         lessons_count = details.get('lessons_count') or details.get('lesson_count') or 0
@@ -474,6 +477,7 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
                         if tx_sum > 0:
                             davomat_summa = float(round(tx_sum * (rate / Decimal('100.00')), 2))
                         else:
+                            # Fallback: estimate from student groups
                             from academics.models import StudentGroup
                             sg_prices = dict(StudentGroup.objects.filter(group__teacher_id=instance.teacher_id, organization_id=instance.organization_id).values_list('student_id', 'price'))
                             tot_share = Decimal('0.00')
@@ -498,9 +502,8 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
             calc_val = float(instance.calculated_amount or 0)
             aklad_val = calc_val
             ish_haqi_val = calc_val
-            davomat_summa = 0.0
+            davomat_summa = float(details.get('davomat_summa', 0.0))
             remaining_davomat = max(0.0, calc_val - total_taken)
-            davomat_count = 0
             total_earned = calc_val
 
         net = max(0.0, (total_earned + bonus) - (paid_amount + advance + penalty))
@@ -530,7 +533,6 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
         rep['attendances_count'] = davomat_count
         rep['att_count'] = davomat_count
         rep['lessons_count'] = lessons_count
-        rep['lesson_count'] = lessons_count
 
         # DAVOMATDAN... shows total gross attendance earnings for this month
         rep['davomatdan'] = round(davomat_summa, 2)
@@ -620,14 +622,15 @@ class CashTransactionSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "employee": "Kirim amaliyotida xodimni tanlash mumkin emas!"
                 })
+            amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
+            if amount is not None and Decimal(str(amount)) <= 0:
+                raise serializers.ValidationError({"amount": "Kirim summasi musbat (0 dan katta) bo'lishi shart! ⚠️"})
 
         # 2. Agarda CHIQIM (chiqim) bo'lsa, yo xodim yoki o'quvchidan biri albatta tanlanishi shart!
         elif tx_type == 'chiqim':
             amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
-            if amount is not None:
-                from decimal import Decimal
-                if Decimal(str(amount)) <= 0:
-                    raise serializers.ValidationError({"amount": "Chiqim summasi musbat (0 dan katta) bo'lishi shart! ⚠️"})
+            if amount is not None and Decimal(str(amount)) <= 0:
+                raise serializers.ValidationError({"amount": "Chiqim summasi musbat (0 dan katta) bo'lishi shart! ⚠️"})
 
             # Check for employee keywords in comment or category name to satisfy tests
             comment_val = attrs.get('comment') or ''
@@ -667,7 +670,6 @@ class CashTransactionSerializer(serializers.ModelSerializer):
                     })
 
             if amount is not None:
-                from decimal import Decimal
                 amount_dec = Decimal(str(amount))
                 cb_balance = Decimal(str(cashbox.balance or 0))
 
@@ -712,8 +714,6 @@ class StaffSalaryPercentSerializer(serializers.ModelSerializer):
         read_only_fields = ('organization', 'branch', 'created_at', 'updated_at')
 class TransactionSerializer(serializers.ModelSerializer):
     cashbox_name = serializers.CharField(source='cashbox.name', read_only=True)
-    branch_id = serializers.IntegerField(source='branch.id', read_only=True, default=None)
-    branch_name = serializers.CharField(source='branch.name', read_only=True, default=None)
     student_name = serializers.CharField(source='student.full_name', read_only=True, default=None)
     employee_name = serializers.CharField(source='employee.username', read_only=True, default=None)
     
@@ -731,7 +731,7 @@ class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transaction
         fields = [
-            'id', 'cashbox', 'cashbox_name', 'branch_id', 'branch_name', 'amount', 'type',
+            'id', 'cashbox', 'cashbox_name', 'amount', 'type',
             'category', 'student', 'student_name', 'employee',
             'employee_name', 'description', 'created_at',
             'payment_method', 'category_name', 'comment',
@@ -740,15 +740,11 @@ class TransactionSerializer(serializers.ModelSerializer):
         ]
 
     def get_payment_method(self, obj):
-        if hasattr(obj, 'payment_method') and obj.payment_method:
-            return obj.payment_method
         if obj.source_payment:
-            return getattr(obj.source_payment, 'payment_method', 'naqd')
-        if obj.source_expense and hasattr(obj.source_expense, 'payment_method'):
-            return getattr(obj.source_expense, 'payment_method', 'naqd')
+            return obj.source_payment.payment_method
         if obj.source_cashtransaction:
-            return getattr(obj.source_cashtransaction, 'payment_method', 'naqd')
-        return "naqd"
+            return obj.source_cashtransaction.payment_method
+        return "naqd"  # Chiqimlar yoki boshqa tranzaksiyalar uchun default
 
     def get_category_name(self, obj):
         if obj.source_expense:
@@ -806,9 +802,15 @@ class TransactionSerializer(serializers.ModelSerializer):
         return 0.0
 
     def validate(self, attrs):
-        tx_type = attrs.get('type')
+        from decimal import Decimal
+        tx_type = attrs.get('type') or (self.instance.type if self.instance else None)
         description = attrs.get('description') or ''
         student = attrs.get('student')
+        amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
+        cashbox = attrs.get('cashbox') or (self.instance.cashbox if self.instance else None)
+
+        if amount is not None and Decimal(str(amount)) <= 0:
+            raise serializers.ValidationError({"amount": "Tranzaksiya summasi musbat (0 dan katta) bo'lishi shart! ⚠️"})
 
         # O'quvchi to'ladi (yoki o'quvchi/talaba/student) deb yozilsa, o'quvchini tanlash majburiy bo'lishi kerak
         if tx_type == 'INCOME':
@@ -818,6 +820,22 @@ class TransactionSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({
                         "student": "Ushbu tranzaksiya turi uchun o'quvchini tanlash majburiy!"
                     })
+        elif tx_type == 'EXPENSE':
+            if cashbox and amount is not None:
+                amount_dec = Decimal(str(amount))
+                cb_balance = Decimal(str(cashbox.balance or 0))
+                if self.instance and self.instance.cashbox_id == cashbox.id and self.instance.type == 'EXPENSE':
+                    available = cb_balance + Decimal(str(self.instance.amount or 0))
+                else:
+                    available = cb_balance
+
+                if available < amount_dec:
+                    bal_str = f"{int(cb_balance):,} UZS".replace(",", " ")
+                    amt_str = f"{int(amount_dec):,} UZS".replace(",", " ")
+                    raise serializers.ValidationError({
+                        "cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Chiqim summasi: {amt_str}. Kassa balansi manfiyga tushishi taqiqlanadi! ⚠️"
+                    })
+
         return attrs
 
 
@@ -903,6 +921,20 @@ class FinanceActionSerializer(serializers.ModelSerializer):
             if 'cashbox' in attrs:
                 attrs.pop('cashbox')
 
+        # 3. JARIMA uchun talaba balansini tekshirish
+        if action_type == 'PENALTY' and attrs.get('target_type') == 'STUDENT':
+            student = attrs.get('student')
+            amount = attrs.get('amount')
+            if student and amount:
+                from decimal import Decimal
+                student_balance = Decimal(str(student.balance))
+                if student_balance < Decimal(str(amount)):
+                    raise ValidationError({
+                        "amount": f"Mablag' yetarli emas! Talabaning joriy balansi: "
+                                  f"{int(student_balance):,} UZS. "
+                                  f"Jarima summasi ({int(amount):,} UZS) balansdan oshib ketdi.".replace(",", " ")
+                    })
+
         return attrs
 
     def create(self, validated_data):
@@ -941,58 +973,3 @@ class CashTransferSerializer(serializers.Serializer):
                 "from_cashbox": f"'{from_cashbox.name}' kassasida yetarli mablag' mavjud emas! (Balans: {bal_str}, O'tkazma: {amt_str}). Kassa manfiyga tushishi taqiqlanadi! ⚠️"
             })
         return attrs
-
-
-class TeacherWorkLogSerializer(serializers.ModelSerializer):
-    teacher_name = serializers.SerializerMethodField(read_only=True)
-    original_teacher_name = serializers.SerializerMethodField(read_only=True)
-    group_name = serializers.CharField(source='group.name', read_only=True)
-    branch_name = serializers.CharField(source='branch.name', read_only=True)
-    created_by_name = serializers.SerializerMethodField(read_only=True)
-    lesson_type_display = serializers.SerializerMethodField(read_only=True)
-
-    class Meta:
-        model = TeacherWorkLog
-        fields = [
-            'id', 'organization', 'branch', 'branch_name',
-            'date', 'teacher', 'teacher_name', 'group', 'group_name',
-            'hours', 'hourly_rate', 'total_amount',
-            'is_substitution', 'lesson_type_display',
-            'original_teacher', 'original_teacher_name',
-            'substitution_reason', 'created_by', 'created_by_name',
-            'note', 'created_at', 'updated_at'
-        ]
-        read_only_fields = ('id', 'organization', 'branch', 'total_amount', 'created_by', 'created_at', 'updated_at')
-
-    def get_lesson_type_display(self, obj):
-        return "Qo'shimcha dars" if obj.is_substitution else "Asosiy dars"
-
-    def get_teacher_name(self, obj):
-        if obj.teacher:
-            return f"{obj.teacher.first_name} {obj.teacher.last_name}".strip() or obj.teacher.username
-        return None
-
-    def get_original_teacher_name(self, obj):
-        if obj.original_teacher:
-            return f"{obj.original_teacher.first_name} {obj.original_teacher.last_name}".strip() or obj.original_teacher.username
-        return None
-
-    def get_created_by_name(self, obj):
-        if obj.created_by:
-            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.username
-        return None
-
-
-class QuickSubstitutionSerializer(serializers.Serializer):
-    date = serializers.DateField(default=datetime.date.today)
-    group_id = serializers.IntegerField(required=False, allow_null=True)
-    original_teacher_id = serializers.IntegerField(required=True)
-    original_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=True)
-    original_hourly_rate = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
-
-    substitute_teacher_id = serializers.IntegerField(required=True)
-    substitute_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=True)
-    substitute_hourly_rate = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
-
-    reason = serializers.CharField(required=False, allow_blank=True, default="O'rinbosarlik (zamen)")
-    note = serializers.CharField(required=False, allow_blank=True, default="")
