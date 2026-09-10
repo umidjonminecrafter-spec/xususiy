@@ -99,14 +99,20 @@ class ExpenseSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         from finance.models import normalize_payment_method
         from decimal import Decimal
+
         if 'payment_method' in attrs:
             attrs['payment_method'] = normalize_payment_method(attrs.get('payment_method'))
 
-        cashbox = attrs.get('cashbox')
-        amount = attrs.get('amount')
+        cashbox = attrs.get('cashbox') or (self.instance.cashbox if self.instance else None)
+        amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
 
         request = self.context.get('request')
         user = request.user if request else None
+
+        if amount is not None:
+            amount_dec = Decimal(str(amount))
+            if amount_dec <= 0:
+                raise serializers.ValidationError({"amount": "Xarajat summasi musbat (0 dan katta) bo'lishi shart! ⚠️"})
 
         if cashbox:
             # 1. Filial mosligi tekshiruvi: Menejer faqat o'z filialidagi kassadan foydalana oladi
@@ -119,14 +125,22 @@ class ExpenseSerializer(serializers.ModelSerializer):
                         "cashbox": "Siz faqat o'zingizga biriktirilgan filial kassasidan xarajat qila olasiz! Boshqa filial kassasidan pul sarflash taqiqlanadi."
                     })
 
-            # 2. Kassa balansi tekshiruvi: Xarajat uchun kassada yetarli pul bo'lishi shart!
+            # 2. Kassa balansi tekshiruvi: Xarajat uchun kassada yetarli pul bo'lishi shart! Kassa manfiy bo'lishi taqiqlanadi!
             if amount is not None:
+                amount_dec = Decimal(str(amount))
                 cb_balance = Decimal(str(cashbox.balance or 0))
-                if cb_balance < amount:
+
+                # Agar mavjud xarajat o'sha kassada tahrirlanayotgan bo'lsa, mavjud summani inobatga olamiz
+                if self.instance and self.instance.cashbox_id == cashbox.id:
+                    available = cb_balance + Decimal(str(self.instance.amount or 0))
+                else:
+                    available = cb_balance
+
+                if available < amount_dec:
                     bal_str = f"{int(cb_balance):,} UZS".replace(",", " ")
-                    amt_str = f"{int(amount):,} UZS".replace(",", " ")
+                    amt_str = f"{int(amount_dec):,} UZS".replace(",", " ")
                     raise serializers.ValidationError({
-                        "cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Xarajat summasi: {amt_str}"
+                        "cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Xarajat summasi: {amt_str}. Kassa balansi manfiyga tushishi taqiqlanadi! ⚠️"
                     })
 
         return attrs
@@ -609,6 +623,12 @@ class CashTransactionSerializer(serializers.ModelSerializer):
 
         # 2. Agarda CHIQIM (chiqim) bo'lsa, yo xodim yoki o'quvchidan biri albatta tanlanishi shart!
         elif tx_type == 'chiqim':
+            amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
+            if amount is not None:
+                from decimal import Decimal
+                if Decimal(str(amount)) <= 0:
+                    raise serializers.ValidationError({"amount": "Chiqim summasi musbat (0 dan katta) bo'lishi shart! ⚠️"})
+
             # Check for employee keywords in comment or category name to satisfy tests
             comment_val = attrs.get('comment') or ''
             category_val = attrs.get('category_name') or ''
@@ -630,21 +650,39 @@ class CashTransactionSerializer(serializers.ModelSerializer):
                     "non_field_errors": "Chiqim amaliyotida bir vaqtning o'zida ham xodimni, ham o'quvchini tanlab bo'lmaydi!"
                 })
 
-            # 3. Kassa balansi va filial nazorati
-            cashbox = attrs.get('cashbox')
-            amount = attrs.get('amount')
-            if cashbox and amount is not None:
+            # 3. Kassa balansi va filial nazorati (Kassa manfiyga tushishi mutlaqo taqiqlanadi!)
+            cashbox = attrs.get('cashbox') or (self.instance.cashbox if self.instance else None)
+            if not cashbox:
+                raise serializers.ValidationError({"cashbox": "Chiqim uchun kassa tanlanishi shart! ⚠️"})
+
+            request = self.context.get('request')
+            user = request.user if request else None
+            if user and user.is_authenticated and not user.is_superuser and getattr(user, 'role', '') not in ('owner', 'admin'):
+                user_branch_ids = set(user.branches.values_list('id', flat=True))
+                if user.branch_id:
+                    user_branch_ids.add(user.branch_id)
+                if user_branch_ids and cashbox.branch_id and cashbox.branch_id not in user_branch_ids:
+                    raise serializers.ValidationError({
+                        "cashbox": "Siz faqat o'zingizga biriktirilgan filial kassasidan chiqim qila olasiz!"
+                    })
+
+            if amount is not None:
                 from decimal import Decimal
-                request = self.context.get('request')
-                user = request.user if request else None
-                if user and user.is_authenticated and not user.is_superuser and getattr(user, 'role', '') not in ('owner', 'admin'):
-                    user_branch_ids = set(user.branches.values_list('id', flat=True))
-                    if user.branch_id:
-                        user_branch_ids.add(user.branch_id)
-                    if user_branch_ids and cashbox.branch_id and cashbox.branch_id not in user_branch_ids:
-                        raise serializers.ValidationError({
-                            "cashbox": "Siz faqat o'zingizga biriktirilgan filial kassasidan chiqim qila olasiz!"
-                        })
+                amount_dec = Decimal(str(amount))
+                cb_balance = Decimal(str(cashbox.balance or 0))
+
+                # Agar mavjud chiqim tahrirlanayotgan bo'lsa
+                if self.instance and self.instance.cashbox_id == cashbox.id and getattr(self.instance, 'transaction_type', '') == 'chiqim':
+                    available = cb_balance + Decimal(str(self.instance.amount or 0))
+                else:
+                    available = cb_balance
+
+                if available < amount_dec:
+                    bal_str = f"{int(cb_balance):,} UZS".replace(",", " ")
+                    amt_str = f"{int(amount_dec):,} UZS".replace(",", " ")
+                    raise serializers.ValidationError({
+                        "cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Chiqim summasi: {amt_str}. Kassa balansi manfiyga tushishi taqiqlanadi! ⚠️"
+                    })
 
         return attrs
 class FinanceSettingSerializer(serializers.ModelSerializer):
@@ -895,6 +933,13 @@ class CashTransferSerializer(serializers.Serializer):
             raise serializers.ValidationError({"to_cashbox": "Bir xil kassaga pul o'tkazib bo'lmaydi! ⚠️"})
         if amount <= 0:
             raise serializers.ValidationError({"amount": "O'tkazma summasi 0 dan katta bo'lishi kerak!"})
+
+        if from_cashbox.balance < amount:
+            bal_str = f"{int(from_cashbox.balance):,} UZS".replace(",", " ")
+            amt_str = f"{int(amount):,} UZS".replace(",", " ")
+            raise serializers.ValidationError({
+                "from_cashbox": f"'{from_cashbox.name}' kassasida yetarli mablag' mavjud emas! (Balans: {bal_str}, O'tkazma: {amt_str}). Kassa manfiyga tushishi taqiqlanadi! ⚠️"
+            })
         return attrs
 
 

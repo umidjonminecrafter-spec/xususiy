@@ -209,8 +209,33 @@ class ExpenseViewSet(TenantViewSetMixin,
             if branch:
                 save_kwargs['branch'] = branch
 
+            cashbox = serializer.validated_data.get('cashbox')
+            amount = serializer.validated_data.get('amount')
+            if cashbox and amount:
+                cb = Cashbox.objects.select_for_update().get(id=cashbox.id)
+                if cb.balance < amount:
+                    from rest_framework.exceptions import ValidationError
+                    bal_str = f"{int(cb.balance):,} UZS".replace(",", " ")
+                    amt_str = f"{int(amount):,} UZS".replace(",", " ")
+                    raise ValidationError({"cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Xarajat summasi: {amt_str}. Kassa balansi manfiyga tushishi taqiqlanadi! ⚠️"})
+
             # Xarajatni saqlaymiz
             expense = serializer.save(**save_kwargs)
+
+    def perform_update(self, serializer):
+        with db_transaction.atomic():
+            from decimal import Decimal
+            cashbox = serializer.validated_data.get('cashbox') or serializer.instance.cashbox
+            amount = serializer.validated_data.get('amount') or serializer.instance.amount
+            if cashbox and amount:
+                cb = Cashbox.objects.select_for_update().get(id=cashbox.id)
+                available = cb.balance + (serializer.instance.amount if serializer.instance.cashbox_id == cb.id else Decimal('0.00'))
+                if available < amount:
+                    from rest_framework.exceptions import ValidationError
+                    bal_str = f"{int(cb.balance):,} UZS".replace(",", " ")
+                    amt_str = f"{int(amount):,} UZS".replace(",", " ")
+                    raise ValidationError({"cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Xarajat summasi: {amt_str}. Kassa balansi manfiyga tushishi taqiqlanadi! ⚠️"})
+            serializer.save()
 
             # TO'G'RILANDI: Kassa balansini bu yerda QO'LDA o'zgartirmaymiz va
             # Transaction'ni ham qo'lda yaratmaymiz! Expense modelidagi
@@ -2603,15 +2628,25 @@ class TransactionCreateAPIView(APIView):
 
     def post(self, request):
         """Kirim yoki Chiqim yaratish (Rasmdagi Saqlash tugmasi uchun)"""
-        serializer = CashTransactionSerializer(data=request.data)
+        serializer = CashTransactionSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             # Tranzaksiyani xavfsiz (atomic) bajarish
             with transaction.atomic():
+                cashbox = serializer.validated_data.get('cashbox')
+                tx_type = serializer.validated_data.get('transaction_type')
+                amount = serializer.validated_data.get('amount')
+                if tx_type == 'chiqim' and cashbox and amount:
+                    cb = Cashbox.objects.select_for_update().get(id=cashbox.id)
+                    if cb.balance < amount:
+                        bal_str = f"{int(cb.balance):,} UZS".replace(",", " ")
+                        amt_str = f"{int(amount):,} UZS".replace(",", " ")
+                        return Response({
+                            "detail": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Chiqim summasi: {amt_str}",
+                            "cashbox": f"Kassada mablag' yetarli emas! (Balans: {bal_str})"
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
                 # Avval kassa amaliyotini saqlaymiz
                 instance = serializer.save(organization=request.user.organization)
-
-                # Kassa tranzaksiyasi kassaga yoziladi va kassa balansi sinxronlashadi.
-                # Talaba balansi bu yerda qayta o'zgarmaydi.
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

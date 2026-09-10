@@ -687,6 +687,13 @@ class TeacherSalaryPaymentSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
+    def validate(self, attrs):
+        from decimal import Decimal
+        amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
+        if amount is not None and Decimal(str(amount)) <= 0:
+            raise serializers.ValidationError({"amount": "Oylik to'lovi summasi musbat (0 dan katta) bo'lishi kerak! ⚠️"})
+        return attrs
+
 
 class AttendanceSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField(read_only=True)

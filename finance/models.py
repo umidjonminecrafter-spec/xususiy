@@ -429,6 +429,18 @@ class Cashbox(TenantModel):
         verbose_name = "Kassa"
         verbose_name_plural = "Kassalar"
 
+    def clean(self):
+        super().clean()
+        if self.balance is not None and self.balance < 0:
+            from django.core.exceptions import ValidationError
+            raise ValidationError({'balance': "Kassa balansi manfiy bo'lishi mumkin emas!"})
+
+    def save(self, *args, **kwargs):
+        if self.balance is not None and self.balance < 0:
+            from decimal import Decimal
+            self.balance = Decimal('0.00')
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
 
@@ -1089,7 +1101,9 @@ def recompute_cashbox_balance(sender, instance, **kwargs):
         total=Sum('amount')
     )['total'] or Decimal('0.00')
 
-    Cashbox.objects.filter(pk=cashbox.pk).update(balance=income - expense)
+    calculated_balance = income - expense
+    new_balance = max(Decimal('0.00'), calculated_balance)
+    Cashbox.objects.filter(pk=cashbox.pk).update(balance=new_balance)
 
 
 # ================= O'QITUVCHI OYLIK TO'LOVI BO'YICHA TRANZAKSIYA VA TELEGRAM SINXRONIZATSIYASI =================
