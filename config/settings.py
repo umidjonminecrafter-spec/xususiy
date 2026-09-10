@@ -21,6 +21,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-default-key')
 DEBUG = True
 
 ALLOWED_HOSTS = [
+    "xususiy.onrender.com",
     "smart-backend-dtub.onrender.com",
     "musojon1995.pythonanywhere.com",
     "smartalim.pythonanywhere.com",
@@ -31,6 +32,7 @@ ALLOWED_HOSTS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
+    'https://xususiy.onrender.com',
     'https://smart-backend-dtub.onrender.com',
     'https://musojon1995.pythonanywhere.com',
     'https://smartalim.pythonanywhere.com',
