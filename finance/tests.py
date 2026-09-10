@@ -152,9 +152,9 @@ class CashTransactionAPITests(APITestCase):
 
         self.client.force_authenticate(user=self.admin)
 
-    def test_cash_transaction_kirim_disallows_student(self):
+    def test_cash_transaction_kirim_with_student(self):
         """
-        Verify that student is disallowed for Kassa kirim (INCOME).
+        Verify that student is allowed for Kassa kirim (INCOME).
         """
         url = reverse('transaction-create')
         data = {
@@ -163,20 +163,13 @@ class CashTransactionAPITests(APITestCase):
             "payment_method": "naqd",
             "amount": "150000.00",
             "date": "2026-07-01",
-            "category_name": "Boshqa kirim",
-            "description": "General income"
+            "category_name": "Kurs to'lovi",
+            "student": self.student.id,
+            "description": "Student payment"
         }
 
-        # General kirim without student -> should pass
         response = self.client.post(url, data=data, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
-        # Attempt with student -> should fail
-        data_with_student = data.copy()
-        data_with_student["student"] = self.student.id
-        response = self.client.post(url, data_with_student, format='json')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("student", response.data)
 
         # Verify kassa balance
         self.cashbox.refresh_from_db()
@@ -186,6 +179,18 @@ class CashTransactionAPITests(APITestCase):
         """
         Verify that employee is required for chiqim (EXPENSE) if description/category contains employee keywords.
         """
+        import datetime
+        from finance.models import CashTransaction
+        CashTransaction.objects.create(
+            organization=self.org,
+            cashbox=self.cashbox,
+            transaction_type='kirim',
+            payment_method='naqd',
+            amount=Decimal("100000.00"),
+            date=datetime.date(2026, 7, 1),
+            category_name="Kassaga kirim"
+        )
+
         url = reverse('transaction-create')
         data = {
             "cashbox": self.cashbox.id,
@@ -207,9 +212,9 @@ class CashTransactionAPITests(APITestCase):
         response = self.client.post(url, data=data, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
-        # Verify kassa balance (starts at 0 before this test, so after subtracting 50000 it is -50000)
+        # Verify kassa balance (100000 - 50000 = 50000)
         self.cashbox.refresh_from_db()
-        self.assertEqual(self.cashbox.balance, Decimal("-50000.00"))
+        self.assertEqual(self.cashbox.balance, Decimal("50000.00"))
 
     def test_transaction_report_api(self):
         """

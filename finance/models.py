@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from organizations.models import TenantModel
 from academics.models import Student, TeacherSalaryPayment
 
@@ -239,9 +240,9 @@ class CashTransaction(models.Model):
     organization = models.ForeignKey('organizations.Organization', on_delete=models.CASCADE)
     cashbox = models.ForeignKey(Cashbox, on_delete=models.CASCADE, related_name='transactions')
     transaction_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES)
-    payment_method = models.CharField(max_length=15, choices=PAYMENT_METHODS)
+    payment_method = models.CharField(max_length=15, choices=PAYMENT_METHODS, default='naqd', blank=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    date = models.DateField()
+    date = models.DateField(default=timezone.now)
 
     # Kim xarajat qilgani yoki qaysi o'quvchi to'lov qilgani
     student = models.ForeignKey('academics.Student', on_delete=models.SET_NULL, null=True, blank=True)
@@ -249,6 +250,13 @@ class CashTransaction(models.Model):
     category_name = models.CharField(max_length=255, null=True, blank=True)  # Marker, Hodimga oylik va h.k.
     comment = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self.payment_method:
+            self.payment_method = 'naqd'
+        if not self.date:
+            self.date = timezone.now().date()
+        super().save(*args, **kwargs)
 
 
 class StaffSalaryPercent(TenantModel):

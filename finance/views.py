@@ -2290,7 +2290,15 @@ class TransactionCreateAPIView(APIView):
 
     def post(self, request):
         """Kirim yoki Chiqim yaratish (Rasmdagi Saqlash tugmasi uchun)"""
-        serializer = CashTransactionSerializer(data=request.data, context={'request': request})
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        
+        # Default cashbox if not provided
+        if not data.get('cashbox') and not data.get('cashbox_id'):
+            cb = Cashbox.objects.filter(organization=request.user.organization).first()
+            if cb:
+                data['cashbox'] = cb.id
+
+        serializer = CashTransactionSerializer(data=data, context={'request': request})
         if serializer.is_valid():
             # Tranzaksiyani xavfsiz (atomic) bajarish
             with transaction.atomic():

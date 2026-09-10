@@ -42,6 +42,16 @@ FIELD_TRANSLATIONS = {
     'date': 'Sana',
     'password': 'Parol',
     'balance': 'Balans',
+    'payment_method': "To'lov turi",
+    'payment_type': "To'lov turi",
+    'to_lov_turi': "To'lov turi",
+    'tolov_turi': "To'lov turi",
+    'transaction_type': "Amaliyot turi",
+    'cashbox': "Kassa",
+    'cashbox_id': "Kassa",
+    'category_name': "Kategoriya",
+    'comment': "Izoh",
+    'description': "Izoh",
 }
 
 def _get_field_name(field):

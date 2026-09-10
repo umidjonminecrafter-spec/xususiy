@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
+from django.utils import timezone
 
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
@@ -582,6 +583,7 @@ class CashTransactionSerializer(serializers.ModelSerializer):
     cashbox_name = serializers.CharField(source='cashbox.name', read_only=True, default=None)
     description = serializers.CharField(source='comment', required=False, allow_blank=True, allow_null=True)
     payment_method = serializers.CharField(required=False, default='naqd', allow_blank=True, allow_null=True)
+    date = serializers.DateField(required=False, default=timezone.now)
 
     class Meta:
         model = CashTransaction
@@ -617,8 +619,29 @@ class CashTransactionSerializer(serializers.ModelSerializer):
         tt = data.get('transaction_type') or data.get('type') or data.get('action_type')
         if tt:
             data['transaction_type'] = str(tt).lower().strip()
+        else:
+            data['transaction_type'] = 'kirim'
 
-        # 3. Sana (Date) parsing: DD/MM/YYYY, DD.MM.YYYY, YYYY-MM-DD
+        # 3. Cashbox normalizatsiyasi
+        if not data.get('cashbox') and data.get('cashbox_id'):
+            data['cashbox'] = data.get('cashbox_id')
+        if not data.get('cashbox'):
+            request = self.context.get('request')
+            if request and getattr(request, 'user', None) and getattr(request.user, 'organization', None):
+                from finance.models import Cashbox
+                cb = Cashbox.objects.filter(organization=request.user.organization).first()
+                if cb:
+                    data['cashbox'] = cb.id
+
+        # 4. Student normalizatsiyasi
+        if not data.get('student') and data.get('student_id'):
+            data['student'] = data.get('student_id')
+
+        # 5. Employee normalizatsiyasi
+        if not data.get('employee') and data.get('employee_id'):
+            data['employee'] = data.get('employee_id')
+
+        # 6. Sana (Date) parsing: DD/MM/YYYY, DD.MM.YYYY, YYYY-MM-DD
         d = data.get('date') or data.get('sana')
         if d and isinstance(d, str):
             d_str = d.strip()
@@ -630,14 +653,27 @@ class CashTransactionSerializer(serializers.ModelSerializer):
                 parts = d_str.split('.')
                 if len(parts) == 3 and len(parts[0]) <= 2 and len(parts[2]) == 4:
                     data['date'] = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+        elif not d:
+            from django.utils import timezone as d_tz
+            data['date'] = d_tz.now().date().isoformat()
 
-        # 4. Kategoriya / Tavsif
+        # 7. Kategoriya / Tavsif
         if not data.get('category_name') and data.get('category'):
             data['category_name'] = str(data['category'])
         if not data.get('comment') and data.get('description'):
             data['comment'] = str(data['description'])
 
         return super().to_internal_value(data)
+
+    def validate_payment_method(self, value):
+        from finance.models import normalize_payment_method
+        return normalize_payment_method(value)
+
+    def validate_date(self, value):
+        if not value:
+            from django.utils import timezone as d_tz
+            return d_tz.now().date()
+        return value
 
     def get_employee_name(self, obj):
         if obj.employee:
