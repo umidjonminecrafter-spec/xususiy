@@ -38,18 +38,18 @@ PAYMENT_METHOD_CHOICES = (
 
 def normalize_payment_method(method):
     """
-    Kiritilgan har qanday to'lov usulini 3 xil asosiy turga (naqd, plastik, bank)
+    Kiritilgan har qanday to'lov usulini 3 xil asosiy turga (naqd, plastik, terminal/bank)
     standartlashtirib beruvchi yagona funksiya.
     """
     if not method:
         return 'naqd'
-    m = str(method).lower().strip()
-    if m in ('naqd', 'cash', 'cash_payment'):
+    m = str(method).lower().strip().replace('_', ' ').replace('-', ' ')
+    if any(k in m for k in ('naqd', 'cash', 'pul')):
         return 'naqd'
-    elif m in ('plastik', 'card', 'terminal', 'karta', 'humo', 'uzcard', 'click', 'payme', 'uzum'):
+    elif any(k in m for k in ('plastik', 'card', 'terminal', 'karta', 'humo', 'uzcard', 'click', 'payme', 'uzum')):
         return 'plastik'
-    elif m in ('bank', 'transfer', 'hisob_raqam', 'otkazma', "o'tkazma", 'bank_transfer', 'hisob'):
-        return 'bank'
+    elif any(k in m for k in ('bank', 'transfer', 'hisob', 'otkazma', "o'tkazma")):
+        return 'terminal'
     return 'naqd'
 
 

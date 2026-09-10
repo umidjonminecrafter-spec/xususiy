@@ -581,6 +581,7 @@ class CashTransactionSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField(read_only=True)
     cashbox_name = serializers.CharField(source='cashbox.name', read_only=True, default=None)
     description = serializers.CharField(source='comment', required=False, allow_blank=True, allow_null=True)
+    payment_method = serializers.CharField(required=False, default='naqd', allow_blank=True, allow_null=True)
 
     class Meta:
         model = CashTransaction
@@ -590,6 +591,53 @@ class CashTransactionSerializer(serializers.ModelSerializer):
             'student_name', 'employee', 'employee_name',
             'category_name', 'comment', 'description'
         ]
+
+    def to_internal_value(self, data):
+        # Safely convert to mutable dict
+        if hasattr(data, 'copy'):
+            data = data.copy()
+        elif hasattr(data, 'dict'):
+            data = data.dict()
+        else:
+            data = dict(data) if data else {}
+
+        # 1. Payment method normalizatsiyasi
+        pm = (
+            data.get('payment_method') or
+            data.get('payment_type') or
+            data.get('paymentType') or
+            data.get('to_lov_turi') or
+            data.get('tolov_turi') or
+            data.get('method')
+        )
+        from finance.models import normalize_payment_method
+        data['payment_method'] = normalize_payment_method(pm)
+
+        # 2. Transaction type normalizatsiyasi
+        tt = data.get('transaction_type') or data.get('type') or data.get('action_type')
+        if tt:
+            data['transaction_type'] = str(tt).lower().strip()
+
+        # 3. Sana (Date) parsing: DD/MM/YYYY, DD.MM.YYYY, YYYY-MM-DD
+        d = data.get('date') or data.get('sana')
+        if d and isinstance(d, str):
+            d_str = d.strip()
+            if '/' in d_str:
+                parts = d_str.split('/')
+                if len(parts) == 3 and len(parts[0]) <= 2 and len(parts[2]) == 4:
+                    data['date'] = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+            elif '.' in d_str:
+                parts = d_str.split('.')
+                if len(parts) == 3 and len(parts[0]) <= 2 and len(parts[2]) == 4:
+                    data['date'] = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+
+        # 4. Kategoriya / Tavsif
+        if not data.get('category_name') and data.get('category'):
+            data['category_name'] = str(data['category'])
+        if not data.get('comment') and data.get('description'):
+            data['comment'] = str(data['description'])
+
+        return super().to_internal_value(data)
 
     def get_employee_name(self, obj):
         if obj.employee:
@@ -612,16 +660,8 @@ class CashTransactionSerializer(serializers.ModelSerializer):
         student = attrs.get('student')
         employee = attrs.get('employee')
 
-        # 1. Agarda KIRIM (kirim) bo'lsa: o'quvchidan Kassaga kirim qilish taqiqlanadi (O'quvchi to'lovlari faqat Talaba profilidan bajariladi)
+        # 1. Agarda KIRIM (kirim) bo'lsa
         if tx_type == 'kirim':
-            if student:
-                raise serializers.ValidationError({
-                    "student": "O'quvchidan Kassaga to'g'ridan-to'g'ri kirim qilib bo'lmaydi! O'quvchi to'lovlari faqat O'quvchilar bo'limidan 'To'lov qilish' tugmasi orqali bajariladi. ⚠️"
-                })
-            if employee:
-                raise serializers.ValidationError({
-                    "employee": "Kirim amaliyotida xodimni tanlash mumkin emas!"
-                })
             amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
             if amount is not None and Decimal(str(amount)) <= 0:
                 raise serializers.ValidationError({"amount": "Kirim summasi musbat (0 dan katta) bo'lishi shart! ⚠️"})
