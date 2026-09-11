@@ -1,4 +1,3 @@
-import string
 from django.db import models
 from django.conf import settings
 from organizations.models import TenantModel
@@ -145,12 +144,11 @@ class Lead(TenantModel):
 
     class Meta:
         indexes = [
+            models.Index(fields=['organization', 'branch', 'status']),
             models.Index(fields=['organization', 'is_archived']),
-            models.Index(fields=['pipeline']),
-            models.Index(fields=['source']),
-            models.Index(fields=['status']),
-            models.Index(fields=['phone']),
-            models.Index(fields=['name']),
+            models.Index(fields=['organization', 'phone']),
+            models.Index(fields=['organization', 'created_at']),
+            models.Index(fields=['organization', 'pipeline', 'section']),
         ]
 
     def __str__(self):

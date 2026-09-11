@@ -37,31 +37,21 @@ PAYMENT_METHOD_CHOICES = (
 )
 
 
-def normalize_payment_method(method):
-    """
-    Kiritilgan har qanday to'lov usulini 3 xil asosiy turga (naqd, plastik, terminal/bank)
-    standartlashtirib beruvchi yagona funksiya.
-    """
-    if not method:
-        return 'naqd'
-    m = str(method).lower().strip().replace('_', ' ').replace('-', ' ')
-    if any(k in m for k in ('naqd', 'cash', 'pul')):
-        return 'naqd'
-    elif any(k in m for k in ('plastik', 'card', 'terminal', 'karta', 'humo', 'uzcard', 'click', 'payme', 'uzum')):
-        return 'plastik'
-    elif any(k in m for k in ('bank', 'transfer', 'hisob', 'otkazma', "o'tkazma")):
-        return 'terminal'
-    return 'naqd'
-
-
 class Expense(TenantModel):
     category = models.ForeignKey(ExpenseCategory, on_delete=models.CASCADE, related_name="expenses")
     subcategory = models.ForeignKey(ExpenseSubcategory, on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name="expenses")
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, default='naqd', verbose_name="To'lov turi")
     description = models.TextField(null=True, blank=True)
     date = models.DateField()
     cashbox = models.ForeignKey('Cashbox', on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'cashbox', 'date']),
+            models.Index(fields=['organization', 'date']),
+        ]
 
     def __str__(self):
         return f"{self.category.name}: {self.amount} ({self.date})"
@@ -85,6 +75,13 @@ class Payment(TenantModel):
     employee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                                  related_name="payments")
     comment = models.TextField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'student', 'date']),
+            models.Index(fields=['organization', 'cashbox', 'date']),
+            models.Index(fields=['organization', 'date']),
+        ]
 
     def __str__(self):
         student_str = self.student if self.student else "O'chirilgan Talaba"
@@ -170,6 +167,9 @@ class Cashbox(TenantModel):
     class Meta:
         verbose_name = "Kassa"
         verbose_name_plural = "Kassalar"
+        indexes = [
+            models.Index(fields=['organization', 'branch', 'is_archived']),
+        ]
 
     def clean(self):
         super().clean()
@@ -215,6 +215,9 @@ class FinanceSetting(TenantModel):
     three_groups_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     four_groups_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
 
+    # 6. Qo'shimcha darslar (zamen) narxi
+    extra_lesson_rate = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, verbose_name="Qo'shimcha dars (zamen) 1 soat narxi")
+
     def __str__(self):
         return f"Finance Settings - {self.organization.name if self.organization else 'No Org'}"
 
@@ -251,6 +254,15 @@ class CashTransaction(models.Model):
     comment = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'cashbox', 'date']),
+            models.Index(fields=['organization', 'transaction_type', 'date']),
+            models.Index(fields=['organization', 'created_at']),
+            models.Index(fields=['student', 'date']),
+            models.Index(fields=['employee', 'date']),
+        ]
+
     def save(self, *args, **kwargs):
         if not self.payment_method:
             self.payment_method = 'naqd'
@@ -285,7 +297,7 @@ from django.dispatch import receiver
 
 # ================= TELEGRAM BOT ORQALI XABARNOMALAR INTEGRATSIYASI =================
 
-def send_telegram_payment_notification(organization, message_text, setting_type):
+def send_telegram_payment_notification(*args, **kwargs):
     """
     Tezkor operatsion xabarlarni Hisobot botiga yuborish to'xtatilgan.
     Hisobot botiga faqat har kuni soat 09:00 da kunlik umumiy hisobot boradi.
@@ -366,7 +378,7 @@ def payment_telegram_notification(sender, instance, created, **kwargs):
         if instance.student:
             try:
                 from communication.models import Notification
-                from academics.telegram_bot import send_telegram_message, send_telegram_to_user
+                from academics.telegram_bot import send_telegram_message
                 from organizations.models import TelegramNotificationSetting
                 from accounts.models import User
                 from django.db.models import Q
@@ -742,6 +754,7 @@ class Transaction(TenantModel):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     type = models.CharField(max_length=10, choices=TRANSACTION_TYPES)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='DIRECT')
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, default='naqd', verbose_name="To'lov turi")
 
     # Kim tomonidan amalga oshirildi yoki kimga tegishli
     student = models.ForeignKey('academics.Student', on_delete=models.SET_NULL, null=True, blank=True)
@@ -764,6 +777,15 @@ class Transaction(TenantModel):
     source_cashtransaction = models.OneToOneField(
         'CashTransaction', on_delete=models.CASCADE, null=True, blank=True, related_name='mirrored_transaction'
     )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'cashbox', 'created_at']),
+            models.Index(fields=['organization', 'type', 'category']),
+            models.Index(fields=['organization', 'created_at']),
+            models.Index(fields=['student', 'created_at']),
+            models.Index(fields=['employee', 'created_at']),
+        ]
 
 
 class FinanceAction(TenantModel):
@@ -822,6 +844,7 @@ def _sync_transaction_mirror(source_field_name, instance, tx_type, category, cas
         'amount': instance.amount,
         'type': tx_type,
         'category': category,
+        'payment_method': getattr(instance, 'payment_method', 'naqd') or 'naqd',
         'student': getattr(instance, 'student', None),
         'employee': getattr(instance, 'employee', None),
         'description': description,
@@ -1122,9 +1145,8 @@ def track_leave_fine(sender, instance, created, **kwargs):
 
     try:
         from decimal import Decimal
-        from django.utils import timezone
         from django.contrib.auth import get_user_model
-        from finance.models import FinanceSetting, Fine, FinanceAction
+        from finance.models import FinanceSetting, FinanceAction
 
         # Check if student left with negative balance (debtor)
         if instance.student.balance >= 0:
@@ -1172,11 +1194,10 @@ def track_leave_fine(sender, instance, created, **kwargs):
 @receiver(post_save, sender=FinanceSetting)
 def sync_finance_setting_to_actions(sender, instance, created, **kwargs):
     try:
-        from finance.models import FinanceAction, Cashbox, Transaction, Bonus, Fine
-        from academics.models import Student, BalanceHistory
+        from finance.models import FinanceAction
+        from academics.models import Student
         from django.contrib.auth import get_user_model
         from decimal import Decimal
-        from django.utils import timezone
 
         User = get_user_model()
         synced_action_ids = []

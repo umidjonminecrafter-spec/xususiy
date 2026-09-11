@@ -1,6 +1,8 @@
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 from django.contrib.auth import get_user_model
 from organizations.models import Organization, Branch
+from common.utils import normalize_uz_phone
 
 User = get_user_model()
 
@@ -15,6 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
     )
     branches_detail = serializers.SerializerMethodField(read_only=True)
 
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
         return [{"id": b.id, "name": b.name} for b in obj.branches.all()]
 
@@ -37,20 +40,12 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         phone = attrs.get('phone', '')
-        if not phone:
-            raise serializers.ValidationError({"phone": "Telefon raqami kiritilishi shart."})
-
-        cleaned = ''.join(c for c in phone if c.isdigit())
-
-        if len(cleaned) == 9:
-            cleaned = '998' + cleaned
-
-        if not cleaned.startswith('998') or len(cleaned) != 12:
+        formatted_phone = normalize_uz_phone(phone)
+        if not formatted_phone or len(formatted_phone) != 13:
             raise serializers.ValidationError({
                 "phone": "Telefon raqami noto'g'ri formatda. Loyihada O'zbekiston raqamlari (+998XXXXXXXXX) qabul qilinadi."
             })
 
-        formatted_phone = '+' + cleaned
         attrs['phone'] = formatted_phone
         attrs['username'] = formatted_phone
 
@@ -128,6 +123,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
     groups = serializers.SerializerMethodField(read_only=True)
     groups_detail = serializers.SerializerMethodField(read_only=True)
 
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
         return [{"id": b.id, "name": b.name} for b in obj.branches.all()]
 
@@ -147,9 +143,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 unique_groups.append(g)
         return unique_groups
 
+    @extend_schema_field(serializers.ListField(child=serializers.IntegerField()))
     def get_groups(self, obj):
         return [g.id for g in self._get_teacher_groups(obj)]
 
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_groups_detail(self, obj):
         return [{"id": g.id, "name": g.name} for g in self._get_teacher_groups(obj)]
 
@@ -245,14 +243,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         data = data.copy() if hasattr(data, 'copy') else dict(data)
         phone = data.get('phone') or data.get('phone_number')
         if phone:
-            cleaned = ''.join(c for c in str(phone) if c.isdigit())
-            if len(cleaned) == 9:
-                cleaned = '998' + cleaned
-            if cleaned.startswith('998') and len(cleaned) == 12:
-                formatted_phone = '+' + cleaned
-            else:
-                formatted_phone = '+' + cleaned if cleaned else phone
-            
+            formatted_phone = normalize_uz_phone(phone) or phone
             data['phone'] = formatted_phone
             data['username'] = formatted_phone
 

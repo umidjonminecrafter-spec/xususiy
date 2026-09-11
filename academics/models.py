@@ -40,6 +40,8 @@ class Course(TenantModel):
     code = models.CharField(max_length=50, null=True, blank=True)
     lesson_time = models.CharField(max_length=50, null=True, blank=True)
     image = models.ImageField(upload_to='course_images/', null=True, blank=True)
+    color = models.CharField(max_length=30, blank=True, default='', verbose_name="Fan rangi (HEX/RGB)")
+    is_active = models.BooleanField(default=True, verbose_name="Faol / Nofaol")
 
     def __str__(self):
         return self.name
@@ -86,6 +88,14 @@ class Student(TenantModel):
     student_login = models.CharField(null=True, blank=True,)
     parent_login = models.CharField(null=True, blank=True,)
     is_archived = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'branch', 'is_archived']),
+            models.Index(fields=['organization', 'phone']),
+            models.Index(fields=['organization', 'balance']),
+            models.Index(fields=['organization', 'created_at']),
+        ]
 
     def __str__(self):
         if self.last_name:
@@ -185,6 +195,14 @@ class Group(TenantModel):
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'branch', 'status']),
+            models.Index(fields=['course', 'status']),
+            models.Index(fields=['teacher', 'status']),
+            models.Index(fields=['organization', 'created_at']),
+        ]
+
     def __str__(self):
         return self.name
 
@@ -196,8 +214,10 @@ class StudentGroup(TenantModel):
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     class Meta:
-        # unique_together olib tashlandi, chunki student NULL bo'lganda bir nechta NULL yozuvlar tushsa xato beradi.
-        pass
+        indexes = [
+            models.Index(fields=['organization', 'group', 'student']),
+            models.Index(fields=['student', 'group']),
+        ]
 
     def save(self, *args, **kwargs):
         # Guruhdagi kursning joriy narxini muzlatib saqlaymiz (agar narx berilmagan bo'lsa)
@@ -260,8 +280,11 @@ class Attendance(TenantModel):
     reason = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
-        # unique_together cheklovi olib tashlandi, chunki student NULL bo'lsa baza konflikt beradi.
-        pass
+        indexes = [
+            models.Index(fields=['organization', 'group', 'date']),
+            models.Index(fields=['student', 'date']),
+            models.Index(fields=['group', 'date', 'status']),
+        ]
 
     def save(self, *args, **kwargs):
         if self.group:
@@ -335,6 +358,12 @@ class BalanceHistory(TenantModel):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     transaction_type = models.CharField(max_length=50) # deposit, withdrawal, etc.
     date = models.DateField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'student', 'date']),
+            models.Index(fields=['student', 'date']),
+        ]
 
     def __str__(self):
         student_name = self.student if self.student else "O'chirilgan Talaba"
@@ -729,50 +758,6 @@ def sync_group_lesson_with_lms(sender, instance, created, **kwargs):
 import datetime
 
 
-def generate_group_lessons(group_instance):
-    """Guruhning boshlanish va tugash sanasi oralig'idagi dars kunlarini yaratadi"""
-    if not group_instance.start_date or not group_instance.end_date:
-        return
-
-    current_date = group_instance.start_date
-    delta = datetime.timedelta(days=1)
-
-    # Guruhning dars kunlari turi (Juft / Toq / Har kuni)
-    # Kodingizdagi day_type qiymatlariga qarab moslashtiring (masalan: 'even', 'odd')
-    day_type = getattr(group_instance, 'day_type', '').lower()
-
-    lessons_to_create = []
-
-    while current_date <= group_instance.end_date:
-        # Hafta kuni indeksi: 0=Dushanba, 1=Seshanba, 2=Chorshanba, 3=Payshanba, 4=Juma, 5=Shanba, 6=Yakshanba
-        weekday = current_date.weekday()
-
-        should_create = False
-        if 'even' in day_type or 'juft' in day_type:  # Se-Pay-Sha
-            if weekday in [1, 3, 5]:
-                should_create = True
-        elif 'odd' in day_type or 'toq' in day_type:  # Du-Chor-Ju
-            if weekday in [0, 2, 4]:
-                should_create = True
-        else:  # Agar aniq belgilanmagan bo'lsa, Yakshanbadan tashqari hamma kunlar
-            if weekday != 6:
-                should_create = True
-
-        if should_create:
-            # Agar bu sana uchun dars allaqachon yaratilmagan bo'lsa
-            if not GroupLesson.objects.filter(group=group_instance, date=current_date).exists():
-                lessons_to_create.append(
-                    GroupLesson(
-                        organization=group_instance.organization,
-                        group=group_instance,
-                        date=current_date
-                    )
-                )
-
-        current_date += delta
-
-    if lessons_to_create:
-        GroupLesson.objects.bulk_create(lessons_to_create)
 
 
 def generate_group_lessons(group_instance):
@@ -1093,7 +1078,7 @@ def charge_attendance(student, group, date, attendance_id, organization):
 
 def refund_attendance(student, group, date, attendance_id, organization):
     from decimal import Decimal
-    from finance.models import Cashbox, Transaction
+    from finance.models import Transaction
     
     desc_prefix = f"Davomat #{attendance_id}:"
     tx = Transaction.objects.filter(description__startswith=desc_prefix).first()

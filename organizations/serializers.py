@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from organizations.models import Organization, Branch, Tariff, Subscription, ExamSetting, ReceiptSetting, BackupSetting, TelegramNotificationSetting,LessonNotificationTemplate
-from finance.models import FinanceSetting, StaffSalaryPercent
 class OrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization

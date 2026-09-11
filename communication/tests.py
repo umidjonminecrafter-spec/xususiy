@@ -1,4 +1,3 @@
-from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 from django.contrib.auth import get_user_model
@@ -153,7 +152,7 @@ class NotificationScheduleAPITests(APITestCase):
 
         # Mock ModelAdmin
         class MockModelAdmin:
-            def message_user(self, request, message, level):
+            def message_user(self, *args, **kwargs):
                 pass
 
         # Call the admin action
@@ -335,7 +334,7 @@ class StudentSMSHistoryAPITests(APITestCase):
         from unittest.mock import patch
         
         # Set Telegram settings
-        setting = TelegramNotificationSetting.objects.create(
+        TelegramNotificationSetting.objects.create(
             organization=self.org1,
             bot_token="TOKEN_GEN",
             student_bot_token="TOKEN_STUDENT",

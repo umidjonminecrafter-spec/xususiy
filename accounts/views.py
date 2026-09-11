@@ -1,4 +1,4 @@
-from rest_framework import status, generics, viewsets, permissions, exceptions, decorators
+from rest_framework import status, generics, viewsets, permissions, exceptions, decorators, serializers
 from rest_framework.response import Response
 from organizations.models import Organization
 from rest_framework.views import APIView
@@ -6,6 +6,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import update_last_login
+from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, OpenApiTypes, inline_serializer
 
 from organizations.mixins import TenantViewSetMixin
 from organizations.permissions import IsAdminOrOwnerOrReadOnly
@@ -15,15 +16,41 @@ from accounts.serializers import (
 
 User = get_user_model()
 
+
+@extend_schema(
+    summary="Foydalanuvchi tizimga kirishi (Login)",
+    description="Telefon raqam va parol orqali tizimga kiradi hamda JWT access va refresh tokenlarini, foydalanuvchi roli va profil ma'lumotlarini qaytaradi.",
+    request=inline_serializer(
+        name='LoginRequest',
+        fields={
+            'phone': serializers.CharField(help_text="Telefon raqami (masalan, +998901234567)"),
+            'password': serializers.CharField(write_only=True),
+            'org_id': serializers.IntegerField(required=False, help_text="Tashkilot ID si (ixtiyoriy)"),
+        }
+    ),
+    responses={
+        200: inline_serializer(
+            name='LoginResponse',
+            fields={
+                'refresh': serializers.CharField(),
+                'access': serializers.CharField(),
+                'role': serializers.CharField(),
+                'position': serializers.CharField(allow_blank=True),
+                'user': UserSerializer(),
+            }
+        ),
+        400: inline_serializer(
+            name='LoginErrorResponse',
+            fields={'detail': serializers.CharField()}
+        )
+    }
+)
 class CustomTokenObtainPairView(TokenObtainPairView):
     """
     Login endpoint: receives username & password, returns access/refresh tokens and user details.
     Enforces login via phone number only.
     """
     def post(self, request, *args, **kwargs):
-        # Print incoming data to help debug
-        print("Incoming login request data:", request.data)
-        
         # Safely convert request.data to a mutable dict
         if hasattr(request.data, 'copy'):
             data = request.data.copy()
@@ -36,16 +63,10 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         if not credential:
             return Response({"detail": "Telefon raqami kiritilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Clean non-digits
-        cleaned = ''.join(c for c in str(credential) if c.isdigit())
-        
-        if len(cleaned) == 9:
-            cleaned = '998' + cleaned
-            
-        if not cleaned.startswith('998') or len(cleaned) != 12:
+        from common.utils import normalize_uz_phone
+        formatted_phone = normalize_uz_phone(credential)
+        if not formatted_phone:
             return Response({"detail": "Faqat O'zbekiston telefon raqami orqali tizimga kirish mumkin (format: +998XXXXXXXXX)."}, status=status.HTTP_400_BAD_REQUEST)
-            
-        formatted_phone = '+' + cleaned
         
         # Tashkilot ID sini header, query params yoki body orqali olamiz
         org_id = request.headers.get('x-org-id') or request.META.get('HTTP_X_ORG_ID') or request.data.get('org_id') or request.query_params.get('org_id')
@@ -81,7 +102,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             except Exception:
                 # Fallback 2: plyussiz raqam bilan urinib ko'ramiz
                 alt_data2 = data.copy() if hasattr(data, 'copy') else dict(data)
-                alt_data2['username'] = cleaned
+                alt_data2['username'] = formatted_phone.replace('+', '')
                 serializer3 = self.get_serializer(data=alt_data2)
                 try:
                     serializer3.is_valid(raise_exception=True)
@@ -103,6 +124,11 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             'user': UserSerializer(user).data
         }, status=status.HTTP_200_OK)
 
+
+@extend_schema(
+    summary="JWT tokenni yangilash (Refresh)",
+    description="Refresh token yuborilganda yangi access token generatsiya qilib qaytaradi."
+)
 class CustomTokenRefreshView(TokenRefreshView):
     """
     Refresh endpoint: receives refresh token, returns new access/refresh tokens and user details.
@@ -115,6 +141,23 @@ class CustomTokenRefreshView(TokenRefreshView):
             pass
         return response
 
+
+@extend_schema(
+    summary="Yangi tashkilot egasini ro'yxatdan o'tkazish (Register)",
+    description="Yangi tashkilot va uning egasi (Owner) hisobini yaratadi hamda avtomatik JWT tokenlarni qaytaradi.",
+    request=RegisterSerializer,
+    responses={
+        201: inline_serializer(
+            name='RegisterResponse',
+            fields={
+                'user': UserSerializer(),
+                'refresh': serializers.CharField(),
+                'access': serializers.CharField(),
+            }
+        ),
+        400: inline_serializer(name='RegisterErrorResponse', fields={'detail': serializers.CharField()})
+    }
+)
 class RegisterView(generics.CreateAPIView):
     permission_classes = (permissions.AllowAny,)
     serializer_class = RegisterSerializer
@@ -130,12 +173,25 @@ class RegisterView(generics.CreateAPIView):
             'access': str(refresh.access_token),
         }, status=status.HTTP_201_CREATED)
 
+
+@extend_schema(
+    summary="Joriy foydalanuvchi ma'lumotlari (Current User)",
+    description="Tizimga kirgan joriy foydalanuvchining shaxsiy ma'lumotlari, tashkiloti, filiali va rolini qaytaradi.",
+    responses={200: UserSerializer}
+)
 class CurrentUserView(generics.RetrieveAPIView):
     serializer_class = UserSerializer
 
     def get_object(self):
         return self.request.user
 
+
+@extend_schema(
+    summary="Foydalanuvchi profilini yangilash",
+    description="Joriy foydalanuvchining shaxsiy ma'lumotlarini (ism, familiya, rasm, telefon) to'liq yoki qisman tahrirlaydi.",
+    request=UserSerializer,
+    responses={200: UserSerializer}
+)
 class ProfileUpdateView(generics.UpdateAPIView):
     serializer_class = UserSerializer
 
@@ -145,6 +201,19 @@ class ProfileUpdateView(generics.UpdateAPIView):
     def patch(self, request, *args, **kwargs):
         return self.partial_update(request, *args, **kwargs)
 
+
+@extend_schema(
+    summary="Parolni o'zgartirish",
+    description="Eski parolni tekshirib, joriy foydalanuvchi parolini yangi parolga almashtiradi.",
+    request=ChangePasswordSerializer,
+    responses={
+        200: inline_serializer(
+            name='ChangePasswordResponse',
+            fields={'detail': serializers.CharField()}
+        ),
+        400: inline_serializer(name='ChangePasswordErrorResponse', fields={'detail': serializers.CharField()})
+    }
+)
 class ChangePasswordView(generics.GenericAPIView):
     serializer_class = ChangePasswordSerializer
 
@@ -155,7 +224,22 @@ class ChangePasswordView(generics.GenericAPIView):
         self.request.user.save()
         return Response({"detail": "Password has been changed successfully."}, status=status.HTTP_200_OK)
 
+
 class LogoutView(APIView):
+    @extend_schema(
+        summary="Tizimdan chiqish (Logout)",
+        description="Mavjud refresh tokenni qabul qilib, uni bekor (blacklist) qiladi.",
+        request=inline_serializer(
+            name='LogoutRequest',
+            fields={'refresh': serializers.CharField(required=False)}
+        ),
+        responses={
+            200: inline_serializer(
+                name='LogoutResponse',
+                fields={'detail': serializers.CharField()}
+            )
+        }
+    )
     def post(self, request):
         try:
             refresh_token = request.data.get("refresh")
@@ -167,11 +251,45 @@ class LogoutView(APIView):
             # Even if blacklisting is disabled or token invalid, return success to let frontend clear storage
             return Response({"detail": "Logout completed."}, status=status.HTTP_200_OK)
 
+
+@extend_schema_view(
+    list=extend_schema(
+        summary="Xodimlar ro'yxati",
+        description="Tashkilotdagi barcha xodimlar (admin, o'qituvchi, menejer, qabulxona) ro'yxatini qaytaradi. Rol bo'yicha filtrlash mumkin.",
+        parameters=[
+            OpenApiParameter('role', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Xodim roli bo'yicha filtrlash (masalan: teacher, admin, manager)")
+        ]
+    ),
+    retrieve=extend_schema(
+        summary="Xodim profili",
+        description="Tanlangan xodimning to'liq shaxsiy ma'lumotlari, biriktirilgan guruhlari, filiallari va maosh foizi tafsilotlarini qaytaradi."
+    ),
+    create=extend_schema(
+        summary="Yangi xodim qo'shish",
+        description="Tashkilotga yangi xodim yoki o'qituvchi qo'shadi. O'qituvchi uchun ish haqi foizi majburiy hisoblanadi."
+    ),
+    update=extend_schema(
+        summary="Xodim ma'lumotlarini to'liq yangilash",
+        description="Xodimning shaxsiy va lavozim ma'lumotlarini to'liq yangilaydi."
+    ),
+    partial_update=extend_schema(
+        summary="Xodim ma'lumotlarini qisman tahrirlash",
+        description="Xodim ma'lumotlaridagi ayrim maydonlarni qisman o'zgartiradi."
+    ),
+    destroy=extend_schema(
+        summary="Xodimni o'chirish / ishdan bo'shatish",
+        description="Xodimni tizimdan o'chiradi va arxiv qaydini yaratadi. CEO yoki xodim o'zini o'zi o'chira olmaydi.",
+        parameters=[
+            OpenApiParameter('reason', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Ishdan bo'shatish sababi"),
+            OpenApiParameter('comment', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Qo'shimcha izoh"),
+        ]
+    ),
+)
 class EmployeeViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Xodimlar sozlamalari'
     serializer_class = EmployeeSerializer
-    queryset = User.objects.all()
+    queryset = User.objects.select_related('organization', 'branch').prefetch_related('branches')
 
     def get_queryset(self):
         from django.db.models import Q
@@ -238,6 +356,21 @@ class EmployeeViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             
         serializer.save(organization=org, branch=branch)
 
+    @extend_schema(
+        summary="Xodim faoliyati tarixi",
+        description="Xodimning ro'yxatdan o'tgan sanasi, biriktirilgan guruhlari, unga to'langan va hisoblangan maoshlar loglari xronologiyasini qaytaradi.",
+        responses={
+            200: inline_serializer(
+                name='EmployeeHistoryItem',
+                many=True,
+                fields={
+                    'action': serializers.CharField(),
+                    'description': serializers.CharField(),
+                    'created_at': serializers.CharField(),
+                }
+            )
+        }
+    )
     @decorators.action(detail=True, methods=['get'])
     def history(self, request, pk=None):
         employee = self.get_object()
@@ -296,10 +429,25 @@ class EmployeeViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         logs.sort(key=lambda x: x['created_at'], reverse=True)
         return Response(logs, status=status.HTTP_200_OK)
 
+
 class RoleListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Sozlamalar'
 
+    @extend_schema(
+        summary="Foydalanuvchi rollari ro'yxati",
+        description="Tizimda mavjud barcha foydalanuvchi rollari (Owner, Admin, Teacher, Manager, Receptionist, Employee) ro'yxatini qaytaradi.",
+        responses={
+            200: inline_serializer(
+                name='RoleItem',
+                many=True,
+                fields={
+                    'id': serializers.CharField(),
+                    'name': serializers.CharField(),
+                }
+            )
+        }
+    )
     def get(self, request):
         roles_data = [{"id": key, "name": value} for key, value in User.ROLE_CHOICES]
         return Response(roles_data, status=status.HTTP_200_OK)
@@ -309,6 +457,14 @@ class OrganizationMembersView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Xabarlar'
 
+    @extend_schema(
+        summary="Tashkilotning barcha a'zolari",
+        description="Xabarlar yoki umumiy ro'yxatlar uchun tashkilotdagi barcha foydalanuvchilar ro'yxatini qaytaradi.",
+        parameters=[
+            OpenApiParameter('role', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Rol bo'yicha filtrlash")
+        ],
+        responses={200: UserSerializer(many=True)}
+    )
     def get(self, request):
         org = getattr(request.user, 'organization', None)
         if not org:
@@ -329,6 +485,14 @@ class MessageEmployeesView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Xabarlar'
 
+    @extend_schema(
+        summary="Xabar yuborish uchun xodimlar ro'yxati",
+        description="Xabarnoma yuborish uchun talaba bo'lmagan barcha tashkilot xodimlari ro'yxatini qaytaradi.",
+        parameters=[
+            OpenApiParameter('role', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Rol bo'yicha filtrlash")
+        ],
+        responses={200: UserSerializer(many=True)}
+    )
     def get(self, request):
         org = getattr(request.user, 'organization', None)
         if not org:
@@ -362,6 +526,29 @@ class PasswordResetRequestView(APIView):
     """
     permission_classes = [permissions.AllowAny]
 
+    @extend_schema(
+        summary="Parolni unutganda tiklash so'rovi (OTP / Bot)",
+        description="Telefon raqam kiritilganda, agar foydalanuvchi Telegram botga ulangan bo'lsa darhol 6 xonali OTP yuboradi; agar ulanmagan bo'lsa Telegram botga yo'naltiruvchi deep-link havolasini generatsiya qiladi.",
+        request=PasswordResetRequestSerializer,
+        responses={
+            200: inline_serializer(
+                name='PasswordResetRequestResponse',
+                fields={
+                    'success': serializers.BooleanField(),
+                    'status': serializers.CharField(),
+                    'is_linked': serializers.BooleanField(),
+                    'phone': serializers.CharField(),
+                    'session_token': serializers.CharField(),
+                    'expires_at': serializers.CharField(),
+                    'message': serializers.CharField(),
+                    'bot_username': serializers.CharField(required=False),
+                    'telegram_link': serializers.CharField(required=False),
+                }
+            ),
+            400: inline_serializer(name='PasswordResetRequestError', fields={'detail': serializers.CharField()}),
+            404: inline_serializer(name='PasswordResetRequestNotFound', fields={'detail': serializers.CharField()})
+        }
+    )
     def post(self, request):
         serializer = PasswordResetRequestSerializer(data=request.data)
         if not serializer.is_valid():
@@ -394,7 +581,7 @@ class PasswordResetRequestView(APIView):
         session_token = secrets.token_hex(16)
         expires_at = timezone.now() + datetime.timedelta(minutes=5)
 
-        reset_session = PasswordResetSession.objects.create(
+        PasswordResetSession.objects.create(
             user=user,
             phone=phone_normalized,
             token=session_token,
@@ -451,6 +638,25 @@ class PasswordResetCheckStatusView(APIView):
     """
     permission_classes = [permissions.AllowAny]
 
+    @extend_schema(
+        summary="Parol tiklash sessiyasi holatini tekshirish (Polling)",
+        description="Foydalanuvchi Telegram botda raqamini tasdiqlaganligini frontend orqali polling qilib tekshirish uchun ishlatiladi.",
+        parameters=[
+            OpenApiParameter('session_token', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Sessiya tokeni")
+        ],
+        responses={
+            200: inline_serializer(
+                name='PasswordResetStatusResponse',
+                fields={
+                    'status': serializers.CharField(),
+                    'is_verified': serializers.BooleanField(),
+                    'phone': serializers.CharField(),
+                }
+            ),
+            400: inline_serializer(name='PasswordResetStatusError', fields={'detail': serializers.CharField()}),
+            404: inline_serializer(name='PasswordResetStatusNotFound', fields={'detail': serializers.CharField()})
+        }
+    )
     def get(self, request):
         session_token = request.query_params.get('session_token') or request.query_params.get('token')
         if not session_token:
@@ -480,6 +686,22 @@ class PasswordResetConfirmView(APIView):
     """
     permission_classes = [permissions.AllowAny]
 
+    @extend_schema(
+        summary="Parol tiklashni tasdiqlash va yangi parolni saqlash",
+        description="6 xonali OTP tasdiqlash kodi va yangi parolni qabul qilib, foydalanuvchi parolini muvaffaqiyatli yangilaydi.",
+        request=PasswordResetConfirmSerializer,
+        responses={
+            200: inline_serializer(
+                name='PasswordResetConfirmResponse',
+                fields={
+                    'success': serializers.BooleanField(),
+                    'message': serializers.CharField(),
+                }
+            ),
+            400: inline_serializer(name='PasswordResetConfirmError', fields={'detail': serializers.CharField()}),
+            404: inline_serializer(name='PasswordResetConfirmNotFound', fields={'detail': serializers.CharField()})
+        }
+    )
     def post(self, request):
         serializer = PasswordResetConfirmSerializer(data=request.data)
         if not serializer.is_valid():
@@ -534,4 +756,5 @@ class PasswordResetConfirmView(APIView):
             "success": True,
             "message": "Parolingiz muvaffaqiyatli o'zgartirildi! Endi yangi parol bilan tizimga kirishingiz mumkin."
         }, status=status.HTTP_200_OK)
+
 

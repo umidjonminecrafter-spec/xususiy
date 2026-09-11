@@ -6,7 +6,7 @@ from django.utils import timezone
 from decimal import Decimal
 
 from organizations.models import Organization
-from academics.models import Course, Student, Group, GroupTeacher, Attendance
+from academics.models import Student
 from crm.models import Lead, Pipeline, Section
 from finance.models import Cashbox, Payment
 from kpi.models import KPITemplate, KPIGoal, KPISubGoal, KPILog
@@ -168,7 +168,7 @@ class KPISystemTests(APITestCase):
         )
 
         # Create a payment collected by the employee
-        payment = Payment.objects.create(
+        Payment.objects.create(
             organization=self.org,
             student=student,
             amount=Decimal('250000.00'),

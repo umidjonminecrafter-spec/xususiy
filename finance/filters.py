@@ -1,5 +1,5 @@
 import django_filters
-from .models import Transaction, FinanceAction, Bonus, Fine
+from .models import Transaction, Bonus, Fine
 
 
 class FinancialReportFilter(django_filters.FilterSet):

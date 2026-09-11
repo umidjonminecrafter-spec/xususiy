@@ -3,7 +3,6 @@ Full End-to-End verification and data population script for Finance (Moliya) mod
 Tests every flow, checks cashbox balance consistency, reports, and API responses.
 """
 import os
-import sys
 import django
 from decimal import Decimal
 
@@ -11,20 +10,14 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
 from django.utils import timezone
-from django.test import RequestFactory
 from rest_framework.test import APIClient
 from accounts.models import User
 from organizations.models import Organization, Branch
-from academics.models import Student, Course, Group, StudentGroup, Attendance, charge_attendance
+from academics.models import Student, Course, Group, StudentGroup, Attendance
 from finance.models import (
-    Cashbox, CashTransaction, Transaction, ExpenseCategory, ExpenseSubcategory,
-    Expense, Payment, FinanceAction, FinanceSetting, StaffSalaryPercent,
-    TeacherSalaryRule, TeacherSalaryCalculation, TeacherSalaryPayment, Bonus, Fine
-)
-from finance.views import (
-    CashTransferAPIView, PaymentViewSet, TransactionViewSet, TransactionReportAPIView,
-    PnLReportView, FinanceReportView, CashFlowReportView, EmployeeFinanceBalanceReportView,
-    RevenuePlanReportView, StudentDebtsSummaryView, TeacherDebtsSummaryView
+    Cashbox, CashTransaction, ExpenseCategory, ExpenseSubcategory,
+    Expense, Payment, FinanceAction, StaffSalaryPercent,
+    TeacherSalaryPayment, Bonus
 )
 
 print("=" * 70)

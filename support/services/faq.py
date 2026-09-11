@@ -1,5 +1,5 @@
-from typing import Tuple, Optional, List
-from support.models import FAQItem, FAQCategory
+from typing import Tuple, Optional
+from support.models import FAQItem
 
 
 class FAQService:

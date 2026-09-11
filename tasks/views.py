@@ -1,8 +1,10 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, serializers
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema, extend_schema_view, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 
 from organizations.mixins import TenantViewSetMixin
 from tasks.models import Board, Column, Item, Comment, TaskPermission, Label, Checklist, ChecklistItem, Attachment, TaskHistory
@@ -26,6 +28,15 @@ def log_task_activity(item, user, action, details="", organization=None, branch=
         branch=br
     )
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Loyiha taxtalari (Boards) ro'yxati", tags=['Tasks & Boards']),
+    create=extend_schema(summary="Yangi doska yaratish", tags=['Tasks & Boards']),
+    retrieve=extend_schema(summary="Doska tafsilotlari (Ustunlar va vazifalari bilan)", tags=['Tasks & Boards']),
+    update=extend_schema(summary="Doskani to'liq yangilash", tags=['Tasks & Boards']),
+    partial_update=extend_schema(summary="Doskani qisman yangilash", tags=['Tasks & Boards']),
+    destroy=extend_schema(summary="Doskani o'chirish", tags=['Tasks & Boards']),
+)
 class BoardViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Board.objects.all()
@@ -39,6 +50,15 @@ class BoardViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             'columns__items__labels'
         )
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Ustunlar (Columns) ro'yxati", tags=['Tasks & Columns']),
+    create=extend_schema(summary="Doskaga yangi ustun qo'shish", tags=['Tasks & Columns']),
+    retrieve=extend_schema(summary="Ustun tafsilotlari", tags=['Tasks & Columns']),
+    update=extend_schema(summary="Ustunni to'liq yangilash", tags=['Tasks & Columns']),
+    partial_update=extend_schema(summary="Ustunni qisman yangilash (Nomi, Tartibi)", tags=['Tasks & Columns']),
+    destroy=extend_schema(summary="Ustunni o'chirish", tags=['Tasks & Columns']),
+)
 class ColumnViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Column.objects.all()
@@ -54,6 +74,32 @@ class ColumnViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             'items__labels'
         )
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Vazifalar (Tasks / Items) ro'yxati", tags=['Tasks & Items']),
+    create=extend_schema(summary="Yangi vazifa yaratish", tags=['Tasks & Items']),
+    retrieve=extend_schema(summary="Vazifa tafsilotlari", tags=['Tasks & Items']),
+    update=extend_schema(summary="Vazifani to'liq yangilash", tags=['Tasks & Items']),
+    partial_update=extend_schema(summary="Vazifani qisman yangilash", tags=['Tasks & Items']),
+    destroy=extend_schema(summary="Vazifani o'chirish", tags=['Tasks & Items']),
+    move=extend_schema(
+        summary="Vazifani boshqa ustunga yoki tartibga ko'chirish (Drag & Drop)",
+        tags=['Tasks & Items'],
+        request=inline_serializer(
+            name='TaskMoveRequest',
+            fields={
+                'column_id': serializers.IntegerField(required=False, help_text="Yangi ustun ID raqami"),
+                'order': serializers.IntegerField(required=False, help_text="Ustun ichidagi tartib indeksi")
+            }
+        ),
+        responses={200: OpenApiTypes.OBJECT}
+    ),
+    history=extend_schema(
+        summary="Vazifa o'zgarishlari va harakatlari tarixi",
+        tags=['Tasks & Items'],
+        responses={200: TaskHistorySerializer(many=True)}
+    )
+)
 class ItemViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Item.objects.all()
@@ -199,6 +245,14 @@ class ItemViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         serializer = TaskHistorySerializer(history, many=True)
         return Response(serializer.data)
 
+@extend_schema_view(
+    list=extend_schema(summary="Vazifa sharhlari (Comments) ro'yxati", tags=['Tasks & Comments']),
+    create=extend_schema(summary="Vazifaga yangi sharh qo'shish", tags=['Tasks & Comments']),
+    retrieve=extend_schema(summary="Sharh tafsiloti", tags=['Tasks & Comments']),
+    update=extend_schema(summary="Sharhni to'liq yangilash", tags=['Tasks & Comments']),
+    partial_update=extend_schema(summary="Sharhni qisman yangilash", tags=['Tasks & Comments']),
+    destroy=extend_schema(summary="Sharhni o'chirish", tags=['Tasks & Comments']),
+)
 class CommentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Comment.objects.all()
@@ -236,7 +290,7 @@ class CommentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                     message=msg,
                     type='info'
                 )
-            except Exception as e:
+            except Exception:
                 pass
 
     def perform_destroy(self, instance):
@@ -250,12 +304,30 @@ class CommentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             details=f"Sharh o'chirildi: '{comment_text[:50]}...'" if len(comment_text) > 50 else f"Sharh o'chirildi: '{comment_text}'"
         )
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Doska ruxsatlari (Permissions) ro'yxati", tags=['Tasks & Permissions']),
+    create=extend_schema(summary="Foydalanuvchiga doska bo'yicha tahrirlash ruxsatini berish", tags=['Tasks & Permissions']),
+    retrieve=extend_schema(summary="Ruxsat tafsilotlari", tags=['Tasks & Permissions']),
+    update=extend_schema(summary="Ruxsatni to'liq yangilash", tags=['Tasks & Permissions']),
+    partial_update=extend_schema(summary="Ruxsatni qisman yangilash", tags=['Tasks & Permissions']),
+    destroy=extend_schema(summary="Ruxsatni bekor qilish / o'chirish", tags=['Tasks & Permissions']),
+)
 class TaskPermissionViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = TaskPermission.objects.all()
     serializer_class = TaskPermissionSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Teglar / Yorliqlar (Labels) ro'yxati", tags=['Tasks & Labels']),
+    create=extend_schema(summary="Yangi teg yaratish", tags=['Tasks & Labels']),
+    retrieve=extend_schema(summary="Teg tafsilotlari", tags=['Tasks & Labels']),
+    update=extend_schema(summary="Tegni to'liq yangilash", tags=['Tasks & Labels']),
+    partial_update=extend_schema(summary="Tegni qisman yangilash", tags=['Tasks & Labels']),
+    destroy=extend_schema(summary="Tegni o'chirish", tags=['Tasks & Labels']),
+)
 class LabelViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Label.objects.all()
@@ -264,6 +336,15 @@ class LabelViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     filterset_fields = ['board_id']
     permission_classes = [permissions.IsAuthenticated, HasBoardPermission]
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Nazorat ro'yxatlari (Checklists) ro'yxati", tags=['Tasks & Checklists']),
+    create=extend_schema(summary="Vazifaga yangi nazorat ro'yxati qo'shish", tags=['Tasks & Checklists']),
+    retrieve=extend_schema(summary="Nazorat ro'yxati tafsilotlari", tags=['Tasks & Checklists']),
+    update=extend_schema(summary="Nazorat ro'yxatini to'liq yangilash", tags=['Tasks & Checklists']),
+    partial_update=extend_schema(summary="Nazorat ro'yxatini qisman yangilash", tags=['Tasks & Checklists']),
+    destroy=extend_schema(summary="Nazorat ro'yxatini o'chirish", tags=['Tasks & Checklists']),
+)
 class ChecklistViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Checklist.objects.all()
@@ -293,6 +374,15 @@ class ChecklistViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             details=f"Nazorat ro'yxati (Checklist) o'chirildi: '{checklist_title}'"
         )
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Nazorat ro'yxati elementlari (Checklist Items) ro'yxati", tags=['Tasks & Checklists']),
+    create=extend_schema(summary="Nazorat ro'yxatiga yangi band qo'shish", tags=['Tasks & Checklists']),
+    retrieve=extend_schema(summary="Nazorat bandi tafsilotlari", tags=['Tasks & Checklists']),
+    update=extend_schema(summary="Nazorat bandini to'liq yangilash", tags=['Tasks & Checklists']),
+    partial_update=extend_schema(summary="Nazorat bandini qisman yangilash (Bajarilganlik belgisi, Sarlavha)", tags=['Tasks & Checklists']),
+    destroy=extend_schema(summary="Nazorat bandini o'chirish", tags=['Tasks & Checklists']),
+)
 class ChecklistItemViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = ChecklistItem.objects.all()
@@ -343,6 +433,15 @@ class ChecklistItemViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             details=f"Nazorat ro'yxati elementi o'chirildi: '{chk_item_title}'"
         )
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Vazifa biriktirilgan fayllari (Attachments) ro'yxati", tags=['Tasks & Attachments']),
+    create=extend_schema(summary="Vazifaga fayl yuklash / biriktirish", tags=['Tasks & Attachments']),
+    retrieve=extend_schema(summary="Biriktirilgan fayl tafsilotlari", tags=['Tasks & Attachments']),
+    update=extend_schema(summary="Faylni to'liq yangilash", tags=['Tasks & Attachments']),
+    partial_update=extend_schema(summary="Faylni qisman yangilash", tags=['Tasks & Attachments']),
+    destroy=extend_schema(summary="Biriktirilgan faylni o'chirish", tags=['Tasks & Attachments']),
+)
 class AttachmentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Tasks'
     queryset = Attachment.objects.all()
@@ -374,6 +473,11 @@ class AttachmentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             details=f"Biriktirilgan fayl o'chirildi: '{file_name}'"
         )
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Vazifalar o'zgarish tarixi ro'yxati", tags=['Tasks & History']),
+    retrieve=extend_schema(summary="Tarix yozuvi tafsiloti", tags=['Tasks & History']),
+)
 class TaskHistoryViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
     permission_page_name = 'Tasks'
     queryset = TaskHistory.objects.all()
@@ -381,3 +485,4 @@ class TaskHistoryViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['item_id']
     permission_classes = [permissions.IsAuthenticated, HasBoardPermission]
+

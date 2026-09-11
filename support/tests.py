@@ -4,7 +4,7 @@ from rest_framework.test import APITestCase
 from django.contrib.auth import get_user_model
 from unittest.mock import patch
 from organizations.models import Organization
-from support.models import FAQCategory, FAQItem, ChatSession, ChatMessage, SupportTicket
+from support.models import FAQCategory, FAQItem, ChatSession, SupportTicket
 from support.services.faq import FAQService
 from support.services.ticket import TicketService
 from support.services.chat import AIChatService
@@ -180,7 +180,7 @@ class SupportModuleTests(APITestCase):
             description="Alice issue",
             organization=self.org1
         )
-        ticket2 = SupportTicket.objects.create(
+        SupportTicket.objects.create(
             user=self.admin,
             title="Ticket 2",
             description="Admin issue",

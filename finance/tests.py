@@ -479,7 +479,7 @@ class FinanceSettingIntegrationTests(APITestCase):
 
     def test_first_payment_bonus_triggers(self):
         from academics.models import Student
-        from finance.models import Payment, Bonus, FinanceAction, Transaction
+        from finance.models import Payment, Bonus
 
         student = Student.objects.create(
             organization=self.org,
@@ -734,7 +734,7 @@ class FinanceSettingIntegrationTests(APITestCase):
 
     def test_finance_setting_specific_person_sync(self):
         from academics.models import Student, BalanceHistory
-        from finance.models import FinanceAction, Transaction, Bonus, Fine
+        from finance.models import Transaction, Fine
         
         # Create a test student and teacher
         student = Student.objects.create(
@@ -907,7 +907,7 @@ class FinanceSettingIntegrationTests(APITestCase):
     def test_telegram_daily_report_generation(self):
         from academics.models import Student, BalanceHistory
         from academics.tasks import generate_daily_report_message
-        from finance.models import Payment, Expense, Salary
+        from finance.models import Payment, Expense
         from datetime import date
         
         # Create some students
@@ -930,7 +930,7 @@ class FinanceSettingIntegrationTests(APITestCase):
         report_date = date(2026, 7, 6)
         
         # Payments yesterday
-        p1 = Payment.objects.create(
+        Payment.objects.create(
             organization=self.org,
             student=s2,
             amount=Decimal('150000.00'),
@@ -984,14 +984,14 @@ class FinanceSettingIntegrationTests(APITestCase):
         self.assertIn("Выдано долгов: 50 000", report_msg_ru)
 
     def test_bonus_and_fine_filters(self):
-        from finance.models import Bonus, Fine
+        from finance.models import Bonus
         from datetime import date
         
         # Authenticate
         self.client.force_authenticate(user=self.manager)
         
         # Create some bonuses
-        b1 = Bonus.objects.create(
+        Bonus.objects.create(
             organization=self.org,
             employee=self.manager,
             amount=Decimal('10000.00'),
@@ -1064,6 +1064,68 @@ class FinanceSettingIntegrationTests(APITestCase):
         self.assertTrue(serializer2.is_valid(), serializer2.errors)
         payment2 = serializer2.save(organization=self.org)
         self.assertEqual(payment2.student_id, student.id)
+
+
+class TeacherSalaryHelperUnitTests(APITestCase):
+    """
+    Unit tests for isolated teacher salary service functions.
+    """
+    def setUp(self):
+        self.org = Organization.objects.create(name="Helper Test Org")
+        self.teacher = User.objects.create_user(
+            username="salary_teacher_helper",
+            password="securepassword",
+            role="teacher",
+            organization=self.org
+        )
+
+    def test_calculate_fixed_salary_without_holidays(self):
+        from finance.services.salary import calculate_fixed_salary
+        amount, details = calculate_fixed_salary(Decimal('1000000.00'), holiday_days_count=0, last_day=30)
+        self.assertEqual(amount, Decimal('1000000.00'))
+        self.assertEqual(details, {})
+
+    def test_calculate_fixed_salary_with_holidays(self):
+        from finance.services.salary import calculate_fixed_salary
+        amount, details = calculate_fixed_salary(Decimal('1000000.00'), holiday_days_count=3, last_day=30)
+        # Expected: 1,000,000 * (1 - 3/30) = 900,000.00
+        self.assertEqual(amount, Decimal('900000.00'))
+        self.assertEqual(details['holiday_days_deducted'], 3)
+        self.assertEqual(details['original_rate'], '1000000.00')
+
+    def test_calculate_per_student_salary(self):
+        from finance.services.salary import calculate_per_student_salary
+        amount, details = calculate_per_student_salary(Decimal('50000.00'), student_count=10, holiday_days_count=0, last_day=30)
+        self.assertEqual(amount, Decimal('500000.00'))
+        self.assertEqual(details['student_count'], 10)
+
+        # With holidays
+        amount_h, details_h = calculate_per_student_salary(Decimal('50000.00'), student_count=10, holiday_days_count=3, last_day=30)
+        self.assertEqual(amount_h, Decimal('450000.00'))
+        self.assertEqual(details_h['holiday_days_deducted'], 3)
+
+    def test_resolve_teacher_salary_rule(self):
+        from finance.services.salary import resolve_teacher_salary_rule
+        from finance.models import TeacherSalaryRule
+
+        # 1. Fallback when no rule exists
+        rule_type, rate = resolve_teacher_salary_rule(self.org.id, self.teacher, '2026-05', 2026, 5)
+        self.assertEqual(rule_type, 'fixed')
+        self.assertEqual(rate, Decimal('800.00'))
+
+        # 2. Specific rule defined
+        TeacherSalaryRule.objects.create(
+            organization=self.org,
+            teacher=self.teacher,
+            rule_type='percentage',
+            rate=Decimal('40.00'),
+            period='2026-05',
+            is_active=True
+        )
+        rule_type, rate = resolve_teacher_salary_rule(self.org.id, self.teacher, '2026-05', 2026, 5)
+        self.assertEqual(rule_type, 'percentage')
+        self.assertEqual(rate, Decimal('40.00'))
+
 
 
 

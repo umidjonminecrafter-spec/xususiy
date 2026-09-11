@@ -6,7 +6,7 @@ from decimal import Decimal
 from crm.models import Lead
 from finance.models import Payment
 from academics.models import Attendance
-from .models import KPIGoal, KPISubGoal
+from .models import KPIGoal
 
 def get_active_kpi_subgoal(employee, event_type, date_val):
     if not employee:

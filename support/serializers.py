@@ -6,7 +6,7 @@ User = get_user_model()
 
 
 class UserSimpleSerializer(serializers.ModelSerializer):
-    full_name = serializers.ReadOnlyField(source='get_full_name')
+    full_name = serializers.CharField(source='get_full_name', read_only=True)
 
     class Meta:
         model = User

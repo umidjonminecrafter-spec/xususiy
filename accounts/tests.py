@@ -36,7 +36,7 @@ class AccountsAPITests(APITestCase):
         Ensure login validates credentials and returns tokens.
         """
         org = Organization.objects.create(name="Login Test Org")
-        user = User.objects.create_user(
+        User.objects.create_user(
             username="+998901112234",
             password="securepassword",
             email="test@talim.com",

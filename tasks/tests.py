@@ -3,7 +3,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from django.contrib.auth import get_user_model
 from organizations.models import Organization, Branch
-from tasks.models import Board, Column, Item, Comment, Checklist, ChecklistItem, TaskHistory
+from tasks.models import Board, Column, Item, TaskHistory
 
 User = get_user_model()
 

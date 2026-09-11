@@ -4,6 +4,9 @@ from rest_framework.response import Response
 from django.db import transaction
 from django.contrib.auth import get_user_model
 from django.utils.dateparse import parse_date
+from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
+from rest_framework import serializers
 
 from organizations.mixins import TenantViewSetMixin
 from organizations.permissions import IsAdminOrOwnerOrReadOnly
@@ -12,6 +15,15 @@ from .serializers import KPITemplateSerializer, KPIGoalSerializer, KPISubGoalSer
 
 User = get_user_model()
 
+
+@extend_schema_view(
+    list=extend_schema(summary="KPI andozalari (shablonlari) ro'yxati", tags=['KPI - Settings & Goals']),
+    create=extend_schema(summary="Yangi KPI andozasi yaratish", tags=['KPI - Settings & Goals']),
+    retrieve=extend_schema(summary="KPI andozasi tafsiloti", tags=['KPI - Settings & Goals']),
+    update=extend_schema(summary="KPI andozasini to'liq yangilash", tags=['KPI - Settings & Goals']),
+    partial_update=extend_schema(summary="KPI andozasini qisman yangilash", tags=['KPI - Settings & Goals']),
+    destroy=extend_schema(summary="KPI andozasini o'chirish", tags=['KPI - Settings & Goals']),
+)
 class KPITemplateViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Sozlamalar'
@@ -19,6 +31,30 @@ class KPITemplateViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     serializer_class = KPITemplateSerializer
 
 
+@extend_schema_view(
+    list=extend_schema(summary="Xodimlarga biriktirilgan KPI maqsadlari ro'yxati", tags=['KPI - Settings & Goals']),
+    create=extend_schema(summary="Yangi KPI maqsadi yaratish", tags=['KPI - Settings & Goals']),
+    retrieve=extend_schema(summary="KPI maqsadi tafsiloti va progressi", tags=['KPI - Settings & Goals']),
+    update=extend_schema(summary="KPI maqsadini to'liq yangilash", tags=['KPI - Settings & Goals']),
+    partial_update=extend_schema(summary="KPI maqsadini qisman yangilash", tags=['KPI - Settings & Goals']),
+    destroy=extend_schema(summary="KPI maqsadini o'chirish", tags=['KPI - Settings & Goals']),
+    assign_template=extend_schema(
+        summary="KPI andozasini bir nechta xodimga ommaviy biriktirish",
+        description="Tanlangan KPI andozasi va davr (boshlanish/tugash sanasi) bo'yicha ko'rsatilgan xodimlarga avtomatik KPI va uning quyi maqsadlarini yaratadi.",
+        tags=['KPI - Settings & Goals'],
+        request=inline_serializer(
+            name='AssignKPITemplateRequest',
+            fields={
+                'template_id': serializers.IntegerField(help_text="KPI andozasi ID raqami"),
+                'employee_ids': serializers.ListField(child=serializers.IntegerField(), help_text="Xodimlar ID lari ro'yxati"),
+                'start_date': serializers.DateField(help_text="Boshlanish sanasi (YYYY-MM-DD)"),
+                'end_date': serializers.DateField(help_text="Tugash sanasi (YYYY-MM-DD)"),
+                'name': serializers.CharField(help_text="KPI maqsad nomi (masalan: 'Avgust 2026 KPI')"),
+            }
+        ),
+        responses={201: KPIGoalSerializer(many=True)}
+    ),
+)
 class KPIGoalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Sozlamalar'
@@ -30,14 +66,6 @@ class KPIGoalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     def assign_template(self, request):
         """
         Mass-assign a KPI Template to employees for a specific period.
-        Payload:
-        {
-            "template_id": 1,
-            "employee_ids": [3, 4, 5],
-            "start_date": "2026-08-01",
-            "end_date": "2026-08-31",
-            "name": "August 2026 KPI"
-        }
         """
         org_id = self.get_organization_id()
         if not org_id:
@@ -99,6 +127,14 @@ class KPIGoalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema_view(
+    list=extend_schema(summary="KPI quyi maqsadlari (Sub-goals) ro'yxati", tags=['KPI - Settings & Goals']),
+    create=extend_schema(summary="Yangi KPI quyi maqsadi yaratish", tags=['KPI - Settings & Goals']),
+    retrieve=extend_schema(summary="KPI quyi maqsadi tafsiloti", tags=['KPI - Settings & Goals']),
+    update=extend_schema(summary="KPI quyi maqsadini yangilash (manual progress)", tags=['KPI - Settings & Goals']),
+    partial_update=extend_schema(summary="KPI quyi maqsadini qisman yangilash", tags=['KPI - Settings & Goals']),
+    destroy=extend_schema(summary="KPI quyi maqsadini o'chirish", tags=['KPI - Settings & Goals']),
+)
 class KPISubGoalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Sozlamalar'
@@ -106,8 +142,13 @@ class KPISubGoalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     serializer_class = KPISubGoalSerializer
 
 
+@extend_schema_view(
+    list=extend_schema(summary="KPI bajarilish loglari (tarixi) ro'yxati", tags=['KPI - Settings & Goals']),
+    retrieve=extend_schema(summary="KPI log yozuvi tafsiloti", tags=['KPI - Settings & Goals']),
+)
 class KPILogViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Sozlamalar'
     queryset = KPILog.objects.all()
     serializer_class = KPILogSerializer
+

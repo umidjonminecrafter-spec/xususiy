@@ -1,40 +1,48 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework import serializers
 from django.db.models import Count, Q
 from django.utils import timezone
-from academics.models import Attendance, Group, GroupLesson,Student
-from crm.models import Lead  # Lead modelingiz qaysi appda bo'lsa o'sha yo'lni yozing (masalan: crm.models)
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
+
+from academics.models import Attendance, Group, GroupLesson, Student
+from crm.models import Lead
+from common.utils import parse_flexible_date
 from .serializers import GlobalAttendanceSerializer
 
 
 class GlobalAttendanceAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="Global davomat ro'yxati va filtrlari",
+        description="Tashkilotdagi barcha o'quvchilarning davomat yozuvlarini sana oralig'i, davomat holati, guruh, o'qituvchi, filial va CRM voronkalari (lidlar) bo'yicha saralab qaytaradi.",
+        parameters=[
+            OpenApiParameter('date', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Aniq sana (YYYY-MM-DD)"),
+            OpenApiParameter('date_from', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Boshlanish sanasi (YYYY-MM-DD)"),
+            OpenApiParameter('date_to', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Tugash sanasi (YYYY-MM-DD)"),
+            OpenApiParameter('attendance_status', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Davomat holati (present, absent, late, excused)"),
+            OpenApiParameter('group_id', OpenApiTypes.INT, OpenApiParameter.QUERY, description="Guruh ID si"),
+            OpenApiParameter('teacher_id', OpenApiTypes.INT, OpenApiParameter.QUERY, description="O'qituvchi ID si"),
+            OpenApiParameter('branch_id', OpenApiTypes.INT, OpenApiParameter.QUERY, description="Filial ID si"),
+            OpenApiParameter('pipeline_id', OpenApiTypes.INT, OpenApiParameter.QUERY, description="CRM Voronka ID si"),
+            OpenApiParameter('lead_status', OpenApiTypes.STR, OpenApiParameter.QUERY, description="Lid statusi (first_lesson, open, won, lost)"),
+        ],
+        responses={200: GlobalAttendanceSerializer(many=True)}
+    )
     def get(self, request):
         org_id = getattr(request.user, 'organization_id', None)
         if not org_id:
             return Response({"detail": "Tashkilot aniqlanmadi"}, status=400)
 
-        # Frontenddan (Abdulmajid) kelayotgan filter parametrlari
+        # Frontend filter parametrlari
         date_param = request.query_params.get('date')
         date_from_param = request.query_params.get('date_from')
         date_to_param = request.query_params.get('date_to')
 
-        def normalize_date(d_str):
-            if not d_str:
-                return None
-            import re
-            if re.match(r'^\d{2}/\d{2}/\d{4}$', d_str):
-                parts = d_str.split('/')
-                return f"{parts[2]}-{parts[1]}-{parts[0]}"
-            elif re.match(r'^\d{2}-\d{2}-\d{4}$', d_str):
-                parts = d_str.split('-')
-                return f"{parts[2]}-{parts[1]}-{parts[0]}"
-            return d_str
-
-        date_from = normalize_date(date_from_param or date_param)
-        date_to = normalize_date(date_to_param)
+        date_from = parse_flexible_date(date_from_param or date_param, default=None)
+        date_to = parse_flexible_date(date_to_param, default=None)
 
         attendance_status = request.query_params.get('attendance_status')  # present, absent, excused
         group_id = request.query_params.get('group_id')
@@ -99,6 +107,33 @@ class GlobalAttendanceAPIView(APIView):
 class AttendanceAnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="Davomat umumiy statistikasi",
+        description="Sana bo'yicha darsga kelganlar, sababli, sababsiz, birinchi darsga yozilganlar va davomat qilinmagan guruhlar soni xulosasini hisoblab beradi.",
+        parameters=[
+            OpenApiParameter('date', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Aniq sana (YYYY-MM-DD)"),
+            OpenApiParameter('date_from', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Boshlanish sanasi"),
+            OpenApiParameter('date_to', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Tugash sanasi"),
+        ],
+        responses={
+            200: inline_serializer(
+                name='AttendanceAnalyticsSummaryResponse',
+                fields={
+                    'summary': inline_serializer(
+                        name='AttendanceSummaryData',
+                        fields={
+                            'kelganlar': serializers.IntegerField(),
+                            'sababli': serializers.IntegerField(),
+                            'sababsiz': serializers.IntegerField(),
+                            'birinchi_dars': serializers.IntegerField(),
+                            'muzlatilgan': serializers.IntegerField(),
+                            'davomat_qilinmagan': serializers.IntegerField(),
+                        }
+                    )
+                }
+            )
+        }
+    )
     def get(self, request):
         org_id = getattr(request.user, 'organization_id', None)
         if not org_id:
@@ -170,6 +205,27 @@ class AttendanceAnalyticsAPIView(APIView):
 class UnmarkedGroupsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="Davomati olinmagan guruhlar ro'yxati",
+        description="Tanlangan sanada darsi rejalashtirilgan, biroq o'qituvchi tomonidan hali davomat qilinmagan guruhlar ro'yxatini qaytaradi.",
+        parameters=[
+            OpenApiParameter('date', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Aniq sana (YYYY-MM-DD)"),
+            OpenApiParameter('date_from', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Boshlanish sanasi"),
+            OpenApiParameter('date_to', OpenApiTypes.DATE, OpenApiParameter.QUERY, description="Tugash sanasi"),
+        ],
+        responses={
+            200: inline_serializer(
+                name='UnmarkedGroupItem',
+                many=True,
+                fields={
+                    'group_id': serializers.IntegerField(),
+                    'group_name': serializers.CharField(),
+                    'teacher_name': serializers.CharField(),
+                    'date': serializers.CharField(),
+                }
+            )
+        }
+    )
     def get(self, request):
         org_id = getattr(request.user, 'organization_id', None)
         if not org_id:
@@ -227,6 +283,35 @@ class UnmarkedGroupsAPIView(APIView):
 class BranchStatusAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="Filiallar holati va yig'ma statistik hisoboti",
+        description="Filialdagi jami buyurtmalar (lidlar), birinchi darsga keladiganlar, faol o'quvchilar soni, qarzdorlar va guruhlar bo'yicha jamlangan tahliliy ko'rsatkichlarni qaytaradi.",
+        responses={
+            200: inline_serializer(
+                name='BranchStatusItem',
+                many=True,
+                fields={
+                    'id': serializers.IntegerField(),
+                    'filial': serializers.CharField(),
+                    'buyurtma': serializers.IntegerField(),
+                    'birinchi_darsga_keladiganlar': serializers.IntegerField(),
+                    'yangi_oquvchi': serializers.IntegerField(),
+                    'aktiv_oquvchilar': serializers.IntegerField(),
+                    'jami_real_bor': serializers.IntegerField(),
+                    'guruh_oquvchilari': serializers.IntegerField(),
+                    'buyurtmadan_ketganlar': serializers.IntegerField(),
+                    'yangi_oquvchidan_ketganlar': serializers.IntegerField(),
+                    'aktiv_oquvchidan_ketganlar': serializers.IntegerField(),
+                    'qarzdorlar': serializers.IntegerField(),
+                    'guruh': serializers.IntegerField(),
+                    'birinchi_tolovni_qilganlar': serializers.IntegerField(),
+                    'jami_oquvchi': serializers.IntegerField(),
+                    'jami_aktiv': serializers.IntegerField(),
+                    'qarzdorlarning_aktivga_nisbatan_foizi': serializers.CharField(),
+                }
+            )
+        }
+    )
     def get(self, request):
         org_id = getattr(request.user, 'organization_id', None)
         if not org_id:
@@ -292,6 +377,23 @@ class BranchStatusAPIView(APIView):
 class DBDebugAPIView(APIView):
     permission_classes = []  # Allows public access for debugging convenience
 
+    @extend_schema(
+        summary="Ma'lumotlar bazasi diagnostikasi (Debug)",
+        description="Tizim ma'lumotlar bazasidagi umumiy yozuvlar soni va holatini tekshirish uchun yordamchi debug endpoint.",
+        responses={
+            200: inline_serializer(
+                name='DBDebugResponse',
+                fields={
+                    'user': serializers.DictField(),
+                    'organizations': serializers.ListField(child=serializers.DictField()),
+                    'all_attendances': serializers.ListField(child=serializers.DictField()),
+                    'all_groups': serializers.ListField(child=serializers.DictField()),
+                    'database_totals_across_all_organizations': serializers.DictField(),
+                    'your_organization_totals': serializers.DictField(),
+                }
+            )
+        }
+    )
     def get(self, request):
         org_id = getattr(request.user, 'organization_id', None)
         if not org_id:
@@ -365,6 +467,7 @@ class DBDebugAPIView(APIView):
                 "sample_lesson_dates": sample_lesson_dates
             }
         })
+
 
 
 

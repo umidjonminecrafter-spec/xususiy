@@ -1,9 +1,12 @@
-from rest_framework import viewsets, permissions, status, decorators
+from rest_framework import viewsets, permissions, status, decorators, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate, get_user_model
+from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 
+from common.utils import normalize_uz_phone
 from organizations.models import Organization, Branch, Tariff, Subscription, ExamSetting, ReceiptSetting, BackupSetting, \
     TelegramNotificationSetting, LessonNotificationTemplate
 from organizations.mixins import TenantViewSetMixin
@@ -15,12 +18,19 @@ from organizations.serializers import (
 )
 from organizations.backup import run_backup_for_setting
 from accounts.serializers import UserSerializer
-
 from .serializers import GlobalSearchSerializer
 
 User = get_user_model()
 
 
+@extend_schema_view(
+    list=extend_schema(summary="Tashkilotlar ro'yxati (Foydalanuvchining o'z tashkiloti)", tags=['Organizations & Settings']),
+    create=extend_schema(summary="Yangi tashkilot yaratish", tags=['Organizations & Settings']),
+    retrieve=extend_schema(summary="Tashkilot tafsilotlari", tags=['Organizations & Settings']),
+    update=extend_schema(summary="Tashkilot ma'lumotlarini to'liq yangilash", tags=['Organizations & Settings']),
+    partial_update=extend_schema(summary="Tashkilot ma'lumotlarini qisman yangilash", tags=['Organizations & Settings']),
+    destroy=extend_schema(summary="Tashkilotni o'chirish", tags=['Organizations & Settings']),
+)
 class OrganizationViewSet(viewsets.ModelViewSet):
     queryset = Organization.objects.all()
     serializer_class = OrganizationSerializer
@@ -59,6 +69,12 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @extend_schema(
+        summary="Tashkilot umumiy sozlamalari (Ko'rish / Yangilash)",
+        tags=['Organizations & Settings'],
+        request=OrganizationSerializer,
+        responses={200: OrganizationSerializer}
+    )
     @decorators.action(detail=False, methods=['get', 'put', 'patch'], url_path='settings')
     def organization_general_settings(self, request):
         user = request.user
@@ -78,6 +94,12 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         serializer = OrganizationSerializer(organization)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        summary="Imtihon sozlamalari (Ko'rish / Yangilash)",
+        tags=['Organizations & Settings'],
+        request=ExamSettingSerializer,
+        responses={200: ExamSettingSerializer}
+    )
     @decorators.action(detail=False, methods=['get', 'put'], url_path='exam-settings')
     def exam_settings(self, request):
         user = request.user
@@ -98,6 +120,12 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         serializer = ExamSettingSerializer(setting)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        summary="Kvitansiya / Chek sozlamalari (Ko'rish / Yangilash)",
+        tags=['Organizations & Settings'],
+        request=ReceiptSettingSerializer,
+        responses={200: ReceiptSettingSerializer}
+    )
     @decorators.action(detail=False, methods=['get', 'put'], url_path='receipt-settings')
     def receipt_settings(self, request):
         user = request.user
@@ -119,6 +147,12 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         serializer = ReceiptSettingSerializer(setting)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        summary="Zaxira nusxalash (Backup) sozlamalari (Ko'rish / Yangilash)",
+        tags=['Organizations & Settings'],
+        request=BackupSettingSerializer,
+        responses={200: BackupSettingSerializer}
+    )
     @decorators.action(detail=False, methods=['get', 'put'], url_path='backup-settings')
     def backup_settings(self, request):
         user = request.user
@@ -139,6 +173,11 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         serializer = BackupSettingSerializer(setting)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        summary="Zaxiralashni hozir ishga tushirish (Telegram / Cloud)",
+        tags=['Organizations & Settings'],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     @decorators.action(detail=False, methods=['post'], url_path='backup-now')
     def backup_now(self, request):
         user = request.user
@@ -156,6 +195,11 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             return Response({"detail": f"Zaxiralashda xatolik yuz berdi: {message}"},
                             status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="Tashkilot ma'lumotlari zaxirasini yuklab olish (ZIP formatda)",
+        tags=['Organizations & Settings'],
+        responses={200: OpenApiTypes.BINARY}
+    )
     @decorators.action(detail=False, methods=['get'], url_path='backup-download')
     def backup_download(self, request):
         user = request.user
@@ -166,7 +210,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         organization = user.organization
 
         from django.apps import apps
-        from django.core import serializers
+        from django.core import serializers as django_serializers
         from django.http import HttpResponse
         import json
         import datetime
@@ -181,7 +225,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
                 try:
                     queryset = model.objects.filter(organization_id=organization.id)
                     if queryset.exists():
-                        serialized_str = serializers.serialize('json', queryset)
+                        serialized_str = django_serializers.serialize('json', queryset)
                         serialized_list = json.loads(serialized_str)
                         backup_data.extend(serialized_list)
                 except Exception as e:
@@ -214,6 +258,12 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             return Response({"detail": f"Zaxira faylini yaratishda xatolik: {str(e)}"},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @extend_schema(
+        summary="Telegram bildirishnoma sozlamalari (Ko'rish / Yangilash)",
+        tags=['Organizations & Settings'],
+        request=TelegramNotificationSettingSerializer,
+        responses={200: TelegramNotificationSettingSerializer}
+    )
     @decorators.action(detail=False, methods=['get', 'put'], url_path='telegram-settings')
     def telegram_settings(self, request):
         user = request.user
@@ -234,6 +284,12 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         serializer = TelegramNotificationSettingSerializer(setting)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        summary="Dars xabarnomalari shablonlari ro'yxati va yaratish",
+        tags=['Organizations & Settings'],
+        request=LessonNotificationTemplateSerializer,
+        responses={200: LessonNotificationTemplateSerializer(many=True), 201: LessonNotificationTemplateSerializer}
+    )
     @decorators.action(detail=False, methods=['get', 'post'], url_path='lesson-templates')
     def lesson_templates(self, request):
         user = request.user
@@ -254,6 +310,13 @@ class OrganizationViewSet(viewsets.ModelViewSet):
                 return Response(serializer.data, status=status.HTTP_201_CREATED)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="Dars xabarnomasi shabloni tafsiloti, yangilash va o'chirish",
+        parameters=[OpenApiParameter('template_id', OpenApiTypes.INT, location=OpenApiParameter.PATH, description="Shablon ID")],
+        tags=['Organizations & Settings'],
+        request=LessonNotificationTemplateSerializer,
+        responses={200: LessonNotificationTemplateSerializer, 204: None}
+    )
     @decorators.action(detail=False, methods=['put', 'patch', 'delete'],
                        url_path='lesson-templates/(?P<template_id>[^/.]+)')
     def lesson_template_detail(self, request, template_id=None):
@@ -277,6 +340,11 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             template.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @extend_schema(
+        summary="Telegram bot integratsiyasini test xabari orqali tekshirish",
+        tags=['Organizations & Settings'],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     @decorators.action(detail=False, methods=['post'], url_path='telegram-test')
     def telegram_test(self, request):
         user = request.user
@@ -325,8 +393,26 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         return Response({"detail": "Test xabari muvaffaqiyatli yuborildi! 🚀"}, status=status.HTTP_200_OK)
 
 
-# ... mavjud importlar qatorida tursin
-
+@extend_schema_view(
+    list=extend_schema(summary="Filiallar ro'yxati", tags=['Organizations & Settings']),
+    create=extend_schema(summary="Yangi filial yaratish", tags=['Organizations & Settings']),
+    retrieve=extend_schema(summary="Filial tafsilotlari", tags=['Organizations & Settings']),
+    update=extend_schema(summary="Filialni to'liq yangilash", tags=['Organizations & Settings']),
+    partial_update=extend_schema(summary="Filialni qisman yangilash", tags=['Organizations & Settings']),
+    destroy=extend_schema(summary="Filialni o'chirish", tags=['Organizations & Settings']),
+    set_location=extend_schema(
+        summary="Filial xaritadagi geografik lokatsiyasini saqlash/yangilash",
+        tags=['Organizations & Settings'],
+        request=inline_serializer(
+            name='SetBranchLocationRequest',
+            fields={
+                'latitude': serializers.FloatField(help_text="Kenglik (Latitude, masalan: 41.311081)"),
+                'longitude': serializers.FloatField(help_text="Uzunlik (Longitude, masalan: 69.240562)")
+            }
+        ),
+        responses={200: OpenApiTypes.OBJECT}
+    )
+)
 class BranchViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Sozlamalar'
     queryset = Branch.objects.all()
@@ -343,11 +429,10 @@ class BranchViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             user.branch = branch
             user.save()
 
-    # 🌟 YANGI QO'SHILGAN LOKATSIYA METODI:
     @decorators.action(detail=True, methods=['post'], url_path='set-location')
     def set_location(self, request, pk=None):
         """Filial xaritadagi lokatsiyasini (latitude, longitude) saqlash/yangilash"""
-        branch = self.get_object()  # Joriy filialni avtomatik topadi
+        branch = self.get_object()
 
         latitude = request.data.get('latitude')
         longitude = request.data.get('longitude')
@@ -369,14 +454,28 @@ class BranchViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             "latitude": branch.latitude,
             "longitude": branch.longitude
         }, status=status.HTTP_200_OK)
-from rest_framework.permissions import IsAuthenticated
+
+
+@extend_schema(
+    operation_id='organizations_branch_update_location_by_param',
+    summary="Filial lokatsiyasini yangilash (Parametr branch_id bo'yicha)",
+    parameters=[OpenApiParameter('branch_id', OpenApiTypes.INT, location=OpenApiParameter.PATH, description="Filial ID raqami")],
+    tags=['Organizations & Settings'],
+    request=inline_serializer(
+        name='UpdateBranchLocationAPIRequest',
+        fields={
+            'latitude': serializers.FloatField(help_text="Kenglik (Latitude)"),
+            'longitude': serializers.FloatField(help_text="Uzunlik (Longitude)")
+        }
+    ),
+    responses={200: OpenApiTypes.OBJECT}
+)
 class UpdateBranchLocationAPIView(APIView):
     """Filialning geografik koordinatalarini (lokatsiyasini) yangilash API-si"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, branch_id):
         try:
-            # Foydalanuvchi faqat o'z tashkilotiga tegishli filialni o'zgartira oladi
             branch = Branch.objects.get(id=branch_id, organization=request.user.organization)
         except Branch.DoesNotExist:
             return Response({"error": "Filial topilmadi yoki sizda ruxsat yo'q!"}, status=status.HTTP_404_NOT_FOUND)
@@ -398,6 +497,15 @@ class UpdateBranchLocationAPIView(APIView):
             "longitude": branch.longitude
         }, status=status.HTTP_200_OK)
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Ta'riflar (Tariffs) ro'yxati", tags=['Billing & Subscriptions']),
+    create=extend_schema(summary="Yangi ta'rif yaratish", tags=['Billing & Subscriptions']),
+    retrieve=extend_schema(summary="Ta'rif tafsilotlari", tags=['Billing & Subscriptions']),
+    update=extend_schema(summary="Ta'rifni yangilash", tags=['Billing & Subscriptions']),
+    partial_update=extend_schema(summary="Ta'rifni qisman yangilash", tags=['Billing & Subscriptions']),
+    destroy=extend_schema(summary="Ta'rifni o'chirish", tags=['Billing & Subscriptions']),
+)
 class TariffViewSet(viewsets.ModelViewSet):
     permission_classes = (permissions.IsAuthenticated, HasOrganizationPagePermission)
     permission_page_name = 'Sozlamalar'
@@ -405,6 +513,14 @@ class TariffViewSet(viewsets.ModelViewSet):
     serializer_class = TariffSerializer
 
 
+@extend_schema_view(
+    list=extend_schema(summary="Tashkilot faol obunasi (Subscription) ma'lumoti", tags=['Billing & Subscriptions']),
+    create=extend_schema(summary="Yangi obuna yaratish", tags=['Billing & Subscriptions']),
+    retrieve=extend_schema(summary="Obuna tafsilotlari", tags=['Billing & Subscriptions']),
+    update=extend_schema(summary="Obunani yangilash", tags=['Billing & Subscriptions']),
+    partial_update=extend_schema(summary="Obunani qisman yangilash", tags=['Billing & Subscriptions']),
+    destroy=extend_schema(summary="Obunani bekor qilish", tags=['Billing & Subscriptions']),
+)
 class SubscriptionViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Sozlamalar'
     queryset = Subscription.objects.all()
@@ -427,6 +543,18 @@ class SubscriptionViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         return Response([serializer.data])
 
 
+@extend_schema(
+    summary="Tashkilotga kirish (Login - JWT token va foydalanuvchi ma'lumotlarini olish)",
+    tags=['Authentication'],
+    request=inline_serializer(
+        name='OrganizationLoginRequest',
+        fields={
+            'username': serializers.CharField(help_text="Telefon raqami yoki login"),
+            'password': serializers.CharField(help_text="Foydalanuvchi paroli")
+        }
+    ),
+    responses={200: OpenApiTypes.OBJECT}
+)
 class OrganizationLoginView(APIView):
     """
     Login endpoint specifically under organizations, returns token and user info if authenticated.
@@ -437,21 +565,14 @@ class OrganizationLoginView(APIView):
         username = request.data.get('username') or request.data.get('phone')
         password = request.data.get('password')
 
-        # Telefon raqamni normallashtiramiz (+998XXXXXXXXX va 998XXXXXXXXX formatlari uchun)
-        cleaned = ''.join(c for c in str(username) if c.isdigit())
+        formatted_phone = normalize_uz_phone(username)
         user = None
-        if cleaned:
-            if len(cleaned) == 9:
-                cleaned = '998' + cleaned
-
-            # 1-urinish: '+' belgi bilan (masalan, +998XXXXXXXXX)
-            formatted_phone = '+' + cleaned
+        if formatted_phone:
             user = authenticate(username=formatted_phone, password=password)
             if user is None:
-                # 2-urinish: '+' belgisiz (masalan, 998XXXXXXXXX)
+                cleaned = formatted_phone.replace('+', '')
                 user = authenticate(username=cleaned, password=password)
 
-        # Agar telefon raqam ko'rinishida bo'lmasa, oddiy username bilan urinib ko'ramiz
         if user is None:
             user = authenticate(username=username, password=password)
 
@@ -471,10 +592,20 @@ class OrganizationLoginView(APIView):
 
 from django.core.cache import cache
 from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from .utils import send_sms, generate_verification_code  # utils.py dan yuklab olamiz
+from .utils import send_sms, generate_verification_code
 
 
+@extend_schema(
+    summary="Ro'yxatdan o'tish uchun telefon raqamiga SMS kod yuborish",
+    tags=['Authentication'],
+    request=inline_serializer(
+        name='SendRegisterCodeRequest',
+        fields={
+            'phone_number': serializers.CharField(help_text="Telefon raqami (masalan: +998901234567)")
+        }
+    ),
+    responses={200: OpenApiTypes.OBJECT}
+)
 @api_view(['POST'])
 @decorators.permission_classes([permissions.AllowAny])
 def send_register_code(request):
@@ -490,12 +621,23 @@ def send_register_code(request):
     success, sms_msg = send_sms(phone_number, message)
 
     if success:
-        # Kodni keshda shu raqam ostida 5 daqiqaga saqlaymiz
         cache.set(f"sms_code_{phone_number}", code, timeout=300)
         return Response({"message": "Kod yuborildi! ✅"})
     return Response({"error": f"SMS xatosi: {sms_msg}"}, status=500)
 
 
+@extend_schema(
+    summary="SMS tasdiqlash kodini tekshirish",
+    tags=['Authentication'],
+    request=inline_serializer(
+        name='VerifyRegisterCodeRequest',
+        fields={
+            'phone_number': serializers.CharField(help_text="Telefon raqami"),
+            'code': serializers.CharField(help_text="Kiritilgan 6 xonali tasdiqlash kodi")
+        }
+    ),
+    responses={200: OpenApiTypes.OBJECT}
+)
 @api_view(['POST'])
 @decorators.permission_classes([permissions.AllowAny])
 def verify_register_code(request):
@@ -512,50 +654,48 @@ def verify_register_code(request):
         return Response({"error": "Kod eskirgan yoki raqam noto'g'ri"}, status=400)
 
     if str(saved_code) == str(user_code):
-        cache.delete(f"sms_code_{phone_number}")  # Kod to'g'ri bo'lsa keshni tozalaymiz
-
-        # 🚨 SHU YERDA: Foydalanuvchini ro'yxatdan o'tkazish (User.objects.create) kodini yozasiz
-
+        cache.delete(f"sms_code_{phone_number}")
         return Response({"message": "Telefon raqam tasdiqlandi! 🎉"})
     return Response({"error": "Kod noto'g'ri! ❌"}, status=400)
 
+
 from django.db.models import Q
 from academics.models import Student, Group
-from rest_framework.permissions import IsAuthenticated
 
 
-
-
-
-
+@extend_schema(
+    summary="Tizim bo'ylab universal global qidiruv",
+    description="O'quvchilar (Student), xodimlar/o'qituvchilar (User) va guruhlar (Group) bo'yicha tezkor umumiy qidiruv.",
+    parameters=[
+        OpenApiParameter('q', OpenApiTypes.STR, description="Qidiruv matni (kamida 2 ta belgi)")
+    ],
+    tags=['Organizations & Search'],
+    responses={200: GlobalSearchSerializer(many=True)}
+)
 class GlobalSearchAPIView(APIView):
     """Tizimdagi barcha muhim modellar va maydonlar bo'ylab universal global qidiruv"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         query = request.query_params.get('q', '').strip()
 
-        # Kamida 2 ta belgi kiritilganda qidiruv ishlaydi
         if len(query) < 2:
             return Response([], status=status.HTTP_200_OK)
 
         user_org = request.user.organization
         results = []
 
-        # =========================================================================
         # 1. O'QUVCHILAR (Student) QIDIRUVI
-        # =========================================================================
         students = Student.objects.filter(organization=user_org).filter(
             Q(first_name__icontains=query) |
             Q(last_name__icontains=query) |
             Q(phone__icontains=query) |
             Q(address__icontains=query) |
-            Q(passport_series__icontains=query) |
-            Q(notes__icontains=query)
+            Q(father_name__icontains=query) |
+            Q(mother_name__icontains=query)
         )[:15]
 
         for s in students:
-            # f-string ichida xatolik bermasligi uchun o'zgaruvchilarni tepada hal qilamiz
             s_name = f"{s.first_name} {s.last_name or ''}".strip()
             s_phone = getattr(s, 'phone', '') or "yo'q"
             s_address = getattr(s, 'address', '') or "yo'q"
@@ -568,9 +708,7 @@ class GlobalSearchAPIView(APIView):
                 'additional_info': f"Tel: {s_phone} | Manzil: {s_address}"
             })
 
-        # =========================================================================
         # 2. XODIMLAR VA O'QITUVCHILAR (User) QIDIRUVI
-        # =========================================================================
         users = User.objects.filter(organization=user_org).filter(
             Q(first_name__icontains=query) |
             Q(last_name__icontains=query) |
@@ -595,9 +733,7 @@ class GlobalSearchAPIView(APIView):
                 'additional_info': f"Tel: {u_phone} | Login: {u.username}"
             })
 
-        # =========================================================================
         # 3. GURUHLAR (Group) QIDIRUVI
-        # =========================================================================
         groups = Group.objects.filter(organization=user_org).filter(
             Q(name__icontains=query) |
             Q(room__name__icontains=query)
@@ -618,6 +754,5 @@ class GlobalSearchAPIView(APIView):
                 'additional_info': " | ".join(info_list)
             })
 
-        # Natijalarni serializer yordamida uzatamiz
         serializer = GlobalSearchSerializer(results, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

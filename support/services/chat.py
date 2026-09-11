@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from support.models import ChatSession, ChatMessage
 from support.services.faq import FAQService
 from support.services.ticket import TicketService

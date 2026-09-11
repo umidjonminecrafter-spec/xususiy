@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from communication.models import SmsProvider, SMSMessages, SmsSchedules, SmsTemplates, BulkSMS, SubscriptionReminder, ReminderLog, Notification, NotificationSchedule
+from communication.models import Notification, NotificationSchedule
 
 
 @admin.register(NotificationSchedule)

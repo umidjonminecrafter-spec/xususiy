@@ -1,15 +1,12 @@
 import random
 import requests
-from django.conf import settings
 from .models import TelegramVerification, Student
 
 
 def send_telegram_verification_code(phone, purpose):
-    # 1. Telefon raqamni normallashtiramiz (+998XXXXXXXXX formatga)
+    from common.utils import normalize_uz_phone
+    formatted_phone = normalize_uz_phone(phone) or str(phone)
     cleaned = ''.join(c for c in str(phone) if c.isdigit())
-    if len(cleaned) == 9:
-        cleaned = '998' + cleaned
-    formatted_phone = '+' + cleaned
 
     # Telefon raqam orqali o'quvchini yoki xodimni topamiz va tashkilotini aniqlaymiz
     organization = None

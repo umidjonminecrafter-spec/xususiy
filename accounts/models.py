@@ -88,6 +88,13 @@ class User(AbstractUser):
                 pass
         super().save(*args, **kwargs)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'role', 'is_active']),
+            models.Index(fields=['organization', 'phone']),
+            models.Index(fields=['organization', 'branch']),
+        ]
+
     def __str__(self):
         return f"{self.username} ({self.role})"
 

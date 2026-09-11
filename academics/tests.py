@@ -403,21 +403,21 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         """
         from academics.models import CourseMaterial
         # 1. Create Course Materials
-        mat1 = CourseMaterial.objects.create(
+        CourseMaterial.objects.create(
             organization=self.org1,
             course=self.course1,
             title="Math Syllabus",
             material_type="file",
             is_published=True
         )
-        mat2 = CourseMaterial.objects.create(
+        CourseMaterial.objects.create(
             organization=self.org1,
             course=self.course2,
             title="Physics Notes",
             material_type="file",
             is_published=True
         )
-        mat3 = CourseMaterial.objects.create(
+        CourseMaterial.objects.create(
             organization=self.org1,
             course=self.course1,
             title="Math Draft Notes",
@@ -551,7 +551,6 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         """
         from accounts.models import User
         from academics.models import StudentArchive
-        from crm.models import Lead
 
         # Make student1 a debtor
         self.student1.balance = -150000.00
@@ -626,8 +625,6 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         the teacher's percentage share daily, and updates TeacherSalaryCalculation.
         """
         from finance.models import StaffSalaryPercent, TeacherSalaryCalculation
-        from academics.models import Attendance
-        import datetime
 
         # 1. Create a teacher with 30% salary percent
         percent = StaffSalaryPercent.objects.create(
@@ -671,7 +668,6 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
 
         # Get the attendance id and lesson cost
         att_id = response.data['id']
-        att = Attendance.objects.get(id=att_id)
         from academics.models import get_lessons_in_month
         lessons_count = get_lessons_in_month(self.group1, 2026, 7)
         expected_lesson_cost = round(800000.00 / lessons_count, 2)
@@ -1052,6 +1048,52 @@ class StudentGroupLeaveTests(APITestCase):
         self.assertFalse(serializer2.is_valid())
         self.assertIn("phone", serializer2.errors)
         self.assertEqual(serializer2.errors["phone"][0], "Telefon raqami noto'g'ri formatda. Loyihada O'zbekiston raqamlari (+998XXXXXXXXX) qabul qilinadi.")
+
+
+class StudentImportHelperUnitTests(APITestCase):
+    """
+    Unit tests for isolated student import helper functions.
+    """
+    def setUp(self):
+        self.org = Organization.objects.create(name="Import Helper Org")
+
+    def test_normalize_student_row(self):
+        from academics.services.student_import import normalize_student_row
+        row = {
+            "ism": "Sardor",
+            "familiya": "Rahimov",
+            "telefon": "+998901234567",
+            "balans": "50000"
+        }
+        normalized = normalize_student_row(row)
+        self.assertEqual(normalized['first_name'], "Sardor")
+        self.assertEqual(normalized['last_name'], "Rahimov")
+        self.assertEqual(normalized['phone'], "+998901234567")
+        self.assertEqual(normalized['balance'], "50000")
+
+    def test_sanitize_student_data(self):
+        from academics.services.student_import import sanitize_student_data
+        data = {
+            "first_name": "Nodir",
+            "phone": "99890 123-45-67",
+            "birth_date": "15.06.2005"
+        }
+        sanitized = sanitize_student_data(data, org_id=self.org.id)
+        self.assertEqual(sanitized['organization'], self.org.id)
+        self.assertEqual(sanitized['phone'], "+998901234567")
+        self.assertEqual(sanitized['birth_date'], "2005-06-15")
+
+    def test_parse_student_import_file_csv(self):
+        from academics.services.student_import import parse_student_import_file
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv_content = "Ism,Familiya,Telefon\nAnvar,Saidov,+998901112233\n"
+        csv_file = SimpleUploadedFile("students.csv", csv_content.encode('utf-8'), content_type="text/csv")
+        rows = parse_student_import_file(csv_file)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['ism'], "Anvar")
+        self.assertEqual(rows[0]['familiya'], "Saidov")
+        self.assertEqual(rows[0]['telefon'], "+998901112233")
+
 
 
 

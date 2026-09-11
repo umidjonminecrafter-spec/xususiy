@@ -1,5 +1,4 @@
 import os
-import sys
 import datetime
 from decimal import Decimal
 

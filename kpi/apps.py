@@ -5,4 +5,4 @@ class KpiConfig(AppConfig):
     name = 'kpi'
 
     def ready(self):
-        import kpi.signals
+        import kpi.signals  # noqa: F401

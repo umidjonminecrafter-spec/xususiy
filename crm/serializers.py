@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 from crm.models import Pipeline, Source, LostReason, Section, LeadForm, Lead, CRMActivity, CRMLeadsHistory, CRMLeadLost
 
 from academics.models import BotMessageTemplate
@@ -13,9 +14,11 @@ class SectionSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
+    @extend_schema_field(serializers.IntegerField)
     def get_leads_count(self, obj):
         return obj.leads.filter(is_archived=False).count()
 
+    @extend_schema_field(serializers.IntegerField)
     def get_lead_count(self, obj):
         return self.get_leads_count(obj)
 
@@ -30,9 +33,11 @@ class PipelineSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
+    @extend_schema_field(serializers.IntegerField)
     def get_leads_count(self, obj):
         return obj.leads.filter(is_archived=False).count()
 
+    @extend_schema_field(serializers.IntegerField)
     def get_lead_count(self, obj):
         return self.get_leads_count(obj)
 
@@ -46,9 +51,11 @@ class SourceSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
+    @extend_schema_field(serializers.IntegerField)
     def get_leads_count(self, obj):
         return obj.leads.filter(is_archived=False).count()
 
+    @extend_schema_field(serializers.IntegerField)
     def get_lead_count(self, obj):
         return self.get_leads_count(obj)
 

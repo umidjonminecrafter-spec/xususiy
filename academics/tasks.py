@@ -237,7 +237,6 @@ def generate_daily_report_message(org, report_date, lang='uz'):
     rev_pct = ((rev_today - rev_prev) / rev_prev * 100) if rev_prev > 0 else Decimal('0.00')
 
     net_rev_today = rev_today
-    net_rev_pct = rev_pct
 
     # Expenses & Salaries
     exp_today = Expense.objects.filter(Q(organization=org) & (Q(date=report_date) | Q(created_at__date=report_date))).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00')
@@ -257,9 +256,7 @@ def generate_daily_report_message(org, report_date, lang='uz'):
     profit_pct = ((profit_today - profit_prev) / profit_prev * 100) if profit_prev != 0 else Decimal('0.00')
 
     sales_today = Sale.objects.filter(Q(organization=org) & (Q(date=report_date) | Q(created_at__date=report_date))).count() + StudentGroup.objects.filter(Q(organization=org) & (Q(joined_at__date=report_date) | Q(created_at__date=report_date))).count()
-    sales_prev = Sale.objects.filter(Q(organization=org) & (Q(date=prev_date) | Q(created_at__date=prev_date))).count() + StudentGroup.objects.filter(Q(organization=org) & (Q(joined_at__date=prev_date) | Q(created_at__date=prev_date))).count()
     sales_month = Sale.objects.filter(Q(organization=org) & (Q(date__gte=month_start, date__lte=report_date) | Q(created_at__date__gte=month_start, created_at__date__lte=report_date))).count() + StudentGroup.objects.filter(Q(organization=org) & (Q(joined_at__date__gte=month_start, joined_at__date__lte=report_date) | Q(created_at__date__gte=month_start, created_at__date__lte=report_date))).count()
-    sales_pct = ((sales_today - sales_prev) / sales_prev * 100) if sales_prev > 0 else Decimal('0.00')
 
     ret_today = StudentGroupLeave.objects.filter(organization=org, leave_date=report_date).count()
     ret_prev = StudentGroupLeave.objects.filter(organization=org, leave_date=prev_date).count()
@@ -272,8 +269,6 @@ def generate_daily_report_message(org, report_date, lang='uz'):
     new_clients_pct = ((new_clients_today - new_clients_prev) / new_clients_prev * 100) if new_clients_prev > 0 else Decimal('0.00')
 
     ret_clients_today = Payment.objects.filter(p_today_q, student__created_at__date__lt=report_date).values('student').distinct().count()
-    ret_clients_prev = Payment.objects.filter(p_prev_q, student__created_at__date__lt=prev_date).values('student').distinct().count()
-    ret_clients_pct = ((ret_clients_today - ret_clients_prev) / ret_clients_prev * 100) if ret_clients_prev > 0 else Decimal('0.00')
 
     payments_today_count = Payment.objects.filter(p_today_q).count()
     payments_prev_count = Payment.objects.filter(p_prev_q).count()

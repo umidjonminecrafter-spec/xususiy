@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from tasks.models import Board, Column, Item, Comment, TaskPermission, Label, Checklist, ChecklistItem, Attachment, TaskHistory
-from accounts.serializers import UserSerializer
 
 class ItemSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.CharField(source='assigned_to.get_full_name', default='', read_only=True)

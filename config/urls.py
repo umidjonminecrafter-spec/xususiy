@@ -12,18 +12,43 @@ from drf_spectacular.views import (
     SpectacularRedocView,
 )
 
-from django.http import JsonResponse
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework import serializers
+from drf_spectacular.utils import extend_schema, inline_serializer
 from academics.views import TelegramWebhookView
 from organizations.views import BranchViewSet
 
+
+@extend_schema(
+    summary="Tizim holati tekshiruvi (Health Check)",
+    description="Backend API serverining ishchi holati, servis nomi, versiyasi va tizim havolalarini qaytaradi.",
+    responses={
+        200: inline_serializer(
+            name="HealthCheckResponse",
+            fields={
+                "status": serializers.CharField(),
+                "service": serializers.CharField(),
+                "version": serializers.CharField(),
+                "docs": serializers.CharField(),
+                "admin": serializers.CharField(),
+            }
+        )
+    },
+    tags=["Root / System"],
+)
+@api_view(['GET'])
+@permission_classes([AllowAny])
 def root_health_check(request):
-    return JsonResponse({
+    return Response({
         "status": "ok",
         "service": "SmartTalim CRM & ERP API",
         "version": "1.0.0",
         "docs": "/api/swagger/",
         "admin": "/admin/"
     }, status=200)
+
 
 urlpatterns = [
     path('', root_health_check, name='root-health'),

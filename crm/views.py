@@ -1,6 +1,7 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, serializers
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
+from drf_spectacular.utils import extend_schema, extend_schema_view, inline_serializer, OpenApiParameter
 
 from organizations.mixins import TenantViewSetMixin
 from organizations.permissions import IsAdminOrOwnerOrReadOnly
@@ -16,6 +17,15 @@ from .models import Lead, CRMLeadsHistory
 from .serializers import CRMLeadsHistorySerializer, PublicLeadSubmitSerializer, LeadFormCRUDSerializer
 from django.contrib.auth.hashers import make_password
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Voronkalar (Pipelines) ro'yxati", description="Tashkilotdagi barcha sotuv voronkalari va ularning ustunlari (Sections) ro'yxati.", tags=["CRM"]),
+    retrieve=extend_schema(summary="Voronka tafsilotlari", description="Bitta sotuv voronkasi ma'lumotlarini ko'rish.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi voronka yaratish", description="Yangi savdo voronkasi (Pipeline) qo'shadi.", tags=["CRM"]),
+    update=extend_schema(summary="Voronkani to'liq yangilash", description="Mavjud voronka nomi va ketma-ketlik tartibini to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="Voronkani qisman yangilash", description="Voronka parametrlarini qisman o'zgartirish.", tags=["CRM"]),
+    destroy=extend_schema(summary="Voronkani o'chirish", description="Faol lidlari bo'lmagan voronkani o'chirish.", tags=["CRM"]),
+)
 class PipelineViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
@@ -29,18 +39,45 @@ class PipelineViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             return Response({"detail": "Naborda faol lidlar mavjudligi sababli uni o'chirish mumkin emas. Avval lidlarni boshqa naborga o'tkazing yoki arxivlang."}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Lid manbalari (Sources) ro'yxati", description="Lidlar kelib tushadigan reklama va tavsiya manbalari (Instagram, Telegram, Banner va h.k.).", tags=["CRM"]),
+    retrieve=extend_schema(summary="Manba tafsiloti", description="Bitta lid manbasi ma'lumotlarini ko'rish.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi manba yaratish", description="Yangi lid manbasini qo'shadi.", tags=["CRM"]),
+    update=extend_schema(summary="Manbani to'liq yangilash", description="Mavjud manba nomini to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="Manbani qisman yangilash", description="Mavjud manba nomini qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="Manbani o'chirish", description="Lid manbasini o'chirish.", tags=["CRM"]),
+)
 class SourceViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
     queryset = Source.objects.all()
     serializer_class = SourceSerializer
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Yo'qotish sabablari (Lost Reasons) ro'yxati", description="Mijoz xarid qilmagan yoki rad etgan holatlar uchun sabablar ro'yxati.", tags=["CRM"]),
+    retrieve=extend_schema(summary="Yo'qotish sababi tafsiloti", description="Bitta yo'qotish sababi ma'lumotlarini ko'rish.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi yo'qotish sababini qo'shish", description="Yangi rad etish/yo'qotish sababini qo'shadi.", tags=["CRM"]),
+    update=extend_schema(summary="Yo'qotish sababini to'liq yangilash", description="Mavjud sabab matnini to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="Yo'qotish sababini qisman yangilash", description="Mavjud sabab matnini qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="Yo'qotish sababini o'chirish", description="Yo'qotish sababini o'chirish.", tags=["CRM"]),
+)
 class LostReasonViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
     queryset = LostReason.objects.all()
     serializer_class = LostReasonSerializer
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Voronka ustunlari (Sections) ro'yxati", description="Voronka ichidagi bosqichlar (ustunlar) ro'yxati.", tags=["CRM"]),
+    retrieve=extend_schema(summary="Ustun tafsiloti", description="Bitta voronka ustuni ma'lumotlarini ko'rish.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi ustun qo'shish", description="Voronka ichiga yangi bosqich ustunini qo'shadi.", tags=["CRM"]),
+    update=extend_schema(summary="Ustunni to'liq yangilash", description="Ustun nomi va tegishli voronkasini to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="Ustunni qisman yangilash", description="Ustun ma'lumotlarini qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="Ustunni o'chirish", description="Faol lidlari bo'lmagan ustunni o'chirish.", tags=["CRM"]),
+)
 class SectionViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
@@ -53,6 +90,15 @@ class SectionViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             return Response({"detail": "Ustunda faol lidlar mavjudligi sababli uni o'chirish mumkin emas. Avval lidlarni boshqa ustunga o'tkazing yoki arxivlang."}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Lid yig'ish formalari ro'yxati", description="Tashkilotning lid yig'ish formalari (Lead Forms) ro'yxati.", tags=["CRM"]),
+    retrieve=extend_schema(summary="Lid forma tafsiloti", description="Bitta lid formasi dizayni va maydonlari.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi lid forma yaratish", description="Tashqi saytlar yoki landing sahifalar uchun yangi lid yig'ish formasini yaratadi.", tags=["CRM"]),
+    update=extend_schema(summary="Lid formani to'liq yangilash", description="Forma sozlamalari, logotipi va ranglarini to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="Lid formani qisman yangilash", description="Forma parametrlarini qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="Lid formani o'chirish", description="Mavjud lid formasini o'chirish.", tags=["CRM"]),
+)
 class LeadFormViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
@@ -64,6 +110,15 @@ from rest_framework.response import Response
 from django.utils import timezone
 from rest_framework.decorators import action
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Faol lidlar ro'yxati", description="Filtrlar (voronka, manba, status, moderator, ustun) bo'yicha saralangan faol lidlar ro'yxati.", tags=["CRM"]),
+    retrieve=extend_schema(summary="Lid tafsilotlari", description="Bitta lidning barcha ma'lumotlari, kontaktlari va biriktirilgan mas'ullarini ko'rish.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi lid yaratish", description="CRM tizimiga yangi potensial mijoz (Lid) qo'shadi.", tags=["CRM"]),
+    update=extend_schema(summary="Lidni to'liq yangilash", description="Lid ma'lumotlarini to'liq tahrirlash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="Lidni qisman yangilash (bosqich/status o'zgartirish)", description="Lidning ustunini (drag-and-drop), statusini yoki izohini qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="Lidni arxivlash yoki butunlay o'chirish", description="Faol lidni arxivlaydi, agar allaqachon arxivda bo'lsa butunlay o'chiradi.", tags=["CRM"]),
+)
 class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
@@ -98,7 +153,7 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
         # select_related orqali barcha bog'liqliklar bitta SQL JOINda olinadi
         queryset = Lead.objects.filter(organization_id=org_id).select_related(
-            'pipeline', 'source', 'section', 'lost_reason', 'created_by'
+            'pipeline', 'source', 'section', 'lost_reason', 'created_by', 'moderator', 'referred_by', 'branch'
         )
 
         # Branch filtri
@@ -136,6 +191,12 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             instance.save(update_fields=['is_archived', 'archive_reason', 'archive_date', 'archived_by'])
             return Response({"detail": "Lead archived successfully.", "id": instance.id}, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        summary="Arxivlangan lidlar ro'yxati",
+        description="Arxivga olingan yoki o'chirilgan barcha lidlar ro'yxatini qaytaradi.",
+        responses={200: LeadSerializer(many=True)},
+        tags=["CRM"],
+    )
     @action(detail=False, methods=['get'], url_path='archived')
     def archived(self, request):
         queryset = self.filter_queryset(self.get_queryset())
@@ -146,6 +207,31 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="Lidlarni ommaviy yuklash (Excel / Bulk Import)",
+        description="Tashqi fayl yoki ro'yxatdan kelgan ko'plab lidlarni bir vaqtning o'zida bazaga yuklaydi va hisobotini qaytaradi.",
+        request=inline_serializer(
+            name="LeadBulkCreateRequest",
+            fields={
+                "leads": serializers.ListField(child=serializers.DictField(), help_text="Lidlar ob'ektlari ro'yxati")
+            }
+        ),
+        responses={
+            200: inline_serializer(
+                name="LeadBulkCreateResponse",
+                fields={
+                    "success_count": serializers.IntegerField(),
+                    "failed_count": serializers.IntegerField(),
+                    "errors": serializers.ListField(child=serializers.DictField()),
+                }
+            ),
+            400: inline_serializer(
+                name="LeadBulkCreateError",
+                fields={"detail": serializers.CharField()}
+            ),
+        },
+        tags=["CRM"],
+    )
     @action(detail=False, methods=['post'], url_path='bulk-create')
     def bulk_create(self, request):
         leads_data = request.data.get('leads', [])
@@ -200,6 +286,23 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             "errors": errors
         }, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        summary="Lid uchun talaba yoki ota-ona login/parolini o'rnatish",
+        description="Lid botga yoki shaxsiy kabinetga kirishi uchun login va parolini o'rnatadi.",
+        request=inline_serializer(
+            name="LeadSetLoginPasswordRequest",
+            fields={
+                "type": serializers.ChoiceField(choices=["student", "parent"], help_text="Foydalanuvchi turi"),
+                "login": serializers.CharField(help_text="Login"),
+                "password": serializers.CharField(help_text="Parol"),
+            }
+        ),
+        responses={
+            200: inline_serializer(name="LeadSetLoginPasswordResponse", fields={"message": serializers.CharField()}),
+            400: inline_serializer(name="LeadSetLoginPasswordError", fields={"error": serializers.CharField()}),
+        },
+        tags=["CRM"],
+    )
     @action(detail=True, methods=['post'], url_path='set-login-password')
     def set_login_password(self, request, pk=None):
         lead = self.get_object()
@@ -230,6 +333,21 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         return Response({"error": "Noto'g'ri 'type' yuborildi. ('student' yoki 'parent' bo'lishi kerak)"},
                         status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="Lidga mas'ul moderator biriktirish",
+        description="Lid bo'yicha muloqot qiluvchi xodimni (moderator) tayinlaydi.",
+        request=inline_serializer(
+            name="LeadAssignModeratorRequest",
+            fields={
+                "moderator_id": serializers.IntegerField(help_text="Xodim (Moderator) ID si"),
+            }
+        ),
+        responses={
+            200: inline_serializer(name="LeadAssignModeratorResponse", fields={"message": serializers.CharField()}),
+            400: inline_serializer(name="LeadAssignModeratorError", fields={"error": serializers.CharField()}),
+        },
+        tags=["CRM"],
+    )
     @action(detail=True, methods=['post'], url_path='assign-moderator')
     def assign_moderator(self, request, pk=None):
         lead = self.get_object()
@@ -258,6 +376,15 @@ class CreateListRetrieveViewSet(mixins.CreateModelMixin,
 from crm.models import CRMActivity, CRMLeadsHistory, CRMLeadLost
 from crm.serializers import CRMActivitySerializer, CRMLeadsHistorySerializer, CRMLeadLostSerializer
 
+
+@extend_schema_view(
+    list=extend_schema(summary="CRM harakatlari (Activities) ro'yxati", description="Lidlar bo'yicha amalga oshirilgan qo'ng'iroqlar, uchrashuvlar va vazifalar.", tags=["CRM"]),
+    retrieve=extend_schema(summary="CRM harakati tafsiloti", description="Bitta harakat tafsilotlarini ko'rish.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi CRM harakati qo'shish", description="Lidga yangi qo'ng'iroq yoki eslatma harakatini biriktiradi.", tags=["CRM"]),
+    update=extend_schema(summary="CRM harakatini to'liq yangilash", description="Harakat ma'lumotlarini to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="CRM harakatini qisman yangilash", description="Harakat parametrlarini qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="CRM harakatini o'chirish", description="Mavjud CRM harakatini o'chirish.", tags=["CRM"]),
+)
 class CRMActivityViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
@@ -271,6 +398,26 @@ class LeadHistoryAPIView(APIView):
     """
     permission_classes = [permissions.IsAuthenticated]
 
+    @extend_schema(
+        summary="Lidning o'zgarishlar tarixi (Xronologiya)",
+        description="Muayyan lid (lead_id) yoki tashkilotdagi umumiy lidlar o'zgarishlari xronologiyasini qaytaradi.",
+        parameters=[
+            OpenApiParameter(name="lead_id", type=int, required=False, description="Muayyan lid ID si"),
+            OpenApiParameter(name="lead", type=int, required=False, description="Muayyan lid ID si (alias)"),
+        ],
+        responses={
+            200: inline_serializer(
+                name="LeadHistoryResponse",
+                fields={
+                    "lead_id": serializers.IntegerField(required=False),
+                    "lead_name": serializers.CharField(required=False),
+                    "history": CRMLeadsHistorySerializer(many=True, required=False),
+                }
+            ),
+            404: inline_serializer(name="LeadHistoryNotFound", fields={"error": serializers.CharField()}),
+        },
+        tags=["CRM"],
+    )
     def get(self, request):
         lead_id = request.query_params.get('lead_id') or request.query_params.get('lead')
         org_id = getattr(request.user, 'organization_id', None)
@@ -299,6 +446,12 @@ class LeadHistoryAPIView(APIView):
         serializer = CRMLeadsHistorySerializer(history, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+
+@extend_schema_view(
+    list=extend_schema(summary="Yo'qotilgan lidlar (Lost Leads) ro'yxati", description="Sotuv jarayonida rad etilgan/yo'qotilgan lidlar jurnali.", tags=["CRM"]),
+    retrieve=extend_schema(summary="Yo'qotilgan lid tafsiloti", description="Bitta yo'qotilgan lid tafsilotlarini ko'rish.", tags=["CRM"]),
+    create=extend_schema(summary="Lidni yo'qotilgan deb belgilash", description="Lidni yo'qotilgan sababi bilan jurnalga yozadi.", tags=["CRM"]),
+)
 class CRMLeadLostViewSet(TenantViewSetMixin, CreateListRetrieveViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrOwnerOrReadOnly]
     permission_page_name = 'Lidlar'
@@ -317,6 +470,10 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 
+@extend_schema_view(
+    list=extend_schema(summary="SMS Bot shablonlari ro'yxati", description="Bot va SMS orqali yuboriladigan shablonlar ro'yxati.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi SMS Bot shabloni yaratish", description="Yangi bot yoki SMS shablonini qo'shadi.", tags=["CRM"]),
+)
 class SMSTemplateListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = SMSBotTemplateSerializer
 
@@ -339,6 +496,12 @@ class SMSTemplateListCreateAPIView(generics.ListCreateAPIView):
             serializer.save(organization=first_org)
 
 
+@extend_schema_view(
+    retrieve=extend_schema(summary="SMS Bot shabloni tafsiloti", description="Bitta bot xabari shablonini ko'rish.", tags=["CRM"]),
+    update=extend_schema(summary="SMS Bot shablonini to'liq yangilash", description="Shablon matni va maqsadli auditoriyasini to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="SMS Bot shablonini qisman yangilash", description="Shablonni qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="SMS Bot shablonini o'chirish", description="Mavjud shablonni o'chirib tashlash.", tags=["CRM"]),
+)
 class SMSTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     queryset = BotMessageTemplate.objects.all()
     serializer_class = SMSBotTemplateSerializer
@@ -346,6 +509,34 @@ class SMSTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIV
 
 class SendBulkSMSAPIView(APIView):
 
+    @extend_schema(
+        summary="Ommaviy SMS / Telegram xabar yuborish",
+        description="Lidlar, talabalar yoki xodimlarga tanlangan shablon yoki erkin matn asosida Telegram/SMS xabar tarqatadi.",
+        request=inline_serializer(
+            name="SendBulkSMSRequest",
+            fields={
+                "target": serializers.ChoiceField(choices=["leads", "students", "staff"], help_text="Maqsadli guruh"),
+                "section_id": serializers.IntegerField(required=False, help_text="Lidlar uchun ustun ID si"),
+                "template_id": serializers.IntegerField(required=False, help_text="Shablon ID si"),
+                "text": serializers.CharField(required=False, help_text="Xabar matni"),
+            }
+        ),
+        responses={
+            200: inline_serializer(
+                name="SendBulkSMSResponse",
+                fields={
+                    "message": serializers.CharField(),
+                    "total_recipients": serializers.IntegerField(),
+                    "bot_registered_count": serializers.IntegerField(),
+                    "bot_not_registered_count": serializers.IntegerField(),
+                    "details": serializers.ListField(child=serializers.DictField()),
+                }
+            ),
+            400: inline_serializer(name="SendBulkSMSError400", fields={"error": serializers.CharField()}),
+            404: inline_serializer(name="SendBulkSMSError404", fields={"error": serializers.CharField()}),
+        },
+        tags=["CRM"],
+    )
     def post(self, request):
         target = request.data.get('target')  # 'leads', 'students', 'staff'
         section_id = request.data.get('section_id')  # Agar 'leads' tanlansa, qaysi kanyatener (Section) id-si
@@ -457,11 +648,22 @@ class SendBulkSMSAPIView(APIView):
 
 from rest_framework.permissions import AllowAny
 # ================= 1. ADMIN PANEL UCHUN (CRUD) =================
+@extend_schema_view(
+    list=extend_schema(summary="Lid formalari ro'yxati (Admin)", description="Adminlar uchun formalarni shakllantirish va ro'yxatini olish.", tags=["CRM"]),
+    create=extend_schema(summary="Yangi lid forma yaratish (Admin)", description="Yangi tashqi forma yaratadi.", tags=["CRM"]),
+)
 class LeadFormListCreateAPIView(generics.ListCreateAPIView):
     """Adminlar uchun formalarni shakllantirish va ro'yxatini olish"""
     queryset = LeadForm.objects.all()
     serializer_class = LeadFormCRUDSerializer
 
+
+@extend_schema_view(
+    retrieve=extend_schema(summary="Lid forma tafsiloti (Admin)", description="Bitta forma parametrlarini ko'rish.", tags=["CRM"]),
+    update=extend_schema(summary="Lid formani to'liq yangilash (Admin)", description="Formani to'liq yangilash.", tags=["CRM"]),
+    partial_update=extend_schema(summary="Lid formani qisman yangilash (Admin)", description="Formani qisman yangilash.", tags=["CRM"]),
+    destroy=extend_schema(summary="Lid formani o'chirish (Admin)", description="Formani o'chirish.", tags=["CRM"]),
+)
 class LeadFormRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     """Adminlar uchun formani tahrirlash (Edit), o'chirish (Delete) va bitta formani ko'rish"""
     queryset = LeadForm.objects.all()
@@ -469,16 +671,39 @@ class LeadFormRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
 
 
 # ================= 2. TASHQI DUNYO (PUBLIC) UCHUN APILAR =================
+@extend_schema_view(
+    retrieve=extend_schema(summary="Ochiq lid formasi ko'rinishi (Public View)", description="Avtorizatsiyasiz ishlaydi. Landing sahifa formani chizishi uchun stil va fieldlarni oladi.", tags=["CRM Public"]),
+)
 class PublicLeadFormDetailAPIView(generics.RetrieveAPIView):
     """Avtorizatsiyasiz ishlaydi. Landing sahifa formani chizishi uchun stil va fieldlarni oladi"""
     queryset = LeadForm.objects.all()
     serializer_class = LeadFormCRUDSerializer
     permission_classes = [AllowAny] # Login shart emas!
 
+
 class PublicLeadSubmitAPIView(APIView):
     """Mijoz formani to'ldirib 'Sumbit' qilganda ishlaydigan API"""
     permission_classes = [AllowAny] # Login shart emas!
 
+    @extend_schema(
+        summary="Ochiq formadan yangi lid yuborish (Public Submit)",
+        description="Landing sahifadagi tashrif buyuruvchi formani to'ldirib yuborganda avtomatik yangi lid yaratadi (Login talab qilinmaydi).",
+        request=PublicLeadSubmitSerializer,
+        responses={
+            201: inline_serializer(
+                name="PublicLeadSubmitSuccessResponse",
+                fields={
+                    "success": serializers.BooleanField(),
+                    "message": serializers.CharField(),
+                }
+            ),
+            400: inline_serializer(
+                name="PublicLeadSubmitErrorResponse",
+                fields={"detail": serializers.CharField(required=False)}
+            ),
+        },
+        tags=["CRM Public"],
+    )
     def post(self, request):
         serializer = PublicLeadSubmitSerializer(data=request.data)
         if serializer.is_valid():
@@ -488,3 +713,4 @@ class PublicLeadSubmitAPIView(APIView):
                 "message": "Ma'lumotlar qabul qilindi, tez orada aloqaga chiqamiz!"
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
