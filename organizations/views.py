@@ -48,26 +48,48 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         org = serializer.save()
         user = self.request.user
-        if user.is_authenticated and not user.organization:
+        if user.is_authenticated:
             user.organization = org
             user.role = 'owner'
+            from organizations.models import Branch
+            branch = Branch.objects.filter(organization=org).first()
+            if not branch:
+                branch = Branch.objects.create(
+                    organization=org,
+                    name=f"{org.name} (Bosh filial)",
+                    address=org.address or "",
+                    phone=org.phone or ""
+                )
+            user.branch = branch
             user.save()
 
         # Auto-create active Premium Subscription for the new organization
         import datetime
         from organizations.models import Subscription, Tariff
-        default_tariff = Tariff.objects.filter(name__iexact='Premium').first() or Tariff.objects.first()
+        tariff_id = self.request.data.get('tariff_id') or self.request.data.get('tariff')
+        tariff = None
+        if tariff_id:
+            try:
+                tariff = Tariff.objects.filter(id=tariff_id).first()
+            except (ValueError, TypeError):
+                tariff = Tariff.objects.filter(name__iexact=str(tariff_id)).first()
+        if not tariff:
+            tariff = Tariff.objects.filter(name__iexact='Premium').first() or Tariff.objects.first()
+
         today = datetime.date.today()
-        Subscription.objects.get_or_create(
-            organization=org,
-            defaults={
-                'tariff': default_tariff,
-                'start_date': today,
-                'end_date': today + datetime.timedelta(days=365),
-                'is_active': False,
-                'balance': 0.00
-            }
-        )
+        subscription = Subscription.objects.filter(organization=org).first()
+        if not subscription:
+            Subscription.objects.create(
+                organization=org,
+                tariff=tariff,
+                start_date=today,
+                end_date=today + datetime.timedelta(days=365),
+                is_active=True,
+                balance=0.00
+            )
+        elif tariff and subscription.tariff != tariff:
+            subscription.tariff = tariff
+            subscription.save(update_fields=['tariff'])
 
     @extend_schema(
         summary="Tashkilot umumiy sozlamalari (Ko'rish / Yangilash)",
@@ -531,14 +553,17 @@ class SubscriptionViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         if not org_id:
             return Response([])
 
-        subscription, created = Subscription.objects.get_or_create(
-            organization_id=org_id,
-            defaults={
-                'start_date': '2026-05-30',
-                'end_date': '2027-05-30',
-                'is_active': True
-            }
-        )
+        subscription = Subscription.objects.filter(organization_id=org_id).first()
+        if not subscription:
+            import datetime
+            today = datetime.date.today()
+            subscription = Subscription.objects.create(
+                organization_id=org_id,
+                start_date=today,
+                end_date=today + datetime.timedelta(days=365),
+                is_active=True,
+                balance=0.00
+            )
         serializer = self.get_serializer(subscription)
         return Response([serializer.data])
 
