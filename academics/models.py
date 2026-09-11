@@ -356,7 +356,7 @@ class BalanceHistory(TenantModel):
     # TO'G'RILANDI: on_delete=models.SET_NULL qilindi. Moliyaviy loglar saqlanib qoladi!
     student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name="balance_histories")
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    transaction_type = models.CharField(max_length=50) # deposit, withdrawal, etc.
+    transaction_type = models.CharField(max_length=255) # deposit, withdrawal, etc.
     date = models.DateField(auto_now_add=True)
 
     class Meta:

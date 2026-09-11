@@ -1287,33 +1287,39 @@ def finance_action_pre_save(sender, instance, **kwargs):
             instance._old_student = old_obj.student
             instance._old_employee = old_obj.employee
             instance._old_action_type = old_obj.action_type
+            instance._old_target_type = old_obj.target_type
         except FinanceAction.DoesNotExist:
             instance._old_amount = None
             instance._old_student = None
             instance._old_employee = None
             instance._old_action_type = None
+            instance._old_target_type = None
     else:
         instance._old_amount = None
         instance._old_student = None
         instance._old_employee = None
         instance._old_action_type = None
+        instance._old_target_type = None
 
 
 @receiver(post_save, sender=FinanceAction)
 def finance_action_post_save(sender, instance, created, **kwargs):
     from decimal import Decimal
-    from academics.models import BalanceHistory
+    from academics.models import BalanceHistory, Student
     from django.utils import timezone
 
-    # 1. Update Student Balance if student is set, or if old_student was set
+    # 1. Update Student Balance only if target_type is STUDENT
+    is_student_target = (instance.target_type == 'STUDENT')
+    was_student_target = (getattr(instance, '_old_target_type', None) == 'STUDENT')
+
     old_student = getattr(instance, '_old_student', None)
     old_amount = getattr(instance, '_old_amount', None)
     old_action_type = getattr(instance, '_old_action_type', None)
     
     affected_student_ids = set()
-    if instance.student:
+    if is_student_target and instance.student:
         affected_student_ids.add(instance.student.id)
-    if not created and old_amount is not None and old_student:
+    if not created and old_amount is not None and old_student and was_student_target:
         affected_student_ids.add(old_student.id)
         
     for sid in affected_student_ids:
@@ -1323,14 +1329,14 @@ def finance_action_post_save(sender, instance, created, **kwargs):
         change = Decimal('0.00')
         
         # Reverse old effect for this student
-        if not created and old_amount is not None and old_student and old_student.id == sid:
+        if not created and old_amount is not None and old_student and old_student.id == sid and was_student_target:
             if old_action_type == 'BONUS':
                 change -= old_amount
                 BalanceHistory.objects.create(
                     organization=instance.organization,
                     student=stu,
                     amount=-old_amount,
-                    transaction_type=f"Bonus bekor qilindi (tahrir): {instance.reason or ''}"
+                    transaction_type=f"Bonus bekor qilindi (tahrir): {instance.reason or ''}"[:250]
                 )
             else:  # PENALTY
                 change += old_amount
@@ -1338,18 +1344,18 @@ def finance_action_post_save(sender, instance, created, **kwargs):
                     organization=instance.organization,
                     student=stu,
                     amount=old_amount,
-                    transaction_type=f"Jarima bekor qilindi (tahrir): {instance.reason or ''}"
+                    transaction_type=f"Jarima bekor qilindi (tahrir): {instance.reason or ''}"[:250]
                 )
                 
         # Apply new effect for this student
-        if instance.student and instance.student.id == sid:
+        if is_student_target and instance.student and instance.student.id == sid:
             if instance.action_type == 'BONUS':
                 change += instance.amount
                 BalanceHistory.objects.create(
                     organization=instance.organization,
                     student=stu,
                     amount=instance.amount,
-                    transaction_type=f"Bonus: {instance.reason or 'Bonus'}"
+                    transaction_type=f"Bonus: {instance.reason or 'Bonus'}"[:250]
                 )
             else:  # PENALTY
                 change -= instance.amount
@@ -1357,7 +1363,7 @@ def finance_action_post_save(sender, instance, created, **kwargs):
                     organization=instance.organization,
                     student=stu,
                     amount=-instance.amount,
-                    transaction_type=f"Jarima: {instance.reason or 'Jarima'}"
+                    transaction_type=f"Jarima: {instance.reason or 'Jarima'}"[:250]
                 )
                 
         if change != Decimal('0.00'):
