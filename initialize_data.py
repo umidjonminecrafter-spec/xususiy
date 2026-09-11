@@ -42,11 +42,11 @@ for t_data in tariffs_data:
     created_tariffs[t.name] = t
     print(f"Tarif: {t.name}")
 
-# 2. Superuser (admin / salom12345)
+# 2. Superuser (admin / admin12345)
 if not User.objects.filter(username="admin").exists():
     superuser = User.objects.create_superuser(
         username="admin",
-        password="salom12345",
+        password="admin12345",
         email="admin@smarttalim.uz",
         first_name="Bosh",
         last_name="Administrator",
@@ -54,14 +54,14 @@ if not User.objects.filter(username="admin").exists():
         role="owner",
         organization=None
     )
-    print(f"Superuser yaratildi: admin / salom12345")
+    print(f"Superuser yaratildi: admin / admin12345")
 else:
     su = User.objects.get(username="admin")
-    su.set_password("salom12345")
+    su.set_password("admin12345")
     su.is_superuser = True
     su.is_staff = True
     su.save()
-    print("Superuser 'admin' paroli 'salom12345' ga yangilandi.")
+    print("Superuser 'admin' paroli 'admin12345' ga yangilandi.")
 
 # 3. Tashkilot (Smart Academy)
 org, org_created = Organization.objects.get_or_create(

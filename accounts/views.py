@@ -59,31 +59,33 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         else:
             data = dict(request.data) if request.data else {}
 
-        credential = data.get('phone') or data.get('phone_number') or data.get('username')
+        credential = str(data.get('phone') or data.get('phone_number') or data.get('username') or '').strip()
         if not credential:
-            return Response({"detail": "Telefon raqami kiritilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Telefon raqami yoki login kiritilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
         
         from common.utils import normalize_uz_phone
         formatted_phone = normalize_uz_phone(credential)
-        if not formatted_phone:
-            return Response({"detail": "Faqat O'zbekiston telefon raqami orqali tizimga kirish mumkin (format: +998XXXXXXXXX)."}, status=status.HTTP_400_BAD_REQUEST)
         
         # Tashkilot ID sini header, query params yoki body orqali olamiz
         org_id = request.headers.get('x-org-id') or request.META.get('HTTP_X_ORG_ID') or request.data.get('org_id') or request.query_params.get('org_id')
         
-        if org_id:
-            data['username'] = f"{formatted_phone}_{org_id}"
-        else:
-            # Agar tashkilot ID yuborilmagan bo'lsa, telefon bo'yicha qidirib ko'ramiz
-            users = User.objects.filter(phone=formatted_phone)
-            if users.count() == 1:
-                data['username'] = users.first().username
-            elif users.count() > 1:
-                return Response({
-                    "detail": "Ushbu telefon raqami bir nechta tashkilotda ro'yxatdan o'tgan. Iltimos, tashkilotni (org_id yoki x-org-id) ko'rsating."
-                }, status=status.HTTP_400_BAD_REQUEST)
+        if formatted_phone:
+            if org_id:
+                data['username'] = f"{formatted_phone}_{org_id}"
             else:
-                data['username'] = formatted_phone
+                # Agar tashkilot ID yuborilmagan bo'lsa, telefon bo'yicha qidirib ko'ramiz
+                users = User.objects.filter(phone=formatted_phone)
+                if users.count() == 1:
+                    data['username'] = users.first().username
+                elif users.count() > 1:
+                    return Response({
+                        "detail": "Ushbu telefon raqami bir nechta tashkilotda ro'yxatdan o'tgan. Iltimos, tashkilotni (org_id yoki x-org-id) ko'rsating."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                else:
+                    data['username'] = formatted_phone
+        else:
+            # Telefon formatida bo'lmasa, to'g'ridan-to'g'ri login/username sifatida qabul qilamiz (masalan: 'admin')
+            data['username'] = credential
 
         print("Mapped login request data:", data)
 
