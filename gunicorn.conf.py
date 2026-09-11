@@ -8,11 +8,11 @@ import os
 bind = f"0.0.0.0:{os.getenv('PORT', '8000')}"
 backlog = 2048
 
-# Worker processes: 2 * cores + 1
-workers = int(os.getenv('GUNICORN_WORKERS', multiprocessing.cpu_count() * 2 + 1))
+# Worker processes: respect WEB_CONCURRENCY env or default to 2 workers for cloud containers
+workers = int(os.getenv('WEB_CONCURRENCY', os.getenv('GUNICORN_WORKERS', '2')))
 worker_class = 'sync'
 worker_connections = 1000
-timeout = int(os.getenv('GUNICORN_TIMEOUT', '60'))
+timeout = int(os.getenv('GUNICORN_TIMEOUT', '120'))
 keepalive = 5
 
 # Process naming
