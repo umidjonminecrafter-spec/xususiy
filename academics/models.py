@@ -210,6 +210,8 @@ class Group(TenantModel):
     end_date = models.DateField(null=True, blank=True)
 
     class Meta:
+        verbose_name = "Sinf"
+        verbose_name_plural = "Sinflar"
         indexes = [
             models.Index(fields=['organization', 'branch', 'status']),
             models.Index(fields=['course', 'status']),
@@ -228,6 +230,8 @@ class StudentGroup(TenantModel):
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     class Meta:
+        verbose_name = "Sinf o'quvchisi"
+        verbose_name_plural = "Sinf o'quvchilari"
         indexes = [
             models.Index(fields=['organization', 'group', 'student']),
             models.Index(fields=['student', 'group']),
@@ -256,6 +260,8 @@ class GroupTeacher(TenantModel):
     teacher = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="teacher_groups")
 
     class Meta:
+        verbose_name = "Sinf o'qituvchisi"
+        verbose_name_plural = "Sinf o'qituvchilari"
         unique_together = ('group', 'teacher')
 
     def save(self, *args, **kwargs):
