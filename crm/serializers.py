@@ -90,6 +90,12 @@ class LeadSerializer(serializers.ModelSerializer):
             data['name'] = data['full_name']
         if 'phone_number' in data and 'phone' not in data:
             data['phone'] = data['phone_number']
+        phone = data.get('phone')
+        if phone:
+            from common.utils import normalize_uz_phone
+            normalized = normalize_uz_phone(phone)
+            if normalized:
+                data['phone'] = normalized
         return super().to_internal_value(data)
 
     def validate(self, attrs):

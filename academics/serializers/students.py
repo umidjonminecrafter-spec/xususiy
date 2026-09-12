@@ -99,9 +99,12 @@ class StudentSerializer(serializers.ModelSerializer):
                 from django.db.models import Q
 
                 request = self.context.get("request")
+                view = self.context.get("view")
                 org_id = None
                 if self.instance:
                     org_id = self.instance.organization_id
+                if not org_id and view and hasattr(view, 'get_organization_id'):
+                    org_id = view.get_organization_id()
                 if not org_id and request and hasattr(request, "user") and getattr(request.user, "organization_id", None):
                     org_id = request.user.organization_id
 
@@ -149,7 +152,7 @@ class StudentSerializer(serializers.ModelSerializer):
             data['first_name'] = name_parts[0]
             data['last_name'] = name_parts[1] if len(name_parts) > 1 else ''
 
-        for field in ['phone', 'phone_number', 'phone_number2', 'parent_phone']:
+        for field in ['phone', 'phone_number', 'phone_number2', 'parent_phone', 'father_phone', 'mother_phone']:
             val = data.get(field)
             if val:
                 data[field] = normalize_uz_phone(val) or val

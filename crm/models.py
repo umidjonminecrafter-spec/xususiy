@@ -154,6 +154,14 @@ class Lead(TenantModel):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        if self.phone:
+            from common.utils import normalize_uz_phone
+            normalized = normalize_uz_phone(self.phone)
+            if normalized:
+                self.phone = normalized
+        super().save(*args, **kwargs)
+
 
 class CRMActivity(TenantModel):
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="activities")

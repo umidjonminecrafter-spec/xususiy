@@ -109,6 +109,20 @@ class Student(TenantModel):
         return self.first_name
 
     def save(self, *args, **kwargs):
+        from common.utils import normalize_uz_phone
+        if self.phone:
+            normalized = normalize_uz_phone(self.phone)
+            if normalized:
+                self.phone = normalized
+        if self.father_phone:
+            normalized = normalize_uz_phone(self.father_phone)
+            if normalized:
+                self.father_phone = normalized
+        if self.mother_phone:
+            normalized = normalize_uz_phone(self.mother_phone)
+            if normalized:
+                self.mother_phone = normalized
+
         if self.pk:
             try:
                 orig = Student.objects.get(pk=self.pk)

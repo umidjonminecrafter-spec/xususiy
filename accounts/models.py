@@ -79,6 +79,11 @@ class User(AbstractUser):
             })
 
     def save(self, *args, **kwargs):
+        if self.phone:
+            from common.utils import normalize_uz_phone
+            normalized = normalize_uz_phone(self.phone)
+            if normalized:
+                self.phone = normalized
         if self.pk:
             try:
                 orig = User.objects.get(pk=self.pk)
