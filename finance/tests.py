@@ -111,7 +111,7 @@ class HolidayImpactTests(APITestCase):
             student_impact=True
         )
 
-        url = reverse('student-group-detail', kwargs={'pk': self.student_group.id})
+        url = reverse('student-class-detail', kwargs={'pk': self.student_group.id})
         response = self.client.get(f"{url}?org_id={self.org.id}")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         

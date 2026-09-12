@@ -31,18 +31,14 @@ student_field_setting_detail = StudentFieldSettingViewSet.as_view({
 })
 router = DefaultRouter()
 router.register(r'students', StudentViewSet, basename='student')
-router.register(r'groups', GroupViewSet, basename='group')
 router.register(r'classes', GroupViewSet, basename='class')
 router.register(r'courses', CourseViewSet, basename='course')
 router.register(r'rooms', RoomViewSet, basename='room')
-router.register(r'student-groups', StudentGroupViewSet, basename='student-group')
 router.register(r'student-classes', StudentGroupViewSet, basename='student-class')
-router.register(r'group-teachers', GroupTeacherViewSet, basename='group-teacher')
 router.register(r'class-teachers', GroupTeacherViewSet, basename='class-teacher')
 router.register(r'lesson-schedules', LessonScheduleViewSet, basename='lesson-schedule')
 router.register(r'student-balances', StudentBalancesViewSet, basename='student-balance')
 router.register(r'attendances', AttendanceViewSet, basename='attendance')
-router.register(r'attendences', AttendanceViewSet, basename='attendence')
 
 # New ViewSets
 router.register(r'holidays', HolidayViewSet, basename='holiday')
@@ -68,11 +64,7 @@ router.register(r'course-materials', CourseMaterialViewSet, basename='course-mat
 
 urlpatterns = [
     path('student-transactions/', StudentTransactionsView.as_view(), name='student-transactions'),
-    path('attendences/group/<int:group_id>/', GroupAttendanceView.as_view(), name='group-attendance'),
-    path('attendances/group/<int:group_id>/', GroupAttendanceView.as_view(), name='group-attendance-alt'),
-    path('attendences/class/<int:group_id>/', GroupAttendanceView.as_view(), name='class-attendance'),
-    path('attendances/class/<int:group_id>/', GroupAttendanceView.as_view(), name='class-attendance-alt'),
-    path('lessons/calendar/', LessonCalendarAPIView.as_view(), name='lessons-calendar'),
+    path('attendances/class/<int:group_id>/', GroupAttendanceView.as_view(), name='class-attendance'),
     path('classes/calendar/', LessonCalendarAPIView.as_view(), name='classes-calendar'),
     path('lessons/<int:lesson_id>/statistics/', LessonStatisticsAPIView.as_view(), name='lesson-statistics'),
     path('reports/courses/', CoursesReportAPIView.as_view(), name='reports-courses'),

@@ -473,7 +473,7 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
             )
 
         self.client.force_authenticate(user=self.admin1)
-        url = reverse('group-attendance', kwargs={'group_id': group_id_to_collide})
+        url = reverse('class-attendance', kwargs={'group_id': group_id_to_collide})
 
         # Post request to create a new attendance for group_id_to_collide on "2026-06-29"
         data = {
@@ -502,7 +502,7 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         Verify that POSTing to group attendance endpoint saves and returns grade and reason.
         """
         self.client.force_authenticate(user=self.admin1)
-        url = reverse('group-attendance', kwargs={'group_id': self.group1.id})
+        url = reverse('class-attendance', kwargs={'group_id': self.group1.id})
 
         # Post request to create a new attendance with grade and reason
         data = {
@@ -530,7 +530,7 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         Verify that POSTing excused status without a reason fails validation.
         """
         self.client.force_authenticate(user=self.admin1)
-        url = reverse('group-attendance', kwargs={'group_id': self.group1.id})
+        url = reverse('class-attendance', kwargs={'group_id': self.group1.id})
 
         data = {
             "student": self.student1.id,
@@ -657,7 +657,7 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
 
         # 3. Create attendance -> should trigger charge_attendance
         self.client.force_authenticate(user=self.admin1)
-        url = reverse('group-attendance', kwargs={'group_id': self.group1.id})
+        url = reverse('class-attendance', kwargs={'group_id': self.group1.id})
         data = {
             "student": self.student1.id,
             "date": "2026-07-11",
@@ -714,15 +714,15 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         self.client.force_authenticate(user=self.admin1)
         
         # Check GroupSerializer students list & count
-        group_url = reverse('group-detail', kwargs={'pk': self.group1.id})
+        group_url = reverse('class-detail', kwargs={'pk': self.group1.id})
         response = self.client.get(f"{group_url}?org_id={self.org1.id}")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['student_count'], 1)
         self.assertEqual(len(response.data['students']), 1)
         self.assertEqual(response.data['students'][0]['id'], self.student1.id)
 
-        # Check student-groups list API
-        sg_list_url = reverse('student-group-list')
+        # Check student-classes list API
+        sg_list_url = reverse('student-class-list')
         sg_response = self.client.get(f"{sg_list_url}?org_id={self.org1.id}&group={self.group1.id}")
         self.assertEqual(sg_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(sg_response.data), 1)
@@ -811,7 +811,7 @@ class CourseMaterialAndOnlineLessonTests(APITestCase):
         instead of throwing a 500 error.
         """
         self.client.force_authenticate(user=self.admin1)
-        attendance_url = reverse('group-attendance', kwargs={'group_id': self.group1.id})
+        attendance_url = reverse('class-attendance', kwargs={'group_id': self.group1.id})
         
         response = self.client.post(
             f"{attendance_url}?org_id={self.org1.id}",
