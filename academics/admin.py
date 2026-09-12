@@ -1,5 +1,9 @@
 from django.contrib import admin
-from academics.models import Course, Room, Student, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment, Attendance, Homework,StudentFieldSetting, CourseMaterial
+from academics.models import (
+    Course, Room, Student, Group, StudentGroup, GroupTeacher,
+    TeacherSalaryPayment, Attendance, Homework, StudentFieldSetting,
+    CourseMaterial, StudentArchive
+)
 from .models import BotMessageTemplate, LessonSchedule
 
 # khsrfbksazgfnhakrsgnvksdrzjvnds
@@ -30,6 +34,12 @@ class StudentAdmin(admin.ModelAdmin):
     list_display = ('id', 'first_name', 'last_name', 'phone', 'balance', 'branch', 'is_archived', 'organization')
     list_filter = ('organization', 'branch', 'is_archived', 'category', 'language', 'created_at')
     search_fields = ('first_name', 'last_name', 'phone', 'student_login', 'parent_login', 'email')
+
+@admin.register(StudentArchive)
+class StudentArchiveAdmin(admin.ModelAdmin):
+    list_display = ('id', 'first_name', 'last_name', 'phone', 'role', 'reason', 'archived_by', 'date', 'branch', 'organization')
+    list_filter = ('role', 'reason', 'date', 'branch', 'organization')
+    search_fields = ('first_name', 'last_name', 'phone', 'email', 'reason', 'comment', 'archived_by')
 
 @admin.register(Group)
 class GroupAdmin(admin.ModelAdmin):
