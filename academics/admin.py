@@ -21,8 +21,9 @@ class StudentFieldSettingAdmin(admin.ModelAdmin):
 
 @admin.register(Room)
 class RoomAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'capacity', 'organization')
-    search_fields = ('name',)
+    list_display = ('id', 'name', 'capacity', 'branch', 'comment', 'organization', 'created_at')
+    list_filter = ('organization', 'branch', 'created_at')
+    search_fields = ('name', 'comment')
 
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
