@@ -6,7 +6,7 @@ from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
 
 from academics.models import (
-    Group, StudentGroup, GroupTeacher, TeacherSalaryPayment,
+    Course, Group, StudentGroup, GroupTeacher, TeacherSalaryPayment,
     StudentGroupLeave, StudentPricing, Holiday
 )
 from accounts.serializers import UserSerializer
@@ -21,6 +21,13 @@ class GroupSerializer(serializers.ModelSerializer):
     students = serializers.SerializerMethodField(read_only=True)
     group_teachers = serializers.SerializerMethodField(read_only=True)
     exam_dates = serializers.SerializerMethodField(read_only=True)
+
+    name = serializers.CharField(required=False, allow_blank=True)
+    course = serializers.PrimaryKeyRelatedField(
+        queryset=Course.objects.all(),
+        required=False,
+        allow_null=True
+    )
 
     class Meta:
         model = Group
@@ -115,9 +122,38 @@ class GroupSerializer(serializers.ModelSerializer):
 
     def to_internal_value(self, data):
         data = data.copy() if hasattr(data, 'copy') else dict(data)
-        teacher = data.get('teacher')
-        if isinstance(teacher, list):
-            data['teacher'] = teacher[0] if teacher else None
+        
+        # 1. Teacher normalization (handle sinf_rahbar, teacher_id, etc.)
+        teacher = data.get('teacher') or data.get('sinf_rahbar') or data.get('sinf_rahbari') or data.get('class_teacher')
+        if isinstance(teacher, dict) and 'id' in teacher:
+            teacher = teacher['id']
+        elif isinstance(teacher, list):
+            teacher = teacher[0] if teacher else None
+        if teacher:
+            data['teacher'] = teacher
+
+        # 2. Branch normalization (handle bino, building, etc.)
+        branch = data.get('branch') or data.get('bino') or data.get('building')
+        if isinstance(branch, dict) and 'id' in branch:
+            branch = branch['id']
+        if branch:
+            data['branch'] = branch
+
+        # 3. Name normalization from grade_level and letter
+        name = data.get('name')
+        grade_level = data.get('grade_level') or data.get('sinf_darajasi') or data.get('level') or data.get('grade')
+        letter = data.get('letter') or data.get('harf') or data.get('char')
+        
+        if not name:
+            if grade_level and letter:
+                data['name'] = f"{grade_level}-{str(letter).strip().upper()}"
+            elif grade_level:
+                data['name'] = f"{grade_level}-sinf"
+            elif letter:
+                data['name'] = f"Sinf {str(letter).strip().upper()}"
+            else:
+                data['name'] = "Yangi Sinf"
+
         return super().to_internal_value(data)
 
 

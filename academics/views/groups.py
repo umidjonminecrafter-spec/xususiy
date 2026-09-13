@@ -389,9 +389,39 @@ class GroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             except Branch.DoesNotExist:
                 pass
 
+        if not serializer.validated_data.get('course'):
+            from academics.models import Course
+            course = Course.objects.filter(organization=org).first()
+            if not course:
+                course = Course.objects.create(
+                    organization=org,
+                    name="Umumiy ta'lim",
+                    price=0,
+                    duration_weeks=40
+                )
+            save_kwargs['course'] = course
+
         serializer.save(**save_kwargs)
         group = serializer.instance
         self._sync_lesson_schedules(group)
+
+        # Attach students if sent in payload
+        raw_students = self.request.data.get('students') or self.request.data.get('student_ids')
+        if raw_students and isinstance(raw_students, list):
+            from academics.models import StudentGroup, Student
+            for st_id in raw_students:
+                if isinstance(st_id, dict) and 'id' in st_id:
+                    st_id = st_id['id']
+                if st_id:
+                    student = Student.objects.filter(id=st_id, organization=org).first()
+                    if student:
+                        StudentGroup.objects.get_or_create(
+                            organization=org,
+                            branch=group.branch,
+                            group=group,
+                            student=student
+                        )
+
 
     def perform_update(self, serializer):
         super().perform_update(serializer)
