@@ -140,7 +140,7 @@ class CashTransactionAPITests(APITestCase):
             first_name="Jane",
             last_name="Doe",
             phone="+998909876543",
-            balance=0.00
+            balance=Decimal("200000.00")
         )
 
         from finance.models import Cashbox
@@ -154,7 +154,7 @@ class CashTransactionAPITests(APITestCase):
 
     def test_cash_transaction_kirim_with_student(self):
         """
-        Verify that student is allowed for Kassa kirim (INCOME).
+        Verify that student balance is checked and deducted on Kassa kirim (INCOME).
         """
         url = reverse('transaction-create')
         data = {
@@ -171,9 +171,20 @@ class CashTransactionAPITests(APITestCase):
         response = self.client.post(url, data=data, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
-        # Verify kassa balance
+        # Verify kassa balance increased
         self.cashbox.refresh_from_db()
         self.assertEqual(self.cashbox.balance, Decimal("150000.00"))
+
+        # Verify student balance deducted: 200,000 - 150,000 = 50,000
+        self.student.refresh_from_db()
+        self.assertEqual(self.student.balance, Decimal("50000.00"))
+
+        # Attempt another kirim of 100,000 when student only has 50,000 -> should fail 400
+        data["amount"] = "100000.00"
+        response2 = self.client.post(url, data=data, format='json')
+        self.assertEqual(response2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("O'quvchi balansida mablag' yetarli emas", str(response2.data))
+
 
     def test_cash_transaction_chiqim_employee_required(self):
         """

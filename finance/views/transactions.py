@@ -88,6 +88,7 @@ class TransactionCreateAPIView(APIView):
                 cashbox = serializer.validated_data.get('cashbox')
                 tx_type = serializer.validated_data.get('transaction_type')
                 amount = serializer.validated_data.get('amount')
+                student = serializer.validated_data.get('student')
                 if tx_type == 'chiqim' and cashbox and amount:
                     cb = Cashbox.objects.select_for_update().get(id=cashbox.id)
                     if cb.balance < amount:
@@ -98,7 +99,19 @@ class TransactionCreateAPIView(APIView):
                             "cashbox": f"Kassada mablag' yetarli emas! (Balans: {bal_str})"
                         }, status=status.HTTP_400_BAD_REQUEST)
 
+                if tx_type == 'kirim' and student and amount:
+                    from academics.models import Student
+                    st = Student.objects.select_for_update().get(id=student.id)
+                    if st.balance < amount:
+                        bal_str = f"{int(st.balance):,} UZS".replace(",", " ")
+                        amt_str = f"{int(amount):,} UZS".replace(",", " ")
+                        return Response({
+                            "detail": f"O'quvchi balansida mablag' yetarli emas! O'quvchining joriy balansi: {bal_str}. Kirim summasi: {amt_str}",
+                            "student": f"O'quvchi balansida mablag' yetarli emas! (Balans: {bal_str})"
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
                 serializer.save(organization=request.user.organization)
+
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

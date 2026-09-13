@@ -631,6 +631,83 @@ def cashtransaction_telegram_notification(sender, instance, created, **kwargs):
             print(f"Error sending cashtransaction telegram notification: {str(e)}")
 
 
+# ================= KASSA KIRIM VA TALABA BALANSI INTEGRATSIYASI =================
+
+@receiver(pre_save, sender=CashTransaction)
+def cashtransaction_pre_save(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            old_tx = CashTransaction.objects.get(pk=instance.pk)
+            instance._old_amount = old_tx.amount
+            instance._old_student = old_tx.student
+            instance._old_type = old_tx.transaction_type
+        except CashTransaction.DoesNotExist:
+            instance._old_amount = None
+            instance._old_student = None
+            instance._old_type = None
+    else:
+        instance._old_amount = None
+        instance._old_student = None
+        instance._old_type = None
+
+
+@receiver(post_save, sender=CashTransaction)
+def cashtransaction_student_balance_sync(sender, instance, created, **kwargs):
+    student = instance.student
+    if instance.transaction_type == 'kirim' and student:
+        from decimal import Decimal
+        from academics.models import BalanceHistory
+        student_balance = Decimal(str(student.balance or 0))
+        if created:
+            student.balance = student_balance - instance.amount
+            student.save(update_fields=['balance'])
+            try:
+                BalanceHistory.objects.create(
+                    organization=instance.organization,
+                    student=student,
+                    amount=-instance.amount,
+                    transaction_type=f"Kassaga kirim qilindi ({instance.payment_method})"
+                )
+            except Exception:
+                pass
+        else:
+            old_amount = getattr(instance, '_old_amount', None)
+            old_student = getattr(instance, '_old_student', None)
+            old_type = getattr(instance, '_old_type', None)
+
+            if old_type == 'kirim' and old_amount is not None:
+                if old_student and old_student != instance.student:
+                    old_student.balance = Decimal(str(old_student.balance or 0)) + old_amount
+                    old_student.save(update_fields=['balance'])
+
+                    student.balance = student_balance - instance.amount
+                    student.save(update_fields=['balance'])
+                else:
+                    diff = instance.amount - old_amount
+                    if diff != 0:
+                        student.balance = student_balance - diff
+                        student.save(update_fields=['balance'])
+
+
+@receiver(post_delete, sender=CashTransaction)
+def cashtransaction_student_balance_delete(sender, instance, **kwargs):
+    student = instance.student
+    if instance.transaction_type == 'kirim' and student:
+        from decimal import Decimal
+        from academics.models import BalanceHistory
+        student.balance = Decimal(str(student.balance or 0)) + instance.amount
+        student.save(update_fields=['balance'])
+        try:
+            BalanceHistory.objects.create(
+                organization=instance.organization,
+                student=student,
+                amount=instance.amount,
+                transaction_type="Kassa kirimi bekor qilindi"
+            )
+        except Exception:
+            pass
+
+
 # ================= TALABA BALANSI INTEGRATSIYASI SIGNALLARI =================
 
 @receiver(pre_save, sender=Payment)
