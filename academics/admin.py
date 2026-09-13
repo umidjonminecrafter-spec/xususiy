@@ -2,7 +2,8 @@ from django.contrib import admin
 from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher,
     TeacherSalaryPayment, Attendance, Homework, StudentFieldSetting,
-    CourseMaterial, StudentArchive, Exam, ExamResult
+    CourseMaterial, StudentArchive, Exam, ExamResult,
+    LessonTime, OnlineLesson, LeaveReason, BalanceHistory
 )
 from .models import BotMessageTemplate, LessonSchedule
 
@@ -74,8 +75,35 @@ class HomeworkAdmin(admin.ModelAdmin):
 
 @admin.register(LessonSchedule)
 class LessonScheduleAdmin(admin.ModelAdmin):
-    list_display = ('id','group', 'teacher')
-    list_filter = ('start_time', 'end_time')
+    list_display = ('id', 'group', 'room_name', 'teacher', 'start_time', 'end_time', 'day_type', 'organization')
+    list_filter = ('day_type', 'start_time', 'end_time', 'organization')
+    search_fields = ('group__name', 'room_name', 'teacher__first_name', 'teacher__last_name')
+
+
+@admin.register(LessonTime)
+class LessonTimeAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'start_time', 'end_time', 'organization')
+    search_fields = ('name',)
+
+
+@admin.register(OnlineLesson)
+class OnlineLessonAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'group', 'is_published', 'attendance_date', 'organization')
+    list_filter = ('is_published', 'organization')
+    search_fields = ('title', 'description', 'group__name')
+
+
+@admin.register(LeaveReason)
+class LeaveReasonAdmin(admin.ModelAdmin):
+    list_display = ('id', 'reason', 'organization')
+    search_fields = ('reason',)
+
+
+@admin.register(BalanceHistory)
+class BalanceHistoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'student', 'amount', 'transaction_type', 'date', 'organization')
+    list_filter = ('transaction_type', 'date', 'organization')
+    search_fields = ('student__first_name', 'student__last_name')
 
 
 @admin.register(CourseMaterial)

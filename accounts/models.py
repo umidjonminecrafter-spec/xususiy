@@ -52,6 +52,14 @@ class User(AbstractUser):
         blank=True,
         verbose_name="1 soat dars narxi (soatbay)"
     )
+    weekly_hours = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        default=0.0,
+        verbose_name="Haftalik dars soati"
+    )
     salary_type = models.CharField(
         max_length=20,
         choices=[('percentage', 'Foizli'), ('hourly', 'Soatbay'), ('fixed', "O'zgarmas oylik")],

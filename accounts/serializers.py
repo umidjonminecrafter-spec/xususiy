@@ -24,7 +24,8 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'organization',
-                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'branches', 'branches_detail')
+                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'hourly_rate',
+                  'salary_type', 'weekly_hours', 'branches', 'branches_detail')
         read_only_fields = ('id', 'role', 'organization', 'branch')
 
 
@@ -122,6 +123,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
     branches_detail = serializers.SerializerMethodField(read_only=True)
     groups = serializers.SerializerMethodField(read_only=True)
     groups_detail = serializers.SerializerMethodField(read_only=True)
+    weekly_hours = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True)
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
@@ -155,7 +157,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = User
         fields = ('id', 'username', 'password', 'email', 'first_name', 'last_name', 'phone', 'role', 'position',
                   'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
-                  'salary_percentage_detail', 'branches', 'branches_detail', 'groups', 'groups_detail')
+                  'salary_percentage_detail', 'salary_type', 'hourly_rate', 'weekly_hours',
+                  'branches', 'branches_detail', 'groups', 'groups_detail')
         read_only_fields = ('id', 'organization', 'branch')
 
     # 🚀 1-YANGILIK: Abdulmajidga xatolik chiroyli "400 Bad Request" bo'lib borishi uchun:
@@ -268,6 +271,26 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 data['role'] = 'receptionist'
             else:
                 data['role'] = 'employee'
+
+        # Haftalik dars soati validatsiyasi (faqat raqam kiritilishi shart, harflar taqiqlanadi)
+        raw_weekly_hours = data.get('weekly_hours')
+        if raw_weekly_hours is None and 'weekly_lesson_hours' in data:
+            raw_weekly_hours = data.get('weekly_lesson_hours')
+        elif raw_weekly_hours is None and 'dars_soati' in data:
+            raw_weekly_hours = data.get('dars_soati')
+
+        if raw_weekly_hours is not None:
+            val_str = str(raw_weekly_hours).strip()
+            if val_str != '':
+                try:
+                    float(val_str)
+                    data['weekly_hours'] = val_str
+                except ValueError:
+                    raise serializers.ValidationError({
+                        "weekly_hours": "Haftalik dars soatiga faqat raqam kiritilishi shart. Harf kiritish taqiqlangan."
+                    })
+            else:
+                data['weekly_hours'] = 0
 
         return super().to_internal_value(data)
 
