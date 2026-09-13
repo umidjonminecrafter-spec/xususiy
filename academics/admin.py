@@ -2,7 +2,7 @@ from django.contrib import admin
 from academics.models import (
     Course, Room, Student, Group, StudentGroup, GroupTeacher,
     TeacherSalaryPayment, Attendance, Homework, StudentFieldSetting,
-    CourseMaterial, StudentArchive
+    CourseMaterial, StudentArchive, Exam, ExamResult
 )
 from .models import BotMessageTemplate, LessonSchedule
 
@@ -84,3 +84,16 @@ class CourseMaterialAdmin(admin.ModelAdmin):
     list_filter = ('material_type', 'is_published', 'organization')
     search_fields = ('title', 'description', 'course__name')
 
+
+@admin.register(Exam)
+class ExamAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'course', 'group', 'date', 'min_score', 'max_score', 'organization')
+    list_filter = ('date', 'course', 'organization')
+    search_fields = ('name', 'course__name', 'group__name')
+
+
+@admin.register(ExamResult)
+class ExamResultAdmin(admin.ModelAdmin):
+    list_display = ('id', 'exam', 'student', 'score', 'organization')
+    list_filter = ('exam', 'organization')
+    search_fields = ('exam__name', 'student__first_name', 'student__last_name')
