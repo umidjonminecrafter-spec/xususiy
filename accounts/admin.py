@@ -9,9 +9,9 @@ class CustomUserAdmin(UserAdmin):
     search_fields = ('username', 'phone', 'first_name', 'last_name', 'email')
     fieldsets = UserAdmin.fieldsets + (
         ('Tashkiliy maʼlumotlar', {'fields': ('role', 'organization', 'branch', 'branches', 'phone', 'position', 'birth_date', 'gender', 'photo')}),
-        ('Oylik va Ish haqi (O\'qituvchilar)', {'fields': ('salary_type', 'hourly_rate', 'weekly_hours', 'salary_percentage')}),
+        ('Oylik va Ish haqi (O\'qituvchilar)', {'fields': ('salary_type', 'hourly_rate', 'fixed_salary', 'weekly_hours', 'salary_percentage')}),
         ('Telegram', {'fields': ('telegram_chat_id', 'telegram_language')}),
     )
     add_fieldsets = UserAdmin.add_fieldsets + (
-        ('Tashkiliy maʼlumotlar', {'fields': ('role', 'organization', 'branch', 'branches', 'phone', 'position', 'birth_date', 'gender', 'photo', 'salary_type', 'hourly_rate', 'weekly_hours', 'salary_percentage')}),
+        ('Tashkiliy maʼlumotlar', {'fields': ('role', 'organization', 'branch', 'branches', 'phone', 'position', 'birth_date', 'gender', 'photo', 'salary_type', 'hourly_rate', 'fixed_salary', 'weekly_hours', 'salary_percentage')}),
     )

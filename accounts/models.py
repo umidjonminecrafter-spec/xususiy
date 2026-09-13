@@ -62,11 +62,26 @@ class User(AbstractUser):
     )
     salary_type = models.CharField(
         max_length=20,
-        choices=[('percentage', 'Foizli'), ('hourly', 'Soatbay'), ('fixed', "O'zgarmas oylik")],
+        choices=[
+            ('percentage', 'Foizli'),
+            ('hourly', 'Soatbay'),
+            ('fixed', "O'zgarmas oylik"),
+            ('unassigned', "Belgilanmagan"),
+            ('none', "Belgilanmagan"),
+        ],
         default='percentage',
         null=True,
         blank=True,
         verbose_name="Oylik hisoblash turi"
+    )
+
+    fixed_salary = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0.0,
+        null=True,
+        blank=True,
+        verbose_name="Qat'iy oylik summa (so'm)"
     )
 
     # 🚀 O'qituvchi xodim yaratilayotganda moliya foiz stavkasini biriktirish (1-rasm)
@@ -81,10 +96,6 @@ class User(AbstractUser):
 
     def clean(self):
         super().clean()
-        if self.role == 'teacher' and not self.salary_percentage:
-            raise ValidationError({
-                'salary_percentage': "O'qituvchi roli uchun oladigan foizini tanlash majburiy!"
-            })
 
     def save(self, *args, **kwargs):
         if self.phone:

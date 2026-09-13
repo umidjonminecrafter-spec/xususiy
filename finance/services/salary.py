@@ -85,9 +85,29 @@ def resolve_teacher_salary_rule(organization_id, teacher, period, year, month, s
         ).first()
 
     if not rule:
-        if getattr(teacher, 'salary_percentage', None):
+        st = getattr(teacher, 'salary_type', None)
+        fixed_val = getattr(teacher, 'fixed_salary', None)
+        hourly_val = getattr(teacher, 'hourly_rate', None)
+        percent_obj = getattr(teacher, 'salary_percentage', None)
+
+        if st == 'fixed' and fixed_val and Decimal(str(fixed_val)) > 0:
+            rule_type = 'fixed'
+            rate = Decimal(str(fixed_val))
+        elif (st == 'hourly' or st == 'per_hour') and hourly_val and Decimal(str(hourly_val)) > 0:
+            rule_type = 'per_hour'
+            rate = Decimal(str(hourly_val))
+        elif st == 'percentage' and percent_obj:
             rule_type = 'percentage'
-            rate = Decimal(str(teacher.salary_percentage.percent))
+            rate = Decimal(str(percent_obj.percent))
+        elif fixed_val and Decimal(str(fixed_val)) > 0:
+            rule_type = 'fixed'
+            rate = Decimal(str(fixed_val))
+        elif hourly_val and Decimal(str(hourly_val)) > 0:
+            rule_type = 'per_hour'
+            rate = Decimal(str(hourly_val))
+        elif percent_obj:
+            rule_type = 'percentage'
+            rate = Decimal(str(percent_obj.percent))
         elif std_rule:
             rule_type = std_rule.rule_type
             rate = std_rule.rate

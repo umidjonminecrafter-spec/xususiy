@@ -25,7 +25,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'organization',
                   'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'hourly_rate',
-                  'salary_type', 'weekly_hours', 'branches', 'branches_detail')
+                  'fixed_salary', 'salary_type', 'weekly_hours', 'branches', 'branches_detail')
         read_only_fields = ('id', 'role', 'organization', 'branch')
 
 
@@ -157,20 +157,12 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = User
         fields = ('id', 'username', 'password', 'email', 'first_name', 'last_name', 'phone', 'role', 'position',
                   'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
-                  'salary_percentage_detail', 'salary_type', 'hourly_rate', 'weekly_hours',
+                  'salary_percentage_detail', 'salary_type', 'hourly_rate', 'fixed_salary', 'weekly_hours',
                   'branches', 'branches_detail', 'groups', 'groups_detail')
         read_only_fields = ('id', 'organization', 'branch')
 
-    # 🚀 1-YANGILIK: Abdulmajidga xatolik chiroyli "400 Bad Request" bo'lib borishi uchun:
     def validate(self, attrs):
         role = attrs.get('role')
-        salary_percentage = attrs.get('salary_percentage')
-
-        # to_internal_value dan kelgan rolni ham tekshiramiz
-        if role == 'teacher' and not salary_percentage:
-            raise serializers.ValidationError({
-                "salary_percentage": "O'qituvchi yaratish uchun ish haqi foizini yuborish majburiy!"
-            })
 
         # Telefon raqam formatini va takrorlanmasligini qo'lda tekshiramiz (frontedga xato 'phone' maydonida borishi uchun)
         phone = attrs.get('phone')
@@ -291,6 +283,44 @@ class EmployeeSerializer(serializers.ModelSerializer):
                     })
             else:
                 data['weekly_hours'] = 0
+
+        # Qat'iy oylik summa (fixed_salary) va soatbay stavkani (hourly_rate) tozalash
+        raw_fixed_salary = data.get('fixed_salary')
+        if raw_fixed_salary is None and 'monthly_salary' in data:
+            raw_fixed_salary = data.get('monthly_salary')
+        elif raw_fixed_salary is None and 'salary_amount' in data:
+            raw_fixed_salary = data.get('salary_amount')
+        elif raw_fixed_salary is None and 'fixed_amount' in data:
+            raw_fixed_salary = data.get('fixed_amount')
+
+        if raw_fixed_salary is not None:
+            val_clean = str(raw_fixed_salary).replace(' ', '').replace(',', '').strip()
+            if val_clean != '':
+                try:
+                    data['fixed_salary'] = float(val_clean)
+                except ValueError:
+                    pass
+
+        if 'hourly_rate' in data and data['hourly_rate'] is not None:
+            hr_clean = str(data['hourly_rate']).replace(' ', '').replace(',', '').strip()
+            if hr_clean != '':
+                try:
+                    data['hourly_rate'] = float(hr_clean)
+                except ValueError:
+                    pass
+
+        # salary_type normalizatsiyasi (har qanday oylik turi nomini to'g'ri qabul qilish)
+        sal_type = data.get('salary_type')
+        if sal_type is not None:
+            st = str(sal_type).lower().strip()
+            if st in ['belgilanmagan', 'unassigned', 'none', 'null', 'false', '0', '']:
+                data['salary_type'] = 'unassigned'
+            elif any(x in st for x in ['foiz', 'percent']):
+                data['salary_type'] = 'percentage'
+            elif any(x in st for x in ['soat', 'hour']):
+                data['salary_type'] = 'hourly'
+            elif any(x in st for x in ['qat', 'oylik', 'fixed', 'summa']):
+                data['salary_type'] = 'fixed'
 
         return super().to_internal_value(data)
 

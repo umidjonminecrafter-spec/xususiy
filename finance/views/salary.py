@@ -107,7 +107,9 @@ class SalaryViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
             base_salary = Decimal('0.00')
-            if emp.salary_percentage:
+            if getattr(emp, 'salary_type', None) == 'fixed' and getattr(emp, 'fixed_salary', None) and Decimal(str(emp.fixed_salary)) > 0:
+                base_salary = Decimal(str(emp.fixed_salary))
+            elif emp.salary_percentage:
                 payments_sum = Payment.objects.filter(
                     employee=emp,
                     date__year=year,
@@ -115,6 +117,8 @@ class SalaryViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
                 base_salary = payments_sum * (Decimal(str(emp.salary_percentage.percent)) / Decimal('100.00'))
                 base_salary = round(base_salary, 2)
+            elif getattr(emp, 'fixed_salary', None) and Decimal(str(emp.fixed_salary)) > 0:
+                base_salary = Decimal(str(emp.fixed_salary))
             else:
                 base_salary = Decimal('1000.00')
                 if emp.role == 'manager':
