@@ -208,6 +208,50 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
     @extend_schema(
+        summary="Lidni arxivlash",
+        description="Tanlangan lidni arxiv holatiga o'tkazadi.",
+        request=inline_serializer(
+            name="LeadArchiveRequest",
+            fields={"reason": serializers.CharField(required=False, allow_blank=True)}
+        ),
+        responses={200: inline_serializer(name="LeadArchiveResponse", fields={"detail": serializers.CharField(), "id": serializers.IntegerField()})},
+        tags=["CRM"],
+    )
+    @action(detail=True, methods=['post', 'patch'], url_path='archive')
+    def archive(self, request, pk=None):
+        instance = self.get_object()
+        reason = request.data.get('reason') or request.query_params.get('reason') or "Arxivlangan"
+        instance.is_archived = True
+        instance.archive_reason = reason
+        instance.archive_date = timezone.now()
+        instance.archived_by = request.user.get_full_name() or request.user.username
+        instance.save(update_fields=['is_archived', 'archive_reason', 'archive_date', 'archived_by'])
+        return Response({"detail": "Lead muvaffaqiyatli arxivlandi.", "id": instance.id}, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Lidni arxivdan qaytarish (Unarchive / Restore)",
+        description="Arxivlangan lidni qayta faol holatga keltiradi.",
+        responses={200: inline_serializer(name="LeadUnarchiveResponse", fields={"detail": serializers.CharField(), "id": serializers.IntegerField()})},
+        tags=["CRM"],
+    )
+    @action(detail=True, methods=['post', 'patch'], url_path='unarchive')
+    def unarchive(self, request, pk=None):
+        # Arxivdagi lidni ham topishi uchun base querysetdan qidiramiz
+        instance = Lead.objects.filter(id=pk, organization_id=self.get_organization_id()).first()
+        if not instance:
+            return Response({"detail": "Lid topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+        instance.is_archived = False
+        instance.archive_reason = None
+        instance.archive_date = None
+        instance.archived_by = None
+        instance.save(update_fields=['is_archived', 'archive_reason', 'archive_date', 'archived_by'])
+        return Response({"detail": "Lead muvaffaqiyatli arxivdan chiqarildi.", "id": instance.id}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post', 'patch'], url_path='restore')
+    def restore(self, request, pk=None):
+        return self.unarchive(request, pk)
+
+    @extend_schema(
         summary="Lidlarni ommaviy yuklash (Excel / Bulk Import)",
         description="Tashqi fayl yoki ro'yxatdan kelgan ko'plab lidlarni bir vaqtning o'zida bazaga yuklaydi va hisobotini qaytaradi.",
         request=inline_serializer(
