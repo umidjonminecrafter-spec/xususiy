@@ -70,60 +70,66 @@ def calculate_student_holidays(organization_id, month_start, month_end, last_day
 def resolve_teacher_salary_rule(organization_id, teacher, period, year, month, std_rule=None):
     """
     O'qituvchi uchun oylik hisoblash qoidasi (rule_type, rate)ni aniqlaydi.
+    1. Ushbu oy (period) uchun maxsus yozilgan TeacherSalaryRule (agar mavjud bo'lsa).
+    2. O'qituvchi profilida tanlangan oylik turi (salary_type, fixed_salary, hourly_rate, salary_percentage).
+    3. Qiymatlarga ko'ra aniqlash (fixed_salary, hourly_rate, salary_percentage).
+    4. Umumiy faol TeacherSalaryRule.
+    5. Tashkilot standarti (std_rule).
+    6. Standart fallback.
     """
+    # 1. Shu davr (period) uchun maxsus qoida bormi?
     rule = TeacherSalaryRule.objects.filter(
         organization_id=organization_id,
         teacher=teacher,
         period=period,
         is_active=True
     ).first()
-    if not rule:
-        rule = TeacherSalaryRule.objects.filter(
-            organization_id=organization_id,
-            teacher=teacher,
-            is_active=True
-        ).first()
 
-    if not rule:
-        st = getattr(teacher, 'salary_type', None)
-        fixed_val = getattr(teacher, 'fixed_salary', None)
-        hourly_val = getattr(teacher, 'hourly_rate', None)
-        percent_obj = getattr(teacher, 'salary_percentage', None)
+    if rule:
+        return rule.rule_type, rule.rate
 
-        if st == 'fixed' and fixed_val and Decimal(str(fixed_val)) > 0:
-            rule_type = 'fixed'
-            rate = Decimal(str(fixed_val))
-        elif (st == 'hourly' or st == 'per_hour') and hourly_val and Decimal(str(hourly_val)) > 0:
-            rule_type = 'per_hour'
-            rate = Decimal(str(hourly_val))
-        elif st == 'percentage' and percent_obj:
-            rule_type = 'percentage'
-            rate = Decimal(str(percent_obj.percent))
-        elif fixed_val and Decimal(str(fixed_val)) > 0:
-            rule_type = 'fixed'
-            rate = Decimal(str(fixed_val))
-        elif hourly_val and Decimal(str(hourly_val)) > 0:
-            rule_type = 'per_hour'
-            rate = Decimal(str(hourly_val))
-        elif percent_obj:
-            rule_type = 'percentage'
-            rate = Decimal(str(percent_obj.percent))
-        elif std_rule:
-            rule_type = std_rule.rule_type
-            rate = std_rule.rate
-        else:
-            has_atts = Attendance.objects.filter(group__teacher=teacher, date__year=year, date__month=month).exists()
-            if has_atts:
-                rule_type = 'percentage'
-                rate = Decimal('50.00')
-            else:
-                rule_type = 'fixed'
-                rate = Decimal('800.00')
+    # 2. O'qituvchi profilidagi joriy oylik turi (salary_type)
+    st = getattr(teacher, 'salary_type', None)
+    fixed_val = getattr(teacher, 'fixed_salary', None)
+    hourly_val = getattr(teacher, 'hourly_rate', None)
+    percent_obj = getattr(teacher, 'salary_percentage', None)
+
+    if st == 'fixed' and fixed_val and Decimal(str(fixed_val)) > 0:
+        return 'fixed', Decimal(str(fixed_val))
+    elif (st == 'hourly' or st == 'per_hour') and hourly_val and Decimal(str(hourly_val)) > 0:
+        return 'per_hour', Decimal(str(hourly_val))
+    elif st == 'percentage' and percent_obj:
+        return 'percentage', Decimal(str(percent_obj.percent))
+    elif st in ('unassigned', 'none'):
+        return 'fixed', Decimal('0.00')
+
+    # 3. Kiritilgan qiymatlar bo'yicha aniqlash
+    if fixed_val and Decimal(str(fixed_val)) > 0:
+        return 'fixed', Decimal(str(fixed_val))
+    elif hourly_val and Decimal(str(hourly_val)) > 0:
+        return 'per_hour', Decimal(str(hourly_val))
+    elif percent_obj:
+        return 'percentage', Decimal(str(percent_obj.percent))
+
+    # 4. Umumiy TeacherSalaryRule
+    general_rule = TeacherSalaryRule.objects.filter(
+        organization_id=organization_id,
+        teacher=teacher,
+        is_active=True
+    ).order_by('-created_at').first()
+    if general_rule:
+        return general_rule.rule_type, general_rule.rate
+
+    # 5. Tashkilot standarti
+    if std_rule:
+        return std_rule.rule_type, std_rule.rate
+
+    # 6. Fallback
+    has_atts = Attendance.objects.filter(group__teacher=teacher, date__year=year, date__month=month).exists()
+    if has_atts:
+        return 'percentage', Decimal('50.00')
     else:
-        rule_type = rule.rule_type
-        rate = rule.rate
-
-    return rule_type, rate
+        return 'fixed', Decimal('800.00')
 
 
 def calculate_fixed_salary(rate, holiday_days_count, last_day):
@@ -244,8 +250,17 @@ def calculate_per_hour_salary(teacher, organization_id, month_start, month_end, 
         hours_taught = total_hours
         details['calculated_via_schedules'] = True
     else:
-        hours_taught = max(Decimal('0.00'), Decimal('24.00') - Decimal(holiday_days_count * 2))
-        details['calculated_via_schedules'] = False
+        teacher_wh = getattr(teacher, 'weekly_hours', None) or (
+            teacher.weekly_lesson_hour.hours if getattr(teacher, 'weekly_lesson_hour', None) else None
+        )
+        if teacher_wh and Decimal(str(teacher_wh)) > 0:
+            base_h = Decimal(str(teacher_wh)) * Decimal('4.00')
+            hours_taught = max(Decimal('0.00'), base_h - Decimal(holiday_days_count * 2))
+            details['calculated_via_weekly_hours'] = True
+            details['weekly_hours'] = str(teacher_wh)
+        else:
+            hours_taught = max(Decimal('0.00'), Decimal('24.00') - Decimal(holiday_days_count * 2))
+            details['calculated_via_schedules'] = False
 
     calculated_amount = rate * hours_taught
     details['hours_taught'] = str(hours_taught)
