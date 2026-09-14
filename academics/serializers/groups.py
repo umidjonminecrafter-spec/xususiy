@@ -122,24 +122,118 @@ class GroupSerializer(serializers.ModelSerializer):
 
     def to_internal_value(self, data):
         data = data.copy() if hasattr(data, 'copy') else dict(data)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request else None
+        org = getattr(user, 'organization', None) if user else None
         
-        # 1. Teacher normalization (handle sinf_rahbar, teacher_id, etc.)
+        # 1. Teacher normalization (handle sinf_rahbar, teacher_id, names, etc.)
         teacher = data.get('teacher') or data.get('sinf_rahbar') or data.get('sinf_rahbari') or data.get('class_teacher')
         if isinstance(teacher, dict) and 'id' in teacher:
             teacher = teacher['id']
         elif isinstance(teacher, list):
             teacher = teacher[0] if teacher else None
-        if teacher:
-            data['teacher'] = teacher
 
-        # 2. Branch normalization (handle bino, building, etc.)
-        branch = data.get('branch') or data.get('bino') or data.get('building')
+        if teacher:
+            if isinstance(teacher, int) or (isinstance(teacher, str) and teacher.isdigit()):
+                data['teacher'] = int(teacher)
+            elif isinstance(teacher, str) and teacher.strip():
+                from accounts.models import User as UserModel
+                teacher_str = teacher.strip()
+                t_qs = UserModel.objects.filter(organization=org) if org else UserModel.objects.all()
+                parts = teacher_str.split()
+                found_t = None
+                if len(parts) >= 2:
+                    found_t = t_qs.filter(
+                        (Q(first_name__icontains=parts[0]) & Q(last_name__icontains=parts[1])) |
+                        (Q(first_name__icontains=parts[1]) & Q(last_name__icontains=parts[0]))
+                    ).first()
+                if not found_t:
+                    found_t = t_qs.filter(
+                        Q(first_name__icontains=teacher_str) |
+                        Q(last_name__icontains=teacher_str) |
+                        Q(username__icontains=teacher_str)
+                    ).first()
+                if found_t:
+                    data['teacher'] = found_t.id
+                else:
+                    data.pop('teacher', None)
+            else:
+                data.pop('teacher', None)
+        elif 'teacher' in data and not data['teacher']:
+            data.pop('teacher', None)
+
+        # 2. Branch normalization (handle bino, building, filial, names, etc.)
+        branch = data.get('branch') or data.get('bino') or data.get('building') or data.get('filial')
         if isinstance(branch, dict) and 'id' in branch:
             branch = branch['id']
-        if branch:
-            data['branch'] = branch
 
-        # 3. Name normalization from grade_level and letter
+        if branch:
+            if isinstance(branch, int) or (isinstance(branch, str) and branch.isdigit()):
+                data['branch'] = int(branch)
+            elif isinstance(branch, str) and branch.strip():
+                from organizations.models import Branch
+                branch_str = branch.strip()
+                b_qs = Branch.objects.filter(organization=org) if org else Branch.objects.all()
+                found_b = b_qs.filter(name__icontains=branch_str).first()
+                if found_b:
+                    data['branch'] = found_b.id
+                else:
+                    data.pop('branch', None)
+            else:
+                data.pop('branch', None)
+        elif 'branch' in data and not data['branch']:
+            data.pop('branch', None)
+
+        if 'branch' not in data and request:
+            qp_branch = request.query_params.get('branch_id') or request.query_params.get('branch')
+            if qp_branch and str(qp_branch).isdigit():
+                data['branch'] = int(qp_branch)
+            elif user and getattr(user, 'branch_id', None):
+                data['branch'] = user.branch_id
+
+        # 3. Room normalization
+        room = data.get('room') or data.get('xona')
+        if isinstance(room, dict) and 'id' in room:
+            room = room['id']
+        if room:
+            if isinstance(room, int) or (isinstance(room, str) and room.isdigit()):
+                data['room'] = int(room)
+            elif isinstance(room, str) and room.strip():
+                from academics.models import Room
+                room_str = room.strip()
+                r_qs = Room.objects.filter(organization=org) if org else Room.objects.all()
+                found_r = r_qs.filter(name__icontains=room_str).first()
+                if found_r:
+                    data['room'] = found_r.id
+                else:
+                    data.pop('room', None)
+            else:
+                data.pop('room', None)
+        elif 'room' in data and not data['room']:
+            data.pop('room', None)
+
+        # 4. Course normalization
+        course = data.get('course') or data.get('fan') or data.get('kurs')
+        if isinstance(course, dict) and 'id' in course:
+            course = course['id']
+        if course:
+            if isinstance(course, int) or (isinstance(course, str) and course.isdigit()):
+                data['course'] = int(course)
+            elif isinstance(course, str) and course.strip():
+                from academics.models import Course
+                course_str = course.strip()
+                c_qs = Course.objects.filter(organization=org) if org else Course.objects.all()
+                found_c = c_qs.filter(name__icontains=course_str).first()
+                if found_c:
+                    data['course'] = found_c.id
+                else:
+                    data.pop('course', None)
+            else:
+                data.pop('course', None)
+        elif 'course' in data and not data['course']:
+            data.pop('course', None)
+
+        # 5. Name normalization from grade_level and letter
         name = data.get('name')
         grade_level = data.get('grade_level') or data.get('sinf_darajasi') or data.get('level') or data.get('grade')
         letter = data.get('letter') or data.get('harf') or data.get('char')
