@@ -914,11 +914,13 @@ def _sync_transaction_mirror(source_field_name, instance, tx_type, category, cas
     lookup = {source_field_name: instance}
     tx = Transaction.objects.filter(**lookup).first()
 
+    amount_val = abs(instance.amount) if tx_type == 'EXPENSE' else instance.amount
+
     values = {
         'organization': instance.organization,
         'branch_id': getattr(instance, 'branch_id', None),
         'cashbox': cashbox,
-        'amount': instance.amount,
+        'amount': amount_val,
         'type': tx_type,
         'category': category,
         'payment_method': getattr(instance, 'payment_method', 'naqd') or 'naqd',
@@ -945,6 +947,23 @@ def _delete_transaction_mirror(instance):
 # To'lov faqat o'quvchining shaxsiy balansini oshiradi.
 # Kassaga pul qo'shish faqat Kassa Kirim (CashTransaction) orqali amalga oshiriladi.
 
+
+@receiver(post_save, sender=Payment)
+def payment_withdrawal_transaction_mirror_sync(sender, instance, created, **kwargs):
+    if instance.amount < 0 and instance.cashbox:
+        # Mablag'ni yechib olish / qaytarish (Withdrawal) -> Kassadan chiqim bo'ladi
+        student_name = f"{instance.student.first_name} {instance.student.last_name or ''}".strip() if instance.student else "O'chirilgan Talaba"
+        _sync_transaction_mirror(
+            'source_payment', instance, 'EXPENSE', 'DIRECT', instance.cashbox,
+            description=instance.comment or f"Mablag'ni yechib olish / qaytarish: {student_name}"
+        )
+    elif instance.amount >= 0:
+        _delete_transaction_mirror(instance)
+
+
+@receiver(post_delete, sender=Payment)
+def payment_withdrawal_transaction_mirror_delete(sender, instance, **kwargs):
+    _delete_transaction_mirror(instance)
 
 
 @receiver(post_save, sender=Expense)

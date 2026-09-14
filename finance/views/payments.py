@@ -276,8 +276,32 @@ class WithdrawalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        amount = serializer.validated_data.get('amount')
-        if amount and amount > 0:
-            serializer.validated_data['amount'] = -amount
+        with db_transaction.atomic():
+            amount = serializer.validated_data.get('amount')
+            cashbox = serializer.validated_data.get('cashbox')
+            abs_amount = abs(amount) if amount else Decimal('0.00')
 
-        serializer.save(organization_id=self.get_organization_id(), branch_id=self.get_branch_id())
+            org_id = self.get_organization_id()
+            branch_id = self.get_branch_id()
+
+            if not cashbox:
+                if branch_id:
+                    cashbox = Cashbox.objects.filter(organization_id=org_id, branch_id=branch_id, is_archived=False).first()
+                if not cashbox:
+                    cashbox = Cashbox.objects.filter(organization_id=org_id, is_archived=False).first()
+                if cashbox:
+                    serializer.validated_data['cashbox'] = cashbox
+
+            if cashbox and abs_amount > 0:
+                cb = Cashbox.objects.select_for_update().get(id=cashbox.id)
+                if cb.balance < abs_amount:
+                    bal_str = f"{int(cb.balance):,} UZS".replace(",", " ")
+                    amt_str = f"{int(abs_amount):,} UZS".replace(",", " ")
+                    raise serializers.ValidationError({
+                        "cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Yechib olinadigan summa: {amt_str}. Kassa balansi manfiyga tushishi taqiqlanadi! ⚠️"
+                    })
+
+            if amount and amount > 0:
+                serializer.validated_data['amount'] = -amount
+
+            serializer.save(organization_id=org_id, branch_id=branch_id)
