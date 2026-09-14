@@ -1528,6 +1528,31 @@ def finance_action_post_save(sender, instance, created, **kwargs):
                     reason=desc_reason,
                     date=instance.created_at.date() if instance.created_at else timezone.now().date()
                 )
+
+            # 🚀 Xodimning Telegram botiga (@smarttalim_xodimlar_bot) xabarnoma
+            if employee and getattr(employee, 'telegram_chat_id', None):
+                try:
+                    from academics.telegram_bot import send_telegram_message, get_staff_bot_token
+                    staff_token = get_staff_bot_token(instance.organization)
+                    amt_str = f"{int(amount):,} UZS".replace(",", " ")
+                    if instance.action_type == 'BONUS':
+                        msg = (
+                            f"🎁 <b>Sizga bonus taqdim etildi!</b>\n\n"
+                            f"💰 <b>Summa:</b> +{amt_str}\n"
+                            f"📝 <b>Sabab:</b> {desc_reason}\n"
+                            f"🗓 <b>Sana:</b> {timezone.now().strftime('%d.%m.%Y')}"
+                        )
+                    else:
+                        msg = (
+                            f"⚠️ <b>Sizga jarima belgilandi!</b>\n\n"
+                            f"💸 <b>Summa:</b> -{amt_str}\n"
+                            f"📝 <b>Sabab:</b> {desc_reason}\n"
+                            f"🗓 <b>Sana:</b> {timezone.now().strftime('%d.%m.%Y')}\n\n"
+                            f"<i>Ushbu summa oylik maoshingizdan chegiriladi.</i>"
+                        )
+                    send_telegram_message(staff_token, employee.telegram_chat_id, msg)
+                except Exception as e:
+                    print(f"Error sending telegram notification for FinanceAction to employee: {str(e)}")
         else:
             old_amount = getattr(instance, '_old_amount', None)
             old_employee = getattr(instance, '_old_employee', None)
