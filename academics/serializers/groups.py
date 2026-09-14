@@ -311,6 +311,18 @@ class TeacherSalaryPaymentSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
 
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else dict(data)
+        if not data.get('period'):
+            p = data.get('month')
+            if not p and data.get('date'):
+                p = str(data.get('date'))[:7]
+            if not p:
+                from django.utils import timezone
+                p = timezone.now().strftime('%Y-%m')
+            data['period'] = p
+        return super().to_internal_value(data)
+
     def validate(self, attrs):
         amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)
         if amount is not None and Decimal(str(amount)) <= 0:

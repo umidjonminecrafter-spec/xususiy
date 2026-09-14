@@ -402,6 +402,22 @@ class TeacherSalaryCalculationViewSet(TenantViewSetMixin, viewsets.ModelViewSet)
         org_id = self.get_organization_id()
         cashbox_id = request.data.get('cashbox') or request.data.get('cashbox_id')
         if not cashbox_id:
+            pm = str(request.data.get('payment_method') or request.data.get('payment_type') or '').lower()
+            if any(k in pm for k in ['karta', 'card', 'humo', 'uzcard', 'plastik', 'bank']):
+                cb_match = Cashbox.objects.filter(
+                    organization_id=org_id,
+                    is_archived=False
+                ).filter(
+                    Q(name__icontains='karta') | Q(name__icontains='card') | Q(name__icontains='plastik') | Q(name__icontains='bank')
+                ).first()
+                if cb_match:
+                    cashbox_id = cb_match.id
+            if not cashbox_id:
+                cb_default = Cashbox.objects.filter(organization_id=org_id, is_archived=False).first()
+                if cb_default:
+                    cashbox_id = cb_default.id
+
+        if not cashbox_id:
             return Response({
                 "detail": "Oylik to'lash uchun kassa tanlanishi shart!",
                 "cashbox": "Oylik to'lash uchun kassa tanlanishi shart!"
@@ -419,7 +435,16 @@ class TeacherSalaryCalculationViewSet(TenantViewSetMixin, viewsets.ModelViewSet)
         teachers_payload = request.data.get('teachers')
         teacher_id = request.data.get('teacher') or request.data.get('teacher_id')
         calc_id = request.data.get('id') or request.data.get('calculation_id')
-        period = request.data.get('period') or '2026-07'
+        period = request.data.get('period') or request.data.get('month')
+        if not period:
+            date_val = request.data.get('date') or request.data.get('paid_at')
+            if date_val:
+                try:
+                    period = str(date_val)[:7]
+                except Exception:
+                    pass
+        if not period:
+            period = timezone.now().strftime('%Y-%m')
 
         teachers_list = []
         if isinstance(teachers_payload, list):
@@ -646,17 +671,33 @@ class TeacherSalaryPaymentsView(TenantViewSetMixin, viewsets.ModelViewSet):
                     data['period'] = calc_obj.period
 
         if not data.get('period'):
-            data['period'] = '2026-09'
+            p = data.get('month')
+            if not p and data.get('date'):
+                p = str(data.get('date'))[:7]
+            if not p:
+                p = timezone.now().strftime('%Y-%m')
+            data['period'] = p
 
         cashbox_id = data.get('cashbox') or data.get('cashbox_id')
         amount = data.get('amount')
         org_id = self.get_organization_id() or getattr(request.user, 'organization_id', None)
 
         if not cashbox_id:
-            cb_default = Cashbox.objects.filter(organization_id=org_id).first()
-            if cb_default:
-                cashbox_id = cb_default.id
-                data['cashbox'] = cb_default.id
+            pm = str(data.get('payment_method') or data.get('payment_type') or '').lower()
+            if any(k in pm for k in ['karta', 'card', 'humo', 'uzcard', 'plastik', 'bank']):
+                cb_match = Cashbox.objects.filter(
+                    organization_id=org_id,
+                    is_archived=False
+                ).filter(
+                    Q(name__icontains='karta') | Q(name__icontains='card') | Q(name__icontains='plastik') | Q(name__icontains='bank')
+                ).first()
+                if cb_match:
+                    cashbox_id = cb_match.id
+            if not cashbox_id:
+                cb_default = Cashbox.objects.filter(organization_id=org_id, is_archived=False).first()
+                if cb_default:
+                    cashbox_id = cb_default.id
+                data['cashbox'] = cashbox_id
 
         cashbox = None
         if cashbox_id:

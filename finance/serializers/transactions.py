@@ -110,6 +110,27 @@ class TransactionSerializer(serializers.ModelSerializer):
             return float(obj.student.balance or 0)
         return 0.0
 
+    def to_internal_value(self, data):
+        if hasattr(data, 'copy'):
+            data = data.copy()
+        elif hasattr(data, 'dict'):
+            data = data.dict()
+        else:
+            data = dict(data) if data else {}
+
+        if not data.get('student') and data.get('student_id'):
+            data['student'] = data.get('student_id')
+
+        if not data.get('cashbox') and data.get('cashbox_id'):
+            data['cashbox'] = data.get('cashbox_id')
+
+        t_val = str(data.get('type') or data.get('transaction_type') or '').lower().strip()
+        if t_val in ('kirim', 'income'):
+            data['type'] = 'INCOME'
+        elif t_val in ('chiqim', 'expense'):
+            data['type'] = 'EXPENSE'
+
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
         tx_type = attrs.get('type') or (self.instance.type if self.instance else None)

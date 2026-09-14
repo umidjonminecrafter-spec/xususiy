@@ -169,7 +169,7 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
             from django.db.models import Q
             val = TeacherSalaryPayment.objects.filter(
                 Q(organization_id=obj.organization_id, teacher_id=obj.teacher_id) &
-                (Q(period=obj.period) | Q(paid_at__year=year, paid_at__month=month))
+                (Q(period=obj.period) | (Q(period__in=['', None]) & Q(paid_at__year=year, paid_at__month=month)))
             ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
             obj._cached_paid_amount = float(val)
             return obj._cached_paid_amount
@@ -256,6 +256,8 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
 
         if rule_type == 'percentage':
             total_earned = davomat_summa
+            if total_earned == 0.0 and instance.calculated_amount and float(instance.calculated_amount) > 0:
+                total_earned = float(instance.calculated_amount)
         else:
             calc_val = float(instance.calculated_amount or 0)
             total_earned = calc_val
@@ -300,7 +302,7 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
         rep['advance'] = advance
         rep['avans'] = advance
 
-        is_paid = (paid_amount >= (total_earned + bonus - advance - penalty)) if (total_earned > 0) else False
+        is_paid = (paid_amount >= (total_earned + bonus - advance - penalty)) if (total_earned + bonus > 0) else (paid_amount > 0)
 
         rep['paid_amount'] = round(paid_amount, 2)
         rep['to_langan'] = round(paid_amount, 2)
