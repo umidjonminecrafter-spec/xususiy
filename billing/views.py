@@ -152,19 +152,22 @@ class BalanceTopUpView(APIView):
             return Response({"detail": "Summa musbat bo'lishi kerak."}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            subscription = Subscription.objects.select_for_update().filter(organization=org).first()
-            if not subscription:
-                subscription = Subscription.objects.create(
-                    organization=org,
-                    start_date=datetime.date.today(),
-                    end_date=datetime.date.today(),
-                    is_active=False,
-                    balance=Decimal("0.00"),
-                )
+            # Subscriptionni topish yoki yaratish va qulflash
+            subscription, _ = Subscription.objects.select_for_update().get_or_create(
+                organization=org,
+                defaults={
+                    'start_date': datetime.date.today(),
+                    'end_date': datetime.date.today(),
+                    'is_active': False,
+                    'balance': Decimal("0.00"),
+                }
+            )
 
+            # Balancega qo'shish — cheksiz
             subscription.balance += amount
             subscription.save(update_fields=['balance'])
 
+            # Tarix saqlash
             BalanceTopUp.objects.create(
                 organization=org,
                 amount=amount,
@@ -303,17 +306,19 @@ class SubscribeConfirmView(APIView):
             return Response({"detail": "Tarif topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            subscription = Subscription.objects.select_for_update().filter(organization=org).first()
-            if not subscription:
-                subscription = Subscription.objects.create(
-                    organization=org,
-                    start_date=datetime.date.today(),
-                    end_date=datetime.date.today(),
-                    is_active=False,
-                    balance=Decimal("0.00"),
-                )
+            subscription, _ = Subscription.objects.select_for_update().get_or_create(
+                organization=org,
+                defaults={
+                    'start_date': datetime.date.today(),
+                    'end_date': datetime.date.today(),
+                    'is_active': False,
+                    'balance': Decimal("0.00"),
+                }
+            )
 
             price = tariff.final_price
+
+            # Balance yetarlimi?
             if subscription.balance < price:
                 return Response({
                     "detail": "Mablag' yetarli emas.",
@@ -322,8 +327,9 @@ class SubscribeConfirmView(APIView):
                     "missing": price - subscription.balance,
                 }, status=status.HTTP_400_BAD_REQUEST)
 
+            # Balancedan yechish
             subscription.balance -= price
-            subscription.save()
+            subscription.save(update_fields=['balance'])
 
             approved_request = SubscriptionRequest.objects.create(
                 organization=org,
@@ -335,9 +341,9 @@ class SubscribeConfirmView(APIView):
             )
 
             subscription.refresh_from_db()
-        start = subscription.start_date if subscription else None
-        end = subscription.end_date if subscription else None
-        next_charge = end
+            start = subscription.start_date
+            end = subscription.end_date
+            next_charge = end
 
         return Response({
             "detail": "Tarif muvaffaqiyatli faollashtirildi.",
@@ -492,3 +498,4 @@ class SubscriptionRequestListView(APIView):
                 "created_at": req.created_at.isoformat() if req.created_at else "",
             })
         return Response(data)
+

@@ -25,10 +25,8 @@ class AIChatService:
             org_id = getattr(user, 'organization_id', None)
 
         if not org_id:
-            # Absolute fallback to first org for safe default, or raise error
-            from organizations.models import Organization
-            first_org = Organization.objects.first()
-            org_id = first_org.id if first_org else 1
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError("Tashkilot aniqlanmadi (Organization context is required).")
 
         if telegram_chat_id:
             session = ChatSession.objects.filter(

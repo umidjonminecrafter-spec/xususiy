@@ -134,6 +134,35 @@ class VerifyCodeAPIView(APIView):
                         status=status.HTTP_400_BAD_REQUEST)
 
 
+def _get_bot_organization(request):
+    if getattr(request.user, 'is_authenticated', False) and getattr(request.user, 'organization', None):
+        return request.user.organization
+
+    org_id = request.query_params.get('organization_id') or request.query_params.get('organization')
+    if org_id and str(org_id).isdigit():
+        from organizations.models import Organization
+        org = Organization.objects.filter(id=int(org_id)).first()
+        if org:
+            return org
+
+    token = request.query_params.get('token') or request.headers.get('X-Bot-Token') or request.headers.get('Authorization')
+    if token:
+        token = token.replace('Bearer ', '').replace('Token ', '').strip()
+        from organizations.models import TelegramNotificationSetting
+        setting = TelegramNotificationSetting.objects.filter(
+            Q(bot_token=token) |
+            Q(student_bot_token=token) |
+            Q(parent_bot_token=token) |
+            Q(staff_bot_token=token) |
+            Q(verification_bot_token=token) |
+            Q(support_bot_token=token)
+        ).select_related('organization').first()
+        if setting and setting.organization:
+            return setting.organization
+
+    return None
+
+
 class StudentProfileAPIView(APIView):
     @extend_schema(
         summary="Talaba profili ma'lumotlarini olish (Bot uchun)",
@@ -149,16 +178,24 @@ class StudentProfileAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
-        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
+        org = _get_bot_organization(request)
+        student_qs = Student.objects.filter(phone=phone)
+        if org:
+            student_qs = student_qs.filter(organization=org)
+
         try:
-            student = Student.objects.get(phone=phone, organization_id=org_id)
+            student = student_qs.get()
             serializer = StudentProfileSerializer(student)
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Student.DoesNotExist:
             return Response({"error": "Talaba topilmadi!"}, status=status.HTTP_404_NOT_FOUND)
+        except Student.MultipleObjectsReturned:
+            student = student_qs.first()
+            serializer = StudentProfileSerializer(student)
+            return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class StudentLessonsAPIView(APIView):
@@ -181,13 +218,19 @@ class StudentLessonsAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
-        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
+        org = _get_bot_organization(request)
+        student_qs = Student.objects.filter(phone=phone)
+        if org:
+            student_qs = student_qs.filter(organization=org)
+
         try:
-            student = Student.objects.get(phone=phone, organization_id=org_id)
+            student = student_qs.get()
             st_groups = StudentGroup.objects.filter(student=student, group__status='active')
+            if org:
+                st_groups = st_groups.filter(organization=org)
             lessons_list = []
             for st_g in st_groups:
                 group = st_g.group
@@ -201,6 +244,22 @@ class StudentLessonsAPIView(APIView):
             return Response({"student": student.first_name, "lessons": lessons_list}, status=status.HTTP_200_OK)
         except Student.DoesNotExist:
             return Response({"error": "Talaba topilmadi!"}, status=status.HTTP_404_NOT_FOUND)
+        except Student.MultipleObjectsReturned:
+            student = student_qs.first()
+            st_groups = StudentGroup.objects.filter(student=student, group__status='active')
+            if org:
+                st_groups = st_groups.filter(organization=org)
+            lessons_list = []
+            for st_g in st_groups:
+                group = st_g.group
+                lessons_list.append({
+                    "group_name": group.name,
+                    "course_name": group.course.name if group.course else None,
+                    "teacher_name": group.teacher.get_full_name() if group.teacher else "Ustoz biriktirilmagan",
+                    "day_type": group.day_type,
+                    "start_time": str(group.start_time) if group.start_time else None
+                })
+            return Response({"student": student.first_name, "lessons": lessons_list}, status=status.HTTP_200_OK)
 
 
 class ParentStudentsAPIView(APIView):
@@ -220,14 +279,16 @@ class ParentStudentsAPIView(APIView):
     )
     def get(self, request):
         parent_phone = request.query_params.get('phone')
-        org_id = request.user.organization_id
         if not parent_phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
+        org = _get_bot_organization(request)
         students = Student.objects.filter(
-            Q(father_phone=parent_phone) | Q(mother_phone=parent_phone),
-            organization_id=org_id,
+            Q(father_phone=parent_phone) | Q(mother_phone=parent_phone)
         )
+        if org:
+            students = students.filter(organization=org)
+
         student_list = []
         for student in students:
             student_list.append({
@@ -262,13 +323,19 @@ class ParentStudentDetailsAPIView(APIView):
     )
     def get(self, request):
         student_id = request.query_params.get('student_id')
-        org_id = request.user.organization_id
         if not student_id:
             return Response({"error": "student_id parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
+        org = _get_bot_organization(request)
+        student_qs = Student.objects.filter(id=student_id)
+        if org:
+            student_qs = student_qs.filter(organization=org)
+
         try:
-            student = Student.objects.get(id=student_id, organization_id=org_id)
+            student = student_qs.get()
             exam_results = ExamResult.objects.filter(student=student).select_related('exam')
+            if org:
+                exam_results = exam_results.filter(organization=org)
             marks = []
             for res in exam_results:
                 marks.append({
@@ -277,7 +344,10 @@ class ParentStudentDetailsAPIView(APIView):
                     "date": str(res.exam.date)
                 })
 
-            attendances = Attendance.objects.filter(student=student).order_by('-date')[:10]
+            attendances = Attendance.objects.filter(student=student)
+            if org:
+                attendances = attendances.filter(organization=org)
+            attendances = attendances.order_by('-date')[:10]
             attendance_log = []
             for att in attendances:
                 attendance_log.append({
@@ -318,13 +388,19 @@ class StaffProfileAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
-        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
+        org = _get_bot_organization(request)
+        user_qs = User.objects.filter(phone=phone, is_active=True)
+        if org:
+            user_qs = user_qs.filter(organization=org)
+
         try:
-            user = User.objects.get(phone=phone, organization_id=org_id, is_active=True)
-            teaching_groups = Group.objects.filter(teacher=user, organization_id=org_id, status='active')
+            user = user_qs.get()
+            teaching_groups = Group.objects.filter(teacher=user, status='active')
+            if org:
+                teaching_groups = teaching_groups.filter(organization=org)
             groups_data = []
             for group in teaching_groups:
                 groups_data.append({
@@ -341,6 +417,25 @@ class StaffProfileAPIView(APIView):
             }, status=status.HTTP_200_OK)
         except User.DoesNotExist:
             return Response({"error": "Xodim topilmadi!"}, status=status.HTTP_404_NOT_FOUND)
+        except User.MultipleObjectsReturned:
+            user = user_qs.first()
+            teaching_groups = Group.objects.filter(teacher=user, status='active')
+            if org:
+                teaching_groups = teaching_groups.filter(organization=org)
+            groups_data = []
+            for group in teaching_groups:
+                groups_data.append({
+                    "group_id": group.id,
+                    "group_name": group.name,
+                    "course_name": group.course.name if group.course else "Noma'lum"
+                })
+
+            return Response({
+                "staff_name": user.get_full_name() or user.username,
+                "role": "O'qituvchi/Xodim",
+                "phone": user.phone,
+                "active_groups": groups_data
+            }, status=status.HTTP_200_OK)
 
 
 class StaffScheduleAPIView(APIView):
@@ -361,13 +456,19 @@ class StaffScheduleAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
-        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
+        org = _get_bot_organization(request)
+        user_qs = User.objects.filter(phone=phone)
+        if org:
+            user_qs = user_qs.filter(organization=org)
+
         try:
-            user = User.objects.get(phone=phone, organization_id=org_id)
-            schedules = LessonSchedule.objects.filter(teacher=user, organization_id=org_id).select_related('group')
+            user = user_qs.get()
+            schedules = LessonSchedule.objects.filter(teacher=user).select_related('group')
+            if org:
+                schedules = schedules.filter(organization=org)
             schedule_list = []
             for sch in schedules:
                 schedule_list.append({
@@ -380,6 +481,21 @@ class StaffScheduleAPIView(APIView):
             return Response({"schedule": schedule_list}, status=status.HTTP_200_OK)
         except User.DoesNotExist:
             return Response({"error": "Xodim topilmadi!"}, status=status.HTTP_404_NOT_FOUND)
+        except User.MultipleObjectsReturned:
+            user = user_qs.first()
+            schedules = LessonSchedule.objects.filter(teacher=user).select_related('group')
+            if org:
+                schedules = schedules.filter(organization=org)
+            schedule_list = []
+            for sch in schedules:
+                schedule_list.append({
+                    "group_name": sch.group.name if sch.group else "Guruhsiz",
+                    "room_name": sch.room_name,
+                    "start_time": str(sch.start_time),
+                    "end_time": str(sch.end_time),
+                    "day_type": sch.day_type
+                })
+            return Response({"schedule": schedule_list}, status=status.HTTP_200_OK)
 
 
 @extend_schema_view(
@@ -435,7 +551,43 @@ class TelegramWebhookView(APIView):
         }
     )
     def post(self, request, bot_type, token):
-        from academics.telegram_bot import handle_telegram_update, send_telegram_message
+        from organizations.models import TelegramNotificationSetting
+        from academics.telegram_bot import (
+            handle_telegram_update, send_telegram_message,
+            REPORT_BOT_TOKEN, STUDENT_BOT_TOKEN, STAFF_BOT_TOKEN, FORGOT_PASSWORD_BOT_TOKEN
+        )
+
+        bot_field_map = {
+            'reports': 'bot_token',
+            'student': 'student_bot_token',
+            'parent': 'parent_bot_token',
+            'staff': 'staff_bot_token',
+            'verification': 'verification_bot_token',
+            'auth': 'verification_bot_token',
+            'support': 'support_bot_token',
+        }
+
+        field_name = bot_field_map.get(bot_type)
+        if not field_name:
+            return Response({"error": "Forbidden: Noma'lum bot turi"}, status=status.HTTP_403_FORBIDDEN)
+
+        is_valid = TelegramNotificationSetting.objects.filter(**{field_name: token}).exists()
+
+        if not is_valid:
+            fallback_map = {
+                'reports': REPORT_BOT_TOKEN,
+                'student': STUDENT_BOT_TOKEN,
+                'staff': STAFF_BOT_TOKEN,
+                'verification': FORGOT_PASSWORD_BOT_TOKEN,
+                'auth': FORGOT_PASSWORD_BOT_TOKEN,
+            }
+            fallback_token = fallback_map.get(bot_type)
+            if fallback_token and token == fallback_token:
+                is_valid = True
+
+        if not is_valid:
+            return Response({"error": "Forbidden: Yaroqsiz yoki ruxsat etilmagan bot tokeni"}, status=status.HTTP_403_FORBIDDEN)
+
         try:
             update_data = request.data
             handle_telegram_update(bot_type, token, update_data)
@@ -443,14 +595,14 @@ class TelegramWebhookView(APIView):
         except Exception as e:
             tb = traceback.format_exc()
             print(f"Error handling webhook for {bot_type}: {tb}")
+            generic_error_msg = "Kechirasiz, texnik xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring."
             try:
                 chat_id = request.data.get("message", {}).get("chat", {}).get("id")
                 if chat_id:
-                    tb_safe = tb.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    send_telegram_message(token, chat_id, f"<b>⚠️ Xatolik yuz berdi ({bot_type}):</b>\n<pre>{tb_safe}</pre>")
+                    send_telegram_message(token, chat_id, f"⚠️ {generic_error_msg}")
             except Exception as e_inner:
-                print(f"Failed to send error traceback to telegram: {str(e_inner)}")
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                print(f"Failed to send error message to telegram: {str(e_inner)}")
+            return Response({"error": generic_error_msg}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class BirthdayCalendarAPIView(APIView):

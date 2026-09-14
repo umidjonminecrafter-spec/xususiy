@@ -15,24 +15,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 # Core Settings
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-smarttalim-backend-default-key-change-in-prod')
-DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1', 'yes', 't')
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured("SECRET_KEY environment variable is required.")
+
+DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes', 't')
 
 # Allowed Hosts
 _env_hosts = os.getenv('ALLOWED_HOSTS', '')
 if _env_hosts:
     ALLOWED_HOSTS = [h.strip() for h in _env_hosts.split(',') if h.strip()]
 else:
-    ALLOWED_HOSTS = [
-        "xususiy.onrender.com",
-        "smart-backend-dtub.onrender.com",
-        "musojon1995.pythonanywhere.com",
-        "smartalim.pythonanywhere.com",
-        ".pythonanywhere.com",
-        "localhost",
-        "127.0.0.1",
-        "*",
-    ]
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 # CSRF Trusted Origins
 _env_csrf = os.getenv('CSRF_TRUSTED_ORIGINS', '')
@@ -51,8 +46,8 @@ else:
     ]
 
 # Session & Cookies
-SESSION_COOKIE_SECURE = False
-CSRF_COOKIE_SECURE = False
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_HTTPONLY = True
@@ -70,6 +65,7 @@ INSTALLED_APPS = [
     # Third party packages
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'django_filters',
     'drf_spectacular',
@@ -187,10 +183,10 @@ X_FRAME_OPTIONS = 'DENY'
 
 # SimpleJWT Settings
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=90),
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=14),
     'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
     'AUTH_HEADER_TYPES': ('Bearer',),
@@ -199,8 +195,19 @@ SIMPLE_JWT = {
 }
 
 # CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'True').lower() in ('true', '1', 'yes')
+CORS_ALLOW_ALL_ORIGINS = False
+_env_cors = os.getenv('CORS_ALLOWED_ORIGINS', '')
+if _env_cors:
+    CORS_ALLOWED_ORIGINS = [o.strip() for o in _env_cors.split(',') if o.strip()]
+else:
+    CORS_ALLOWED_ORIGINS = [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+    ]
 CORS_ALLOW_CREDENTIALS = True
+CORS_PREFLIGHT_MAX_AGE = 86400
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',

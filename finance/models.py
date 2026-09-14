@@ -77,10 +77,17 @@ class Payment(TenantModel):
     comment = models.TextField(null=True, blank=True)
 
     class Meta:
+        ordering = ['-date', '-id']
         indexes = [
             models.Index(fields=['organization', 'student', 'date']),
             models.Index(fields=['organization', 'cashbox', 'date']),
             models.Index(fields=['organization', 'date']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name='check_payment_amount_gt_zero'
+            ),
         ]
 
     def __str__(self):
@@ -179,8 +186,8 @@ class Cashbox(TenantModel):
 
     def save(self, *args, **kwargs):
         if self.balance is not None and self.balance < 0:
-            from decimal import Decimal
-            self.balance = Decimal('0.00')
+            from django.core.exceptions import ValidationError
+            raise ValidationError({'balance': "Kassa balansi manfiy bo'lishi mumkin emas!"})
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -268,6 +275,17 @@ class CashTransaction(models.Model):
             self.payment_method = 'naqd'
         if not self.date:
             self.date = timezone.now().date()
+        if not self.pk and self.student_id and self.amount and self.organization_id:
+            five_sec_ago = timezone.now() - timezone.timedelta(seconds=5)
+            duplicate = Payment.objects.filter(
+                organization_id=self.organization_id,
+                student_id=self.student_id,
+                amount=self.amount,
+                created_at__gte=five_sec_ago
+            ).first()
+            if duplicate:
+                self.id = duplicate.id
+                return
         super().save(*args, **kwargs)
 
 
@@ -914,13 +932,11 @@ def _sync_transaction_mirror(source_field_name, instance, tx_type, category, cas
     lookup = {source_field_name: instance}
     tx = Transaction.objects.filter(**lookup).first()
 
-    amount_val = abs(instance.amount) if tx_type == 'EXPENSE' else instance.amount
-
     values = {
         'organization': instance.organization,
         'branch_id': getattr(instance, 'branch_id', None),
         'cashbox': cashbox,
-        'amount': amount_val,
+        'amount': instance.amount,
         'type': tx_type,
         'category': category,
         'payment_method': getattr(instance, 'payment_method', 'naqd') or 'naqd',
@@ -947,23 +963,6 @@ def _delete_transaction_mirror(instance):
 # To'lov faqat o'quvchining shaxsiy balansini oshiradi.
 # Kassaga pul qo'shish faqat Kassa Kirim (CashTransaction) orqali amalga oshiriladi.
 
-
-@receiver(post_save, sender=Payment)
-def payment_withdrawal_transaction_mirror_sync(sender, instance, created, **kwargs):
-    if instance.amount < 0 and instance.cashbox:
-        # Mablag'ni yechib olish / qaytarish (Withdrawal) -> Kassadan chiqim bo'ladi
-        student_name = f"{instance.student.first_name} {instance.student.last_name or ''}".strip() if instance.student else "O'chirilgan Talaba"
-        _sync_transaction_mirror(
-            'source_payment', instance, 'EXPENSE', 'DIRECT', instance.cashbox,
-            description=instance.comment or f"Mablag'ni yechib olish / qaytarish: {student_name}"
-        )
-    elif instance.amount >= 0:
-        _delete_transaction_mirror(instance)
-
-
-@receiver(post_delete, sender=Payment)
-def payment_withdrawal_transaction_mirror_delete(sender, instance, **kwargs):
-    _delete_transaction_mirror(instance)
 
 
 @receiver(post_save, sender=Expense)
@@ -1037,54 +1036,6 @@ def recompute_cashbox_balance(sender, instance, **kwargs):
     calculated_balance = income - expense
     new_balance = max(Decimal('0.00'), calculated_balance)
     Cashbox.objects.filter(pk=cashbox.pk).update(balance=new_balance)
-
-
-@receiver(post_save, sender=Transaction)
-def direct_transaction_student_balance_sync(sender, instance, created, **kwargs):
-    """
-    To'g'ridan-to'g'ri Transaction (INCOME) yaratilganda (CashTransaction yoki Payment dan kelmagan bo'lsa),
-    o'quvchi balansidan mablag'ni avtomatik yechish.
-    """
-    if instance.type == 'INCOME' and instance.student and not instance.source_cashtransaction_id and not instance.source_payment_id:
-        if str(instance.description or '').startswith('Davomat #'):
-            return
-        from decimal import Decimal
-        from academics.models import BalanceHistory
-        student = instance.student
-        student_balance = Decimal(str(student.balance or 0))
-        if created:
-            student.balance = student_balance - instance.amount
-            student.save(update_fields=['balance'])
-            try:
-                BalanceHistory.objects.create(
-                    organization=instance.organization,
-                    student=student,
-                    amount=-instance.amount,
-                    transaction_type=f"Tranzaksiya kirimi ({instance.payment_method})"
-                )
-            except Exception:
-                pass
-
-
-@receiver(post_delete, sender=Transaction)
-def direct_transaction_student_balance_delete(sender, instance, **kwargs):
-    if instance.type == 'INCOME' and instance.student and not instance.source_cashtransaction_id and not instance.source_payment_id:
-        if str(instance.description or '').startswith('Davomat #'):
-            return
-        from decimal import Decimal
-        from academics.models import BalanceHistory
-        student = instance.student
-        student.balance = Decimal(str(student.balance or 0)) + instance.amount
-        student.save(update_fields=['balance'])
-        try:
-            BalanceHistory.objects.create(
-                organization=instance.organization,
-                student=student,
-                amount=instance.amount,
-                transaction_type="Tranzaksiya kirimi bekor qilindi"
-            )
-        except Exception:
-            pass
 
 
 # ================= O'QITUVCHI OYLIK TO'LOVI BO'YICHA TRANZAKSIYA SINXRONIZATSIYASI =================
@@ -1547,31 +1498,6 @@ def finance_action_post_save(sender, instance, created, **kwargs):
                     reason=desc_reason,
                     date=instance.created_at.date() if instance.created_at else timezone.now().date()
                 )
-
-            # 🚀 Xodimning Telegram botiga (@smarttalim_xodimlar_bot) xabarnoma
-            if employee and getattr(employee, 'telegram_chat_id', None):
-                try:
-                    from academics.telegram_bot import send_telegram_message, get_staff_bot_token
-                    staff_token = get_staff_bot_token(instance.organization)
-                    amt_str = f"{int(amount):,} UZS".replace(",", " ")
-                    if instance.action_type == 'BONUS':
-                        msg = (
-                            f"🎁 <b>Sizga bonus taqdim etildi!</b>\n\n"
-                            f"💰 <b>Summa:</b> +{amt_str}\n"
-                            f"📝 <b>Sabab:</b> {desc_reason}\n"
-                            f"🗓 <b>Sana:</b> {timezone.now().strftime('%d.%m.%Y')}"
-                        )
-                    else:
-                        msg = (
-                            f"⚠️ <b>Sizga jarima belgilandi!</b>\n\n"
-                            f"💸 <b>Summa:</b> -{amt_str}\n"
-                            f"📝 <b>Sabab:</b> {desc_reason}\n"
-                            f"🗓 <b>Sana:</b> {timezone.now().strftime('%d.%m.%Y')}\n\n"
-                            f"<i>Ushbu summa oylik maoshingizdan chegiriladi.</i>"
-                        )
-                    send_telegram_message(staff_token, employee.telegram_chat_id, msg)
-                except Exception as e:
-                    print(f"Error sending telegram notification for FinanceAction to employee: {str(e)}")
         else:
             old_amount = getattr(instance, '_old_amount', None)
             old_employee = getattr(instance, '_old_employee', None)

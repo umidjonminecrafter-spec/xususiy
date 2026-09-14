@@ -58,6 +58,8 @@ class StudentEvaluationLevelSerializer(serializers.ModelSerializer):
 
 class StudentSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
+    sinfi = serializers.SerializerMethodField(read_only=True)
+    groups = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Student
@@ -69,9 +71,26 @@ class StudentSerializer(serializers.ModelSerializer):
             'language', 'payment_date', 'address', 'target_university',
             'father_name', 'father_phone', 'father_email', 'father_telegram_chat_id',
             'mother_name', 'mother_phone', 'mother_email', 'mother_telegram_chat_id',
-            'is_archived'
+            'is_archived', 'sinfi', 'groups'
         ]
         read_only_fields = ('organization', 'created_at', 'updated_at')
+
+    def get_sinfi(self, obj):
+        sg = obj.student_groups.select_related('group').first()
+        if sg and sg.group:
+            return sg.group.name
+        return None
+
+    def get_groups(self, obj):
+        res = []
+        for sg in obj.student_groups.select_related('group', 'group__teacher').all():
+            if sg.group:
+                res.append({
+                    'id': sg.group.id,
+                    'name': sg.group.name,
+                    'teacher_name': sg.group.teacher.get_full_name() if sg.group.teacher else None
+                })
+        return res
 
     def validate(self, attrs):
         errors = {}

@@ -169,7 +169,7 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
             from django.db.models import Q
             val = TeacherSalaryPayment.objects.filter(
                 Q(organization_id=obj.organization_id, teacher_id=obj.teacher_id) &
-                (Q(period=obj.period) | (Q(period__in=['', None]) & Q(paid_at__year=year, paid_at__month=month)))
+                (Q(period=obj.period) | Q(paid_at__year=year, paid_at__month=month))
             ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
             obj._cached_paid_amount = float(val)
             return obj._cached_paid_amount
@@ -256,8 +256,6 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
 
         if rule_type == 'percentage':
             total_earned = davomat_summa
-            if total_earned == 0.0 and instance.calculated_amount and float(instance.calculated_amount) > 0:
-                total_earned = float(instance.calculated_amount)
         else:
             calc_val = float(instance.calculated_amount or 0)
             total_earned = calc_val
@@ -269,6 +267,15 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
         t_last = teacher_obj.last_name if teacher_obj else ''
         t_full = f"{t_first} {t_last}".strip() or "Noma'lum"
         t_phone = getattr(teacher_obj, 'phone_number', None) or getattr(teacher_obj, 'phone', '') if teacher_obj else ''
+
+        b_id = getattr(teacher_obj, 'branch_id', None)
+        b_name = teacher_obj.branch.name if teacher_obj and teacher_obj.branch else ""
+        b_list = list(teacher_obj.branches.values_list('id', flat=True)) if teacher_obj and hasattr(teacher_obj, 'branches') else ([b_id] if b_id else [])
+
+        rep['branch'] = b_id
+        rep['branch_id'] = b_id
+        rep['branch_name'] = b_name
+        rep['branches'] = b_list
 
         rep['teacher_name'] = t_full
         rep['full_name'] = t_full
@@ -302,7 +309,7 @@ class TeacherSalaryCalculationSerializer(serializers.ModelSerializer):
         rep['advance'] = advance
         rep['avans'] = advance
 
-        is_paid = (paid_amount >= (total_earned + bonus - advance - penalty)) if (total_earned + bonus > 0) else (paid_amount > 0)
+        is_paid = (paid_amount >= (total_earned + bonus - advance - penalty)) if (total_earned > 0) else False
 
         rep['paid_amount'] = round(paid_amount, 2)
         rep['to_langan'] = round(paid_amount, 2)

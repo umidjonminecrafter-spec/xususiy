@@ -208,50 +208,6 @@ class LeadViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="Lidni arxivlash",
-        description="Tanlangan lidni arxiv holatiga o'tkazadi.",
-        request=inline_serializer(
-            name="LeadArchiveRequest",
-            fields={"reason": serializers.CharField(required=False, allow_blank=True)}
-        ),
-        responses={200: inline_serializer(name="LeadArchiveResponse", fields={"detail": serializers.CharField(), "id": serializers.IntegerField()})},
-        tags=["CRM"],
-    )
-    @action(detail=True, methods=['post', 'patch'], url_path='archive')
-    def archive(self, request, pk=None):
-        instance = self.get_object()
-        reason = request.data.get('reason') or request.query_params.get('reason') or "Arxivlangan"
-        instance.is_archived = True
-        instance.archive_reason = reason
-        instance.archive_date = timezone.now()
-        instance.archived_by = request.user.get_full_name() or request.user.username
-        instance.save(update_fields=['is_archived', 'archive_reason', 'archive_date', 'archived_by'])
-        return Response({"detail": "Lead muvaffaqiyatli arxivlandi.", "id": instance.id}, status=status.HTTP_200_OK)
-
-    @extend_schema(
-        summary="Lidni arxivdan qaytarish (Unarchive / Restore)",
-        description="Arxivlangan lidni qayta faol holatga keltiradi.",
-        responses={200: inline_serializer(name="LeadUnarchiveResponse", fields={"detail": serializers.CharField(), "id": serializers.IntegerField()})},
-        tags=["CRM"],
-    )
-    @action(detail=True, methods=['post', 'patch'], url_path='unarchive')
-    def unarchive(self, request, pk=None):
-        # Arxivdagi lidni ham topishi uchun base querysetdan qidiramiz
-        instance = Lead.objects.filter(id=pk, organization_id=self.get_organization_id()).first()
-        if not instance:
-            return Response({"detail": "Lid topilmadi."}, status=status.HTTP_404_NOT_FOUND)
-        instance.is_archived = False
-        instance.archive_reason = None
-        instance.archive_date = None
-        instance.archived_by = None
-        instance.save(update_fields=['is_archived', 'archive_reason', 'archive_date', 'archived_by'])
-        return Response({"detail": "Lead muvaffaqiyatli arxivdan chiqarildi.", "id": instance.id}, status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['post', 'patch'], url_path='restore')
-    def restore(self, request, pk=None):
-        return self.unarchive(request, pk)
-
-    @extend_schema(
         summary="Lidlarni ommaviy yuklash (Excel / Bulk Import)",
         description="Tashqi fayl yoki ro'yxatdan kelgan ko'plab lidlarni bir vaqtning o'zida bazaga yuklaydi va hisobotini qaytaradi.",
         request=inline_serializer(
@@ -468,7 +424,10 @@ class LeadHistoryAPIView(APIView):
 
         if lead_id and str(lead_id).isdigit():
             try:
-                lead = Lead.objects.get(id=lead_id, organization_id=org_id)
+                lead_qs = Lead.objects.all()
+                if not getattr(request.user, 'is_superuser', False) and getattr(request.user, 'organization', None):
+                    lead_qs = lead_qs.filter(organization=request.user.organization)
+                lead = lead_qs.get(id=lead_id)
                 history = CRMLeadsHistory.objects.filter(lead=lead).order_by('-created_at')
                 serializer = CRMLeadsHistorySerializer(history, many=True)
                 return Response({
@@ -484,7 +443,9 @@ class LeadHistoryAPIView(APIView):
 
         # Umumiy lidlar tarixi (lead_id ko'rsatilmaganda)
         qs = CRMLeadsHistory.objects.all()
-        if org_id:
+        if not getattr(request.user, 'is_superuser', False) and getattr(request.user, 'organization', None):
+            qs = qs.filter(lead__organization=request.user.organization)
+        elif org_id:
             qs = qs.filter(lead__organization_id=org_id)
         history = qs.order_by('-created_at')[:100]
         serializer = CRMLeadsHistorySerializer(history, many=True)
@@ -522,7 +483,9 @@ class SMSTemplateListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = SMSBotTemplateSerializer
 
     def get_queryset(self):
-        queryset = BotMessageTemplate.objects.filter(organization_id=self.request.user.organization_id)
+        queryset = BotMessageTemplate.objects.all()
+        if not getattr(self.request.user, 'is_superuser', False) and getattr(self.request.user, 'organization', None):
+            queryset = queryset.filter(organization=self.request.user.organization)
         audience = self.request.query_params.get('audience')
         if audience:
             queryset = queryset.filter(target_audience=audience)
@@ -532,10 +495,12 @@ class SMSTemplateListCreateAPIView(generics.ListCreateAPIView):
         user = self.request.user
         organization = getattr(user, 'organization', None)
 
-        if not organization:
-            from rest_framework import exceptions
-            raise exceptions.ValidationError({"detail": "Organization context is required."})
-        serializer.save(organization=organization)
+        if organization:
+            serializer.save(organization=organization)
+        else:
+            from organizations.models import Organization
+            first_org = Organization.objects.first()
+            serializer.save(organization=first_org)
 
 
 @extend_schema_view(
@@ -548,7 +513,10 @@ class SMSTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIV
     serializer_class = SMSBotTemplateSerializer
 
     def get_queryset(self):
-        return BotMessageTemplate.objects.filter(organization_id=self.request.user.organization_id)
+        queryset = BotMessageTemplate.objects.all()
+        if not getattr(self.request.user, 'is_superuser', False) and getattr(self.request.user, 'organization', None):
+            queryset = queryset.filter(organization=self.request.user.organization)
+        return queryset
 
 
 class SendBulkSMSAPIView(APIView):
@@ -586,9 +554,6 @@ class SendBulkSMSAPIView(APIView):
         section_id = request.data.get('section_id')  # Agar 'leads' tanlansa, qaysi kanyatener (Section) id-si
         shablon_id = request.data.get('template_id')  # Tanlangan tayyor shablon IDsi (ixtiyoriy)
         custom_text = request.data.get('text')  # Qo'lda yozilgan matn (shablon tanlanmasa)
-        org_id = request.user.organization_id
-        if not org_id:
-            return Response({"error": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not target:
             return Response({"error": "target (leads, students, staff) yuborilishi majburiy!"},
@@ -597,7 +562,10 @@ class SendBulkSMSAPIView(APIView):
         msg_text = custom_text
         if shablon_id:
             try:
-                shablon = BotMessageTemplate.objects.get(id=shablon_id, organization_id=org_id)
+                shablon_qs = BotMessageTemplate.objects.all()
+                if not getattr(request.user, 'is_superuser', False) and getattr(request.user, 'organization', None):
+                    shablon_qs = shablon_qs.filter(organization=request.user.organization)
+                shablon = shablon_qs.get(id=shablon_id)
                 msg_text = shablon.text
             except BotMessageTemplate.DoesNotExist:
                 return Response({"error": "Tanlangan shablon topilmadi!"}, status=status.HTTP_404_NOT_FOUND)
@@ -608,7 +576,9 @@ class SendBulkSMSAPIView(APIView):
         recipients = []
 
         if target == 'leads':
-            leads_query = Lead.objects.filter(organization_id=org_id, is_archived=False)
+            leads_query = Lead.objects.filter(is_archived=False)
+            if not getattr(request.user, 'is_superuser', False) and getattr(request.user, 'organization', None):
+                leads_query = leads_query.filter(organization=request.user.organization)
             if section_id:
                 leads_query = leads_query.filter(section_id=section_id)
 
@@ -622,7 +592,9 @@ class SendBulkSMSAPIView(APIView):
                 })
 
         elif target == 'students':
-            students_query = Student.objects.filter(organization_id=org_id, is_archived=False)
+            students_query = Student.objects.filter(is_archived=False)
+            if not getattr(request.user, 'is_superuser', False) and getattr(request.user, 'organization', None):
+                students_query = students_query.filter(organization=request.user.organization)
             for student in students_query:
                 chat_id = student.telegram_chat_id or student.father_telegram_chat_id or student.mother_telegram_chat_id
                 recipients.append({
@@ -634,7 +606,9 @@ class SendBulkSMSAPIView(APIView):
                 })
 
         elif target == 'staff':
-            staff_query = User.objects.filter(organization_id=org_id, is_active=True).exclude(role='student')
+            staff_query = User.objects.filter(is_active=True).exclude(role='student')
+            if not getattr(request.user, 'is_superuser', False) and getattr(request.user, 'organization', None):
+                staff_query = staff_query.filter(organization=request.user.organization)
             for member in staff_query:
                 chat_id = getattr(member, 'telegram_chat_id', None)
                 recipients.append({
@@ -704,10 +678,18 @@ class LeadFormListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = LeadFormCRUDSerializer
 
     def get_queryset(self):
-        return LeadForm.objects.filter(organization_id=self.request.user.organization_id)
+        queryset = LeadForm.objects.all()
+        if not getattr(self.request.user, 'is_superuser', False) and getattr(self.request.user, 'organization', None):
+            queryset = queryset.filter(organization=self.request.user.organization)
+        return queryset
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.user.organization)
+        user = self.request.user
+        organization = getattr(user, 'organization', None)
+        if organization:
+            serializer.save(organization=organization)
+        else:
+            serializer.save()
 
 
 @extend_schema_view(
@@ -721,7 +703,10 @@ class LeadFormRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
     serializer_class = LeadFormCRUDSerializer
 
     def get_queryset(self):
-        return LeadForm.objects.filter(organization_id=self.request.user.organization_id)
+        queryset = LeadForm.objects.all()
+        if not getattr(self.request.user, 'is_superuser', False) and getattr(self.request.user, 'organization', None):
+            queryset = queryset.filter(organization=self.request.user.organization)
+        return queryset
 
 
 # ================= 2. TASHQI DUNYO (PUBLIC) UCHUN APILAR =================
@@ -767,3 +752,4 @@ class PublicLeadSubmitAPIView(APIView):
                 "message": "Ma'lumotlar qabul qilindi, tez orada aloqaga chiqamiz!"
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+

@@ -4,16 +4,7 @@ from django.contrib.auth import get_user_model
 from organizations.models import Organization, Branch
 from common.utils import normalize_uz_phone
 
-from accounts.models import WeeklyLessonHour
-
 User = get_user_model()
-
-
-class WeeklyLessonHourSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = WeeklyLessonHour
-        fields = ('id', 'name', 'hours', 'organization', 'branch', 'created_at', 'updated_at')
-        read_only_fields = ('id', 'organization', 'created_at', 'updated_at')
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -25,7 +16,6 @@ class UserSerializer(serializers.ModelSerializer):
         required=False
     )
     branches_detail = serializers.SerializerMethodField(read_only=True)
-    weekly_lesson_hour_detail = WeeklyLessonHourSerializer(source='weekly_lesson_hour', read_only=True)
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
@@ -33,10 +23,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'specialization',
-                  'organization', 'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'hourly_rate',
-                  'fixed_salary', 'salary_type', 'weekly_hours', 'weekly_lesson_hour', 'weekly_lesson_hour_detail',
-                  'branches', 'branches_detail')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'specialty', 'lesson_hours', 'organization',
+                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'branches', 'branches_detail')
         read_only_fields = ('id', 'role', 'organization', 'branch')
 
 
@@ -134,8 +122,6 @@ class EmployeeSerializer(serializers.ModelSerializer):
     branches_detail = serializers.SerializerMethodField(read_only=True)
     groups = serializers.SerializerMethodField(read_only=True)
     groups_detail = serializers.SerializerMethodField(read_only=True)
-    weekly_hours = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True)
-    weekly_lesson_hour_detail = WeeklyLessonHourSerializer(source='weekly_lesson_hour', read_only=True)
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
@@ -168,13 +154,29 @@ class EmployeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'password', 'email', 'first_name', 'last_name', 'phone', 'role', 'position',
-                  'specialization', 'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
-                  'salary_percentage_detail', 'salary_type', 'hourly_rate', 'fixed_salary', 'weekly_hours',
-                  'weekly_lesson_hour', 'weekly_lesson_hour_detail', 'branches', 'branches_detail', 'groups', 'groups_detail')
+                  'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
+                  'salary_percentage_detail', 'branches', 'branches_detail', 'groups', 'groups_detail',
+                  'specialty', 'lesson_hours')
         read_only_fields = ('id', 'organization', 'branch')
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        ret['subjects'] = instance.specialty or instance.position or "-"
+        ret['specialty'] = instance.specialty or instance.position or "-"
+        ret['lessonHours'] = instance.lesson_hours or "-"
+        ret['lesson_hours'] = instance.lesson_hours or "-"
+        return ret
+
+    # 🚀 1-YANGILIK: Abdulmajidga xatolik chiroyli "400 Bad Request" bo'lib borishi uchun:
     def validate(self, attrs):
         role = attrs.get('role')
+        salary_percentage = attrs.get('salary_percentage')
+
+        # to_internal_value dan kelgan rolni ham tekshiramiz
+        if role == 'teacher' and not salary_percentage:
+            raise serializers.ValidationError({
+                "salary_percentage": "O'qituvchi yaratish uchun ish haqi foizini yuborish majburiy!"
+            })
 
         # Telefon raqam formatini va takrorlanmasligini qo'lda tekshiramiz (frontedga xato 'phone' maydonida borishi uchun)
         phone = attrs.get('phone')
@@ -260,11 +262,6 @@ class EmployeeSerializer(serializers.ModelSerializer):
             data['first_name'] = parts[0]
             data['last_name'] = parts[1] if len(parts) > 1 else ''
 
-        # Fan / Mutaxassislik
-        spec = data.get('specialization') or data.get('subject') or data.get('fan') or data.get('mutaxassislik') or data.get('specialty')
-        if spec:
-            data['specialization'] = str(spec).strip()
-
         position = data.get('position')
         # BUGFIX: Faqat yangi yaratilayotganda (create) position bo'yicha rolni avtomatik aniqlaymiz.
         # Mavjud foydalanuvchini tahrirlayotganda (update) rolni o'zgartirmaymiz.
@@ -280,102 +277,6 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 data['role'] = 'receptionist'
             else:
                 data['role'] = 'employee'
-
-        # Jinsi normalizatsiyasi
-        gender = data.get('gender')
-        if gender:
-            g_str = str(gender).lower().strip()
-            if g_str in ['erkak', 'male', 'm']:
-                data['gender'] = 'male'
-            elif g_str in ['ayol', 'female', 'f']:
-                data['gender'] = 'female'
-
-        # Tug'ilgan sana normalizatsiyasi
-        b_date = data.get('birth_date') or data.get('birthDate') or data.get('sana')
-        if b_date:
-            b_str = str(b_date).strip()
-            if '/' in b_str:
-                parts = b_str.split('/')
-                if len(parts) == 3:
-                    if len(parts[2]) == 4:
-                        data['birth_date'] = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-                    elif len(parts[0]) == 4:
-                        data['birth_date'] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-            elif '.' in b_str:
-                parts = b_str.split('.')
-                if len(parts) == 3:
-                    if len(parts[2]) == 4:
-                        data['birth_date'] = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-
-        # Haftalik dars soati ma'lumotnomasi (weekly_lesson_hour)
-        wlh_id = data.get('weekly_lesson_hour') or data.get('weekly_lesson_hour_id')
-        if wlh_id:
-            try:
-                wlh = WeeklyLessonHour.objects.filter(id=wlh_id).first()
-                if wlh:
-                    data['weekly_lesson_hour'] = wlh.id
-                    if not data.get('weekly_hours'):
-                        data['weekly_hours'] = str(wlh.hours)
-            except Exception:
-                pass
-
-        # Haftalik dars soati validatsiyasi (faqat raqam kiritilishi shart, harflar taqiqlanadi)
-        raw_weekly_hours = data.get('weekly_hours')
-        if raw_weekly_hours is None and 'weekly_lesson_hours' in data:
-            raw_weekly_hours = data.get('weekly_lesson_hours')
-        elif raw_weekly_hours is None and 'dars_soati' in data:
-            raw_weekly_hours = data.get('dars_soati')
-
-        if raw_weekly_hours is not None:
-            val_str = str(raw_weekly_hours).strip()
-            if val_str != '':
-                try:
-                    float(val_str)
-                    data['weekly_hours'] = val_str
-                except ValueError:
-                    raise serializers.ValidationError({
-                        "weekly_hours": "Haftalik dars soatiga faqat raqam kiritilishi shart. Harf kiritish taqiqlangan."
-                    })
-            else:
-                data['weekly_hours'] = 0
-
-        # Qat'iy oylik summa (fixed_salary) va soatbay stavkani (hourly_rate) tozalash
-        raw_fixed_salary = data.get('fixed_salary')
-        if raw_fixed_salary is None and 'monthly_salary' in data:
-            raw_fixed_salary = data.get('monthly_salary')
-        elif raw_fixed_salary is None and 'salary_amount' in data:
-            raw_fixed_salary = data.get('salary_amount')
-        elif raw_fixed_salary is None and 'fixed_amount' in data:
-            raw_fixed_salary = data.get('fixed_amount')
-
-        if raw_fixed_salary is not None:
-            val_clean = str(raw_fixed_salary).replace(' ', '').replace(',', '').strip()
-            if val_clean != '':
-                try:
-                    data['fixed_salary'] = float(val_clean)
-                except ValueError:
-                    pass
-
-        if 'hourly_rate' in data and data['hourly_rate'] is not None:
-            hr_clean = str(data['hourly_rate']).replace(' ', '').replace(',', '').strip()
-            if hr_clean != '':
-                try:
-                    data['hourly_rate'] = float(hr_clean)
-                except ValueError:
-                    pass
-
-        # salary_type normalizatsiyasi (har qanday oylik turi nomini to'g'ri qabul qilish)
-        sal_type = data.get('salary_type')
-        if sal_type is not None:
-            st = str(sal_type).lower().strip()
-            if st in ['belgilanmagan', 'unassigned', 'none', 'null', 'false', '0', '']:
-                data['salary_type'] = 'unassigned'
-            elif any(x in st for x in ['foiz', 'percent']):
-                data['salary_type'] = 'percentage'
-            elif any(x in st for x in ['soat', 'hour']):
-                data['salary_type'] = 'hourly'
-            elif any(x in st for x in ['qat', 'oylik', 'fixed', 'summa']):
-                data['salary_type'] = 'fixed'
 
         return super().to_internal_value(data)
 
@@ -459,8 +360,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 'student': 'Talaba'
             }
             rep['position'] = role_to_pos.get(instance.role, 'Xodim')
-        g_val = str(instance.gender or '').lower().strip()
-        rep['gender'] = 'Erkak' if g_val in ['m', 'male', 'erkak'] else ('Ayol' if g_val in ['f', 'female', 'ayol'] else instance.gender)
+        rep['gender'] = 'Erkak' if instance.gender == 'M' else ('Ayol' if instance.gender == 'F' else 'Erkak')
         return rep
 
 

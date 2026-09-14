@@ -191,47 +191,77 @@ class GroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     @decorators.action(detail=True, methods=['post'], url_path='add-student')
     def add_student(self, request, pk=None):
         group = self.get_object()
-        student_id = request.data.get('student')
-        if not student_id:
+        student_ids = request.data.get('student_ids') or request.data.get('students')
+        if not student_ids:
+            single_id = request.data.get('student') or request.data.get('student_id')
+            if single_id:
+                student_ids = [single_id]
+
+        if not student_ids:
             return Response({"detail": "Student ID is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        if not isinstance(student_ids, list):
+            student_ids = [student_ids]
+
         org_id = self.get_organization_id()
-        student = get_object_or_404(Student.objects.filter(organization_id=org_id), id=student_id)
-
-        if StudentGroup.objects.filter(group=group, student=student).exists():
-            return Response(
-                {"detail": "Bu talaba ushbu guruhga allaqachon qo'shilgan!"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        student_group = StudentGroup.objects.create(
-            organization_id=org_id,
-            student=student,
-            group=group
-        )
+        created_count = 0
 
         GroupLesson = apps.get_model('academics', 'GroupLesson')
         Attendance = apps.get_model('academics', 'Attendance')
-
         all_lessons = GroupLesson.objects.filter(group=group).order_by('date')
         today = timezone.now().date()
         past_lessons_count = all_lessons.filter(date__lte=today).count()
+        target_lessons = all_lessons if past_lessons_count <= 3 else all_lessons.filter(date__gte=today)
 
-        if past_lessons_count <= 3:
-            target_lessons = all_lessons
-        else:
-            target_lessons = all_lessons.filter(date__gte=today)
+        for st_id in student_ids:
+            try:
+                student = Student.objects.get(organization_id=org_id, id=st_id)
+            except Student.DoesNotExist:
+                continue
 
-        for lesson in target_lessons:
-            Attendance.objects.get_or_create(
+            student_group, created = StudentGroup.objects.get_or_create(
                 organization_id=org_id,
                 student=student,
-                group=group,
-                date=lesson.date,
-                defaults={'status': 'present'}
+                group=group
             )
+            if created:
+                created_count += 1
+                for lesson in target_lessons:
+                    Attendance.objects.get_or_create(
+                        organization_id=org_id,
+                        student=student,
+                        group=group,
+                        date=lesson.date,
+                        defaults={'status': 'present'}
+                    )
 
-        return Response(StudentGroupSerializer(student_group).data, status=status.HTTP_201_CREATED)
+        return Response({"detail": f"{created_count} o'quvchi qo'shildi", "count": created_count}, status=status.HTTP_201_CREATED)
+
+    @decorators.action(detail=True, methods=['post'], url_path='remove-student')
+    def remove_student(self, request, pk=None):
+        group = self.get_object()
+        student_id = request.data.get('student_id') or request.data.get('student')
+        if not student_id:
+            return Response({"detail": "Student ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        org_id = self.get_organization_id()
+        deleted_count, _ = StudentGroup.objects.filter(group=group, student_id=student_id, organization_id=org_id).delete()
+        return Response({"detail": "O'quvchi sinfdan chiqarildi", "count": deleted_count}, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=True, methods=['post'], url_path='transfer-student')
+    def transfer_student(self, request, pk=None):
+        group = self.get_object()
+        student_id = request.data.get('student_id') or request.data.get('student')
+        target_group_id = request.data.get('target_class_id') or request.data.get('target_group_id')
+        if not student_id or not target_group_id:
+            return Response({"detail": "Student ID and target class ID required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        org_id = self.get_organization_id()
+        target_group = get_object_or_404(Group.objects.filter(organization_id=org_id), id=target_group_id)
+
+        StudentGroup.objects.filter(group=group, student_id=student_id, organization_id=org_id).delete()
+        st_group, _ = StudentGroup.objects.get_or_create(group=target_group, student_id=student_id, organization_id=org_id)
+        return Response({"detail": "O'quvchi boshqa sinfga o'tkazildi"}, status=status.HTTP_200_OK)
 
     @extend_schema(
         summary="Guruh tarixi va voqealar logi",
@@ -496,7 +526,17 @@ class StudentGroupViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     pagination_class = None
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        from django.db import models as db_models
+        org_id = self.get_organization_id()
+        qs = StudentGroup.objects.filter(organization_id=org_id).select_related('group__teacher', 'group__course', 'student')
+        branch_id = self.get_branch_id()
+        if branch_id:
+            qs = qs.filter(
+                db_models.Q(branch_id=branch_id) |
+                db_models.Q(branch__isnull=True) |
+                db_models.Q(student__branch_id=branch_id) |
+                db_models.Q(group__branch_id=branch_id)
+            ).distinct()
         return qs.filter(student__isnull=False).exclude(student__is_archived=True)
 
     def destroy(self, request, *args, **kwargs):

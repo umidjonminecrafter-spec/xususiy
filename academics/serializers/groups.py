@@ -14,8 +14,8 @@ from accounts.serializers import UserSerializer
 
 class GroupSerializer(serializers.ModelSerializer):
     course_name = serializers.CharField(source='course.name', read_only=True)
-    room_name = serializers.CharField(source='room.name', read_only=True)
-    teacher_name = serializers.CharField(source='teacher.get_full_name', default='', read_only=True)
+    room_name = serializers.SerializerMethodField(read_only=True)
+    teacher_name = serializers.SerializerMethodField(read_only=True)
     student_count = serializers.SerializerMethodField(read_only=True)
     students_count = serializers.SerializerMethodField(read_only=True)
     students = serializers.SerializerMethodField(read_only=True)
@@ -33,6 +33,20 @@ class GroupSerializer(serializers.ModelSerializer):
         model = Group
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_teacher_name(self, obj):
+        if obj.teacher:
+            parts = [obj.teacher.first_name, obj.teacher.last_name]
+            full_name = " ".join([p for p in parts if p]).strip()
+            return full_name if full_name else (obj.teacher.username or obj.teacher.phone or "")
+        return ""
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_room_name(self, obj):
+        if obj.room:
+            return obj.room.name
+        return ""
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_group_teachers(self, obj):
@@ -122,118 +136,24 @@ class GroupSerializer(serializers.ModelSerializer):
 
     def to_internal_value(self, data):
         data = data.copy() if hasattr(data, 'copy') else dict(data)
-        request = self.context.get('request')
-        user = getattr(request, 'user', None) if request else None
-        org = getattr(user, 'organization', None) if user else None
         
-        # 1. Teacher normalization (handle sinf_rahbar, teacher_id, names, etc.)
+        # 1. Teacher normalization (handle sinf_rahbar, teacher_id, etc.)
         teacher = data.get('teacher') or data.get('sinf_rahbar') or data.get('sinf_rahbari') or data.get('class_teacher')
         if isinstance(teacher, dict) and 'id' in teacher:
             teacher = teacher['id']
         elif isinstance(teacher, list):
             teacher = teacher[0] if teacher else None
-
         if teacher:
-            if isinstance(teacher, int) or (isinstance(teacher, str) and teacher.isdigit()):
-                data['teacher'] = int(teacher)
-            elif isinstance(teacher, str) and teacher.strip():
-                from accounts.models import User as UserModel
-                teacher_str = teacher.strip()
-                t_qs = UserModel.objects.filter(organization=org) if org else UserModel.objects.all()
-                parts = teacher_str.split()
-                found_t = None
-                if len(parts) >= 2:
-                    found_t = t_qs.filter(
-                        (Q(first_name__icontains=parts[0]) & Q(last_name__icontains=parts[1])) |
-                        (Q(first_name__icontains=parts[1]) & Q(last_name__icontains=parts[0]))
-                    ).first()
-                if not found_t:
-                    found_t = t_qs.filter(
-                        Q(first_name__icontains=teacher_str) |
-                        Q(last_name__icontains=teacher_str) |
-                        Q(username__icontains=teacher_str)
-                    ).first()
-                if found_t:
-                    data['teacher'] = found_t.id
-                else:
-                    data.pop('teacher', None)
-            else:
-                data.pop('teacher', None)
-        elif 'teacher' in data and not data['teacher']:
-            data.pop('teacher', None)
+            data['teacher'] = teacher
 
-        # 2. Branch normalization (handle bino, building, filial, names, etc.)
-        branch = data.get('branch') or data.get('bino') or data.get('building') or data.get('filial')
+        # 2. Branch normalization (handle bino, building, etc.)
+        branch = data.get('branch') or data.get('bino') or data.get('building')
         if isinstance(branch, dict) and 'id' in branch:
             branch = branch['id']
-
         if branch:
-            if isinstance(branch, int) or (isinstance(branch, str) and branch.isdigit()):
-                data['branch'] = int(branch)
-            elif isinstance(branch, str) and branch.strip():
-                from organizations.models import Branch
-                branch_str = branch.strip()
-                b_qs = Branch.objects.filter(organization=org) if org else Branch.objects.all()
-                found_b = b_qs.filter(name__icontains=branch_str).first()
-                if found_b:
-                    data['branch'] = found_b.id
-                else:
-                    data.pop('branch', None)
-            else:
-                data.pop('branch', None)
-        elif 'branch' in data and not data['branch']:
-            data.pop('branch', None)
+            data['branch'] = branch
 
-        if 'branch' not in data and request:
-            qp_branch = request.query_params.get('branch_id') or request.query_params.get('branch')
-            if qp_branch and str(qp_branch).isdigit():
-                data['branch'] = int(qp_branch)
-            elif user and getattr(user, 'branch_id', None):
-                data['branch'] = user.branch_id
-
-        # 3. Room normalization
-        room = data.get('room') or data.get('xona')
-        if isinstance(room, dict) and 'id' in room:
-            room = room['id']
-        if room:
-            if isinstance(room, int) or (isinstance(room, str) and room.isdigit()):
-                data['room'] = int(room)
-            elif isinstance(room, str) and room.strip():
-                from academics.models import Room
-                room_str = room.strip()
-                r_qs = Room.objects.filter(organization=org) if org else Room.objects.all()
-                found_r = r_qs.filter(name__icontains=room_str).first()
-                if found_r:
-                    data['room'] = found_r.id
-                else:
-                    data.pop('room', None)
-            else:
-                data.pop('room', None)
-        elif 'room' in data and not data['room']:
-            data.pop('room', None)
-
-        # 4. Course normalization
-        course = data.get('course') or data.get('fan') or data.get('kurs')
-        if isinstance(course, dict) and 'id' in course:
-            course = course['id']
-        if course:
-            if isinstance(course, int) or (isinstance(course, str) and course.isdigit()):
-                data['course'] = int(course)
-            elif isinstance(course, str) and course.strip():
-                from academics.models import Course
-                course_str = course.strip()
-                c_qs = Course.objects.filter(organization=org) if org else Course.objects.all()
-                found_c = c_qs.filter(name__icontains=course_str).first()
-                if found_c:
-                    data['course'] = found_c.id
-                else:
-                    data.pop('course', None)
-            else:
-                data.pop('course', None)
-        elif 'course' in data and not data['course']:
-            data.pop('course', None)
-
-        # 5. Name normalization from grade_level and letter
+        # 3. Name normalization from grade_level and letter
         name = data.get('name')
         grade_level = data.get('grade_level') or data.get('sinf_darajasi') or data.get('level') or data.get('grade')
         letter = data.get('letter') or data.get('harf') or data.get('char')
@@ -343,6 +263,9 @@ class StudentGroupSerializer(serializers.ModelSerializer):
         if instance.student:
             phone = instance.student.phone
             balance = instance.student.balance
+            st_first = instance.student.first_name or ""
+            st_last = instance.student.last_name or ""
+            full_name = f"{st_first} {st_last}".strip() or getattr(instance.student, 'name', '') or "O'quvchi"
 
             request = self.context.get('request')
             if request and getattr(request.user, 'role', None) == 'teacher':
@@ -356,6 +279,19 @@ class StudentGroupSerializer(serializers.ModelSerializer):
                         phone = phone[:-4] + "****"
                     else:
                         phone = "****"
+
+            rep['full_name'] = full_name
+            rep['student_name'] = full_name
+            rep['name'] = full_name
+            rep['student_detail'] = {
+                'id': instance.student.id,
+                'first_name': st_first,
+                'last_name': st_last,
+                'full_name': full_name,
+                'name': full_name,
+                'phone': phone,
+                'balance': balance,
+            }
 
         rep['phone'] = phone
         rep['phone_number'] = phone
@@ -404,18 +340,6 @@ class TeacherSalaryPaymentSerializer(serializers.ModelSerializer):
         model = TeacherSalaryPayment
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
-
-    def to_internal_value(self, data):
-        data = data.copy() if hasattr(data, 'copy') else dict(data)
-        if not data.get('period'):
-            p = data.get('month')
-            if not p and data.get('date'):
-                p = str(data.get('date'))[:7]
-            if not p:
-                from django.utils import timezone
-                p = timezone.now().strftime('%Y-%m')
-            data['period'] = p
-        return super().to_internal_value(data)
 
     def validate(self, attrs):
         amount = attrs.get('amount') if 'amount' in attrs else (self.instance.amount if self.instance else None)

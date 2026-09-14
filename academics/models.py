@@ -184,10 +184,15 @@ class Group(TenantModel):
     )
 
     name = models.CharField(max_length=255)
-    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="groups")
+    course = models.ForeignKey(Course, on_delete=models.SET_NULL, null=True, blank=True, related_name="groups")
     room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True, related_name="groups")
     teacher = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                                 related_name="teaching_groups")
+
+    language = models.CharField(max_length=20, default='uz', null=True, blank=True)
+    capacity = models.IntegerField(null=True, blank=True)
+    grade_level = models.IntegerField(null=True, blank=True)
+    section = models.CharField(max_length=10, null=True, blank=True)
 
     # 🚀 QO'SHILDI: Yordamchi o'qituvchi maydoni
     assistant_teacher = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
@@ -235,6 +240,9 @@ class StudentGroup(TenantModel):
         indexes = [
             models.Index(fields=['organization', 'group', 'student']),
             models.Index(fields=['student', 'group']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['student', 'group'], name='unique_student_group'),
         ]
 
     def save(self, *args, **kwargs):
@@ -304,6 +312,9 @@ class Attendance(TenantModel):
             models.Index(fields=['organization', 'group', 'date']),
             models.Index(fields=['student', 'date']),
             models.Index(fields=['group', 'date', 'status']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['student', 'group', 'date'], name='unique_student_group_date_attendance'),
         ]
 
     def save(self, *args, **kwargs):
@@ -413,6 +424,15 @@ class ExamResult(TenantModel):
     # TO'G'RILANDI: on_delete=models.SET_NULL qilindi.
     student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name="exam_results")
     score = models.DecimalField(max_digits=5, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['exam', 'student'], name='unique_exam_student_result'),
+            models.CheckConstraint(
+                condition=models.Q(score__gte=0) & models.Q(score__lte=100),
+                name='check_exam_result_score_range'
+            ),
+        ]
 
     def __str__(self):
         student_name = self.student if self.student else "O'chirilgan Talaba"

@@ -40,6 +40,7 @@ router.register(r'salary-calculations', TeacherSalaryCalculationViewSet, basenam
 router.register(r'teacher-salary-payments', TeacherSalaryPaymentsView, basename='teacher-salary-payment')
 router.register(r'cashboxes', CashboxViewSet, basename='cashbox')
 router.register(r'transactions-types-crud', TransactionCategoryViewSet, basename='transaction-category')
+router.register(r'transaction-categories', TransactionCategoryViewSet, basename='transaction-categories')
 router.register(r'withdrawals', WithdrawalViewSet, basename='withdrawal')
 router.register(r'transactions', TransactionViewSet, basename='transactions')
 
@@ -50,6 +51,8 @@ urlpatterns = [
     path('profit-chart/', CompanyProfitChartView.as_view(), name='company-profit-chart'),
     path('settings/', FinanceSettingAPIView.as_view(), name='finance-settings'),
 
+    path('debts/students/summary/', StudentDebtsSummaryView.as_view(), name='debts-students-summary-alias'),
+    path('debts/students/', StudentDebtsView.as_view(), name='debts-students-list-alias'),
     path('student-debts/summary/', StudentDebtsSummaryView.as_view(), name='student-debts-summary'),
     path('student-debts/', StudentDebtsView.as_view(), name='student-debts-list'),
     path('student-debts/<int:pk>/', StudentDebtDetailView.as_view(), name='student-debts-detail'),

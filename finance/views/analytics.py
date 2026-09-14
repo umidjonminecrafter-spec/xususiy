@@ -150,6 +150,20 @@ class TeacherEfficiencyReportView(APIView):
             report.append({
                 "id": index,
                 "teacher_name": name,
+                "branch": teacher.branch_id,
+                "branch_id": teacher.branch_id,
+                "start_active": start_active,
+                "start_left": start_left,
+                "start_graduated": 0,
+                "start_frozen": 0,
+                "change_active": change_active,
+                "change_left": change_left,
+                "change_graduated": 0,
+                "change_frozen": 0,
+                "end_active": end_active,
+                "end_left": end_left,
+                "end_graduated": 0,
+                "end_frozen": 0,
                 "start_status": {"active": start_active, "left": start_left, "finished": 0, "frozen": 0},
                 "changes": {"active": change_active, "left": change_left, "finished": 0, "frozen": 0},
                 "end_status": {"active": end_active, "left": end_left, "finished": 0, "frozen": 0}
@@ -223,6 +237,20 @@ class AdministratorEfficiencyReportView(APIView):
             report.append({
                 "id": index,
                 "admin_name": f"{admin.first_name} {admin.last_name}".strip() or admin.username,
+                "branch": admin.branch_id,
+                "branch_id": admin.branch_id,
+                "start_active": start_active,
+                "start_left": start_left,
+                "start_graduated": 0,
+                "start_frozen": 0,
+                "change_active": change_active,
+                "change_left": change_left,
+                "change_graduated": 0,
+                "change_frozen": 0,
+                "end_active": end_active,
+                "end_left": end_left,
+                "end_graduated": 0,
+                "end_frozen": 0,
                 "start_status": {"active": start_active, "left": start_left, "finished": 0, "frozen": 0},
                 "changes": {"active": change_active, "left": change_left, "finished": 0, "frozen": 0},
                 "end_status": {"active": end_active, "left": end_left, "finished": 0, "frozen": 0}
@@ -510,7 +538,9 @@ class UnsubmittedAttendanceReportView(APIView):
                 "group_name": group.name,
                 "sana": lesson_date,
                 "teacher_name": teacher_name,
-                "amount": float(group_price)
+                "amount": float(group_price),
+                "branch": lesson.branch_id or group.branch_id,
+                "branch_id": lesson.branch_id or group.branch_id
             })
             index += 1
 

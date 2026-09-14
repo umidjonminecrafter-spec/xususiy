@@ -126,14 +126,11 @@ def custom_exception_handler(exc, context):
     if isinstance(exc, (ValueError, TypeError, AttributeError)):
         logger.error(f"{type(exc).__name__} in {view_name}: {str(exc)}", exc_info=True)
         return Response({
-            "error": "Yuborilgan ma'lumotlar mantiqiy xato.",
-            "detail": f"Xatolik turi ({type(exc).__name__}): {str(exc)}"
+            "detail": "Server xatoligi yuz berdi"
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Boshqa har qanday kutilmagan dasturiy xatolar (Oq sahifani butunlay yo'qotadi)
     logger.error(f"Unhandled exception in {view_name}: {type(exc).__name__}: {str(exc)}", exc_info=True)
     return Response({
-        "error": "Serverda ichki xatolik yuz berdi.",
-        "detail": str(exc),
-        "exception_type": type(exc).__name__
+        "detail": "Server xatoligi yuz berdi"
     }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -108,6 +108,23 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 })
 
         super().perform_create(serializer)
+        student = serializer.instance
+
+        group_id = self.request.data.get('group_id') or self.request.data.get('group') or self.request.data.get('class_id')
+        if group_id:
+            from academics.models import Group, StudentGroup
+            try:
+                grp = Group.objects.filter(id=group_id).first()
+                if grp:
+                    StudentGroup.objects.get_or_create(
+                        organization_id=grp.organization_id or org_id,
+                        student=student,
+                        group=grp,
+                        defaults={'branch_id': grp.branch_id or self.get_branch_id()}
+                    )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Auto-attach student {student.id} to group {group_id} failed: {e}")
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -190,6 +207,24 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 
         from finance.models import Payment
         org_id = self.get_organization_id()
+
+        # 5 soniya deduplikatsiya (Preflight yoki takroriy POST so'rovlarini ushlab qolish)
+        five_sec_ago = timezone.now() - timezone.timedelta(seconds=5)
+        existing_payment = Payment.objects.filter(
+            organization_id=org_id,
+            student=student,
+            amount=amount_dec,
+            created_at__gte=five_sec_ago
+        ).first()
+
+        if existing_payment:
+            student.refresh_from_db()
+            return Response({
+                "detail": "Payment already processed recently.",
+                "balance": student.balance,
+                "payment_id": existing_payment.id
+            }, status=status.HTTP_200_OK)
+
         payment = Payment.objects.create(
             organization_id=org_id,
             branch_id=self.get_branch_id(),
@@ -237,7 +272,8 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         student_group, created = StudentGroup.objects.get_or_create(
             organization_id=org_id,
             student=student,
-            group=group
+            group=group,
+            defaults={'branch_id': group.branch_id or self.get_branch_id()}
         )
         return Response(StudentGroupSerializer(student_group).data, status=status.HTTP_201_CREATED)
 

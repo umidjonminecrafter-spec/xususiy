@@ -55,5 +55,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health/ || exit 1
 
-# Default command: Run database migrations, collectstatic, and start Gunicorn
-CMD ["sh", "-c", "python manage.py collectstatic --no-input && python manage.py migrate && gunicorn -c gunicorn.conf.py config.wsgi:application"]
+# Default command: Run database migrations, set telegram webhooks, collectstatic, and start Gunicorn
+CMD ["sh", "-c", "python manage.py collectstatic --no-input && python manage.py migrate && (python manage.py set_telegram_webhooks --domain=${DOMAIN:-etirof.pythonanywhere.com} || true) && gunicorn -c gunicorn.conf.py config.wsgi:application"]

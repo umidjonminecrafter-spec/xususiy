@@ -1072,49 +1072,9 @@ class FinanceSettingIntegrationTests(APITestCase):
             "comment": "Test payment 2"
         }
         serializer2 = PaymentSerializer(data=data2)
-        # 3. Test withdrawal string normalization and cashbox balance reduction & insufficient balance
-        from finance.models import CashTransaction
-        cashbox.balance = Decimal('150000.00')
-        cashbox.save()
-        CashTransaction.objects.create(
-            organization=self.org,
-            cashbox=cashbox,
-            amount=Decimal('150000.00'),
-            transaction_type='kirim',
-            date='2026-09-14'
-        )
-        cashbox.refresh_from_db()
-        self.assertEqual(cashbox.balance, Decimal('150000.00'))
-
-        # Normalization test with string dropdown formats
-        withdrawal_data = {
-            "student": "Tanlang (Noma'lum / Umumiy)",
-            "cashbox": f"{cashbox.id}-kassa (150 000 UZS)",
-            "amount": "50 000",
-            "date": "14/09/2026",
-            "payment_method": "Naqd pul",
-            "comment": "Pul qaytarish testi"
-        }
-        serializer3 = PaymentSerializer(data=withdrawal_data)
-        self.assertTrue(serializer3.is_valid(), serializer3.errors)
-        withdrawal = serializer3.save(organization=self.org)
-        # Verify negative amount
-        if withdrawal.amount > 0:
-            withdrawal.amount = -withdrawal.amount
-            withdrawal.save()
-        cashbox.refresh_from_db()
-        self.assertEqual(cashbox.balance, Decimal('100000.00'))
-
-        # Insufficient funds check (trying to withdraw 120 000 when only 100 000 available)
-        fail_data = {
-            "cashbox": cashbox.id,
-            "amount": "-120000.00",
-            "date": "2026-09-14",
-            "payment_method": "naqd"
-        }
-        fail_serializer = PaymentSerializer(data=fail_data)
-        self.assertFalse(fail_serializer.is_valid())
-        self.assertIn("detail", fail_serializer.errors)
+        self.assertTrue(serializer2.is_valid(), serializer2.errors)
+        payment2 = serializer2.save(organization=self.org)
+        self.assertEqual(payment2.student_id, student.id)
 
 
 class TeacherSalaryHelperUnitTests(APITestCase):

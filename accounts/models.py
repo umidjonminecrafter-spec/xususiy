@@ -1,21 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
-from organizations.models import Organization, TenantModel
+from organizations.models import Organization
 from django.core.exceptions import ValidationError
-
-
-class WeeklyLessonHour(TenantModel):
-    name = models.CharField(max_length=255, blank=True, null=True, verbose_name="Nomi / Tavsifi")
-    hours = models.DecimalField(max_digits=6, decimal_places=2, verbose_name="Haftalik dars soati")
-
-    class Meta:
-        ordering = ['hours']
-        verbose_name = "Haftalik dars soati"
-        verbose_name_plural = "Haftalik dars soatlari"
-
-    def __str__(self):
-        return f"{self.hours} soat" if not self.name else f"{self.name} ({self.hours} soat)"
-
 
 
 class User(AbstractUser):
@@ -52,6 +38,8 @@ class User(AbstractUser):
     phone = models.CharField(max_length=50, null=True, blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='employee')
     position = models.CharField(max_length=100, null=True, blank=True)
+    specialty = models.CharField(max_length=255, null=True, blank=True, verbose_name="Fan / Mutaxassislik")
+    lesson_hours = models.CharField(max_length=50, null=True, blank=True, verbose_name="Dars soati")
     birth_date = models.DateField(null=True, blank=True)
     gender = models.CharField(max_length=10, null=True, blank=True)
     photo = models.ImageField(upload_to='user_photos/', null=True, blank=True)
@@ -66,39 +54,14 @@ class User(AbstractUser):
         blank=True,
         verbose_name="1 soat dars narxi (soatbay)"
     )
-    weekly_hours = models.DecimalField(
-        max_digits=8,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        default=0.0,
-        verbose_name="Haftalik dars soati"
-    )
     salary_type = models.CharField(
         max_length=20,
-        choices=[
-            ('percentage', 'Foizli'),
-            ('hourly', 'Soatbay'),
-            ('fixed', "O'zgarmas oylik"),
-            ('unassigned', "Belgilanmagan"),
-            ('none', "Belgilanmagan"),
-        ],
+        choices=[('percentage', 'Foizli'), ('hourly', 'Soatbay'), ('fixed', "O'zgarmas oylik")],
         default='percentage',
         null=True,
         blank=True,
         verbose_name="Oylik hisoblash turi"
     )
-
-    fixed_salary = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0.0,
-        null=True,
-        blank=True,
-        verbose_name="Qat'iy oylik summa (so'm)"
-    )
-
-    specialization = models.CharField(max_length=255, null=True, blank=True, verbose_name="Fan / Mutaxassislik")
 
     # 🚀 O'qituvchi xodim yaratilayotganda moliya foiz stavkasini biriktirish (1-rasm)
     salary_percentage = models.ForeignKey(
@@ -109,17 +72,13 @@ class User(AbstractUser):
         related_name="teachers",
         verbose_name="Oladigan foizi"
     )
-    weekly_lesson_hour = models.ForeignKey(
-        'accounts.WeeklyLessonHour',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="teachers",
-        verbose_name="Haftalik dars soati ma'lumotnomasi"
-    )
 
     def clean(self):
         super().clean()
+        if self.role == 'teacher' and not self.salary_percentage:
+            raise ValidationError({
+                'salary_percentage': "O'qituvchi roli uchun oladigan foizini tanlash majburiy!"
+            })
 
     def save(self, *args, **kwargs):
         if self.phone:

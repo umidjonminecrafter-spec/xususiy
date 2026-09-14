@@ -75,11 +75,32 @@ class MonthlyIncomeViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
 )
 class PaymentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     permission_page_name = 'Barcha to\'lovlar'
-    queryset = Payment.objects.all().select_related('student', 'employee')
+    queryset = Payment.objects.all().select_related('student', 'employee').order_by('-date', '-id')
     serializer_class = PaymentSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_fields = ['student', 'payment_method']
     search_fields = ['student__first_name', 'student__last_name', 'comment']
+
+    def create(self, request, *args, **kwargs):
+        student_id = request.data.get('student')
+        amount = request.data.get('amount')
+        org_id = self.get_organization_id()
+        if student_id and amount:
+            try:
+                amount_dec = Decimal(str(amount))
+                five_sec_ago = timezone.now() - timezone.timedelta(seconds=5)
+                existing = Payment.objects.filter(
+                    organization_id=org_id,
+                    student_id=student_id,
+                    amount=amount_dec,
+                    created_at__gte=five_sec_ago
+                ).first()
+                if existing:
+                    serializer = self.get_serializer(existing)
+                    return Response(serializer.data, status=status.HTTP_200_OK)
+            except Exception:
+                pass
+        return super().create(request, *args, **kwargs)
 
     @decorators.action(detail=True, methods=['get'], url_path='receipt')
     def receipt(self, request, pk=None):
@@ -269,39 +290,85 @@ class WithdrawalViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         org_id = self.get_organization_id()
         if not org_id:
             return Payment.objects.none()
-        qs = Payment.objects.filter(organization_id=org_id, amount__lt=0)
+        
+        qs = Payment.objects.filter(
+            Q(organization_id=org_id) & (Q(amount__lt=0) | Q(comment__icontains='yechib') | Q(comment__icontains='qaytar'))
+        ).select_related('student', 'employee', 'cashbox').distinct()
+
         branch_id = self.get_branch_id()
         if branch_id:
             qs = qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
-        return qs
+
+        params = self.request.query_params
+        date_from = params.get('date_from') or params.get('from') or params.get('start_date')
+        date_to = params.get('date_to') or params.get('to') or params.get('end_date')
+        search = params.get('search') or params.get('q')
+        amount = params.get('amount') or params.get('sum')
+        course_id = params.get('course_id') or params.get('course')
+
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+        if search:
+            qs = qs.filter(
+                Q(student__first_name__icontains=search) |
+                Q(student__last_name__icontains=search) |
+                Q(student__phone__icontains=search) |
+                Q(comment__icontains=search)
+            )
+        if amount and str(amount).replace('.', '', 1).isdigit():
+            amt_num = abs(float(amount))
+            qs = qs.filter(Q(amount=-amt_num) | Q(amount=amt_num))
+        if course_id and str(course_id).isdigit():
+            qs = qs.filter(student__student_groups__group__course_id=int(course_id))
+
+    def create(self, request, *args, **kwargs):
+        st = request.data.get('student')
+        amt = request.data.get('amount')
+        if st and amt:
+            try:
+                amt_dec = Decimal(str(amt))
+                five_sec_ago = timezone.now() - timezone.timedelta(seconds=5)
+                existing = Payment.objects.filter(
+                    organization_id=self.get_organization_id(),
+                    student_id=st,
+                    amount=amt_dec,
+                    created_at__gte=five_sec_ago
+                ).first()
+                if existing:
+                    return Response(PaymentSerializer(existing).data, status=status.HTTP_200_OK)
+            except Exception:
+                pass
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
-        with db_transaction.atomic():
-            amount = serializer.validated_data.get('amount')
-            cashbox = serializer.validated_data.get('cashbox')
-            abs_amount = abs(amount) if amount else Decimal('0.00')
+        from finance.models import CashTransaction, Cashbox
 
-            org_id = self.get_organization_id()
-            branch_id = self.get_branch_id()
+        amount = serializer.validated_data.get('amount')
+        if amount and amount > 0:
+            serializer.validated_data['amount'] = -abs(amount)
+        elif amount is None:
+            serializer.validated_data['amount'] = Decimal('0.00')
 
-            if not cashbox:
-                if branch_id:
-                    cashbox = Cashbox.objects.filter(organization_id=org_id, branch_id=branch_id, is_archived=False).first()
-                if not cashbox:
-                    cashbox = Cashbox.objects.filter(organization_id=org_id, is_archived=False).first()
-                if cashbox:
-                    serializer.validated_data['cashbox'] = cashbox
+        if not serializer.validated_data.get('employee'):
+            serializer.validated_data['employee'] = self.request.user
 
-            if cashbox and abs_amount > 0:
-                cb = Cashbox.objects.select_for_update().get(id=cashbox.id)
-                if cb.balance < abs_amount:
-                    bal_str = f"{int(cb.balance):,} UZS".replace(",", " ")
-                    amt_str = f"{int(abs_amount):,} UZS".replace(",", " ")
-                    raise serializers.ValidationError({
-                        "cashbox": f"Kassada mablag' yetarli emas! Kassadagi joriy balans: {bal_str}. Yechib olinadigan summa: {amt_str}. Kassa balansi manfiyga tushishi taqiqlanadi! ⚠️"
-                    })
+        payment = serializer.save(
+            organization_id=self.get_organization_id(),
+            branch_id=self.get_branch_id()
+        )
 
-            if amount and amount > 0:
-                serializer.validated_data['amount'] = -amount
-
-            serializer.save(organization_id=org_id, branch_id=branch_id)
+        if payment.cashbox:
+            CashTransaction.objects.create(
+                organization=payment.organization,
+                cashbox=payment.cashbox,
+                transaction_type='chiqim',
+                payment_method=payment.payment_method or 'naqd',
+                amount=abs(payment.amount),
+                date=payment.date,
+                student=payment.student,
+                employee=payment.employee,
+                category_name="Yechib olish (Qaytarilgan pul)",
+                comment=payment.comment or f"O'quvchiga pul qaytarildi (Payment #{payment.id})"
+            )

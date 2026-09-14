@@ -79,7 +79,6 @@ class TelegramNotificationSettingSerializer(serializers.ModelSerializer):
             'parent_bot_token': {'write_only': True},
             'staff_bot_token': {'write_only': True},
             'support_bot_token': {'write_only': True},
-            'chat_ids': {'write_only': True},
         }
 
 class LessonNotificationTemplateSerializer(serializers.ModelSerializer):
@@ -94,4 +93,5 @@ class GlobalSearchSerializer(serializers.Serializer):
     type = serializers.CharField()         # 'student', 'staff', 'group'
     type_display = serializers.CharField() # "O'quvchi", "Xodim/O'qituvchi", "Guruh"
     additional_info = serializers.CharField()
+
 

@@ -3,14 +3,12 @@ from rest_framework.routers import DefaultRouter
 from accounts.views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView,
     CurrentUserView, ProfileUpdateView, ChangePasswordView, LogoutView,
-    EmployeeViewSet, WeeklyLessonHourViewSet, RoleListView, OrganizationMembersView, MessageEmployeesView,
+    EmployeeViewSet, RoleListView, OrganizationMembersView, MessageEmployeesView,
     PasswordResetRequestView, PasswordResetCheckStatusView, PasswordResetConfirmView
 )
 
 router = DefaultRouter()
 router.register(r'employees', EmployeeViewSet, basename='employee')
-router.register(r'weekly-lesson-hours', WeeklyLessonHourViewSet, basename='weekly-lesson-hour')
-router.register(r'weekly-hours', WeeklyLessonHourViewSet, basename='weekly-hour')
 
 urlpatterns = [
     path('login/', CustomTokenObtainPairView.as_view(), name='account-login'),

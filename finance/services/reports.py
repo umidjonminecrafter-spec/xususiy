@@ -21,8 +21,8 @@ def get_finance_summary(organization_id, branch_id=None):
     Kompaniya yoki filial bo'yicha umumiy kirim, chiqim va sof foydani hisoblaydi.
     """
     if branch_id:
-        payment_filter = Q(organization_id=organization_id) & (Q(branch_id=branch_id) | Q(branch__isnull=True))
-        expense_filter = Q(organization_id=organization_id) & (Q(branch_id=branch_id) | Q(branch__isnull=True))
+        payment_filter = Q(organization_id=organization_id, branch_id=branch_id)
+        expense_filter = Q(organization_id=organization_id, branch_id=branch_id)
         payments_sum = Payment.objects.filter(payment_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
         expenses_sum = Expense.objects.filter(expense_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
     else:
@@ -46,8 +46,11 @@ def get_advanced_payment_report(org_id=None, branch_id=None, start_date=None, en
     elif org_id:
         queryset = queryset.filter(organization_id=org_id)
 
-    if branch_id and str(branch_id).isdigit():
-        queryset = queryset.filter(branch_id=int(branch_id))
+    if branch_id:
+        if str(branch_id).isdigit():
+            queryset = queryset.filter(branch_id=int(branch_id))
+        else:
+            queryset = queryset.filter(branch_id=branch_id)
 
     if start_date and end_date:
         queryset = queryset.filter(date__range=[start_date, end_date])
@@ -188,15 +191,18 @@ def get_financial_reports_data(org_id=None, branch_id=None, start_date_str=None,
 
     if start_date_str:
         try:
-            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            start_d = datetime.strptime(start_date_str, '%Y-%m-%d')
+            start_date = timezone.make_aware(start_d) if timezone.is_naive(start_d) else start_d
             queryset = queryset.filter(created_at__gte=start_date)
         except ValueError:
             pass
 
     if end_date_str:
         try:
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            queryset = queryset.filter(created_at__lte=datetime.combine(end_date, time.max))
+            end_d = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_dt = datetime.combine(end_d, time.max)
+            end_date = timezone.make_aware(end_dt) if timezone.is_naive(end_dt) else end_dt
+            queryset = queryset.filter(created_at__lte=end_date)
         except ValueError:
             pass
 
@@ -254,6 +260,8 @@ def get_financial_reports_data(org_id=None, branch_id=None, start_date_str=None,
 
     daily_data = {}
     for tx in queryset.order_by('created_at'):
+        if not tx.created_at:
+            continue
         date_key = tx.created_at.strftime('%d.%m')
         if date_key not in daily_data:
             daily_data[date_key] = {'kirim': 0, 'chiqim': 0}
@@ -272,17 +280,39 @@ def get_financial_reports_data(org_id=None, branch_id=None, start_date_str=None,
         },
         "linear_chart": {
             "labels": list(daily_data.keys()),
+            "datasets": [
+                {
+                    "label": "Kirim",
+                    "data": [v['kirim'] for v in daily_data.values()],
+                    "borderColor": "#10b981",
+                    "backgroundColor": "rgba(16, 185, 129, 0.05)"
+                },
+                {
+                    "label": "Chiqim",
+                    "data": [v['chiqim'] for v in daily_data.values()],
+                    "borderColor": "#ef4444",
+                    "backgroundColor": "rgba(239, 68, 68, 0.05)"
+                }
+            ],
             "kirim_line": [v['kirim'] for v in daily_data.values()],
             "chiqim_line": [v['chiqim'] for v in daily_data.values()]
         },
         "pie_chart": {
             "kirim": {
                 "labels": list(income_breakdown.keys()),
-                "values": list(income_breakdown.values())
+                "values": list(income_breakdown.values()),
+                "datasets": [{
+                    "data": list(income_breakdown.values()),
+                    "backgroundColor": ["#10b981", "#059669", "#34d399", "#6ee7b7", "#0fb9b1"]
+                }]
             },
             "chiqim": {
                 "labels": list(expense_breakdown.keys()),
-                "values": list(expense_breakdown.values())
+                "values": list(expense_breakdown.values()),
+                "datasets": [{
+                    "data": list(expense_breakdown.values()),
+                    "backgroundColor": ["#ef4444", "#dc2626", "#f87171", "#fca5a5", "#ea580c"]
+                }]
             }
         }
     }
@@ -293,8 +323,8 @@ def get_cash_flow_report_data(org_id=None, branch_id=None, from_date=None, to_da
     Pul oqimi (Cash Flow) hisoboti ma'lumotlarini hisoblaydi.
     """
     tx_filters = Q(organization_id=org_id) if org_id else Q()
-    if branch_id:
-        tx_filters &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True) | Q(cashbox__branch_id=branch_id))
+    if branch_id and str(branch_id).lower() != 'all':
+        tx_filters &= (Q(branch_id=branch_id) | Q(cashbox__branch_id=branch_id))
 
     queryset = Transaction.objects.filter(tx_filters)
 
@@ -315,8 +345,8 @@ def get_cash_flow_report_data(org_id=None, branch_id=None, from_date=None, to_da
         except ValueError:
             pass
 
-    incomes = queryset.filter(type='INCOME').values('description').annotate(total=Sum('amount'))
-    expenses = queryset.filter(type='EXPENSE').values('description').annotate(total=Sum('amount'))
+    incomes = list(queryset.filter(type='INCOME').values('description').annotate(total=Sum('amount')))
+    expenses = list(queryset.filter(type='EXPENSE').values('description').annotate(total=Sum('amount')))
 
     total_income = sum(item['total'] for item in incomes) or Decimal('0.00')
     total_expense = sum(item['total'] for item in expenses) or Decimal('0.00')
@@ -324,9 +354,9 @@ def get_cash_flow_report_data(org_id=None, branch_id=None, from_date=None, to_da
     if total_income == 0 and total_expense == 0 and org_id:
         p_filter = Q(organization_id=org_id)
         e_filter = Q(organization_id=org_id)
-        if branch_id:
-            p_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
-            e_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
+        if branch_id and str(branch_id).lower() != 'all':
+            p_filter &= (Q(branch_id=branch_id) | Q(branch__id=branch_id))
+            e_filter &= (Q(branch_id=branch_id) | Q(branch__id=branch_id))
         if from_date:
             p_filter &= Q(date__gte=from_date)
             e_filter &= Q(date__gte=from_date)
@@ -336,6 +366,11 @@ def get_cash_flow_report_data(org_id=None, branch_id=None, from_date=None, to_da
 
         total_income = Payment.objects.filter(p_filter, amount__gt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
         total_expense = Expense.objects.filter(e_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        if total_income > 0:
+            incomes = [{"description": "O'quvchilar to'lovi", "total": total_income}]
+        if total_expense > 0:
+            expenses = [{"description": "Boshqa xarajatlar", "total": total_expense}]
 
     return {
         "kirimlar": [
@@ -414,13 +449,50 @@ def get_pnl_report_data(org_id=None, branch_id=None, from_date=None, to_date=Non
     total_expense = expenses_val + teacher_expenses
     net_profit = max(Decimal('0.00'), total_income - total_expense)
 
+    # Payment methods breakdown
+    naqd_inc = Payment.objects.filter(p_filter, amount__gt=0, payment_method__icontains='naqd').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    naqd_exp = Expense.objects.filter(e_filter, payment_method__icontains='naqd').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+    card_inc = Payment.objects.filter(p_filter, amount__gt=0).filter(
+        Q(payment_method__icontains='plastik') | Q(payment_method__icontains='card') | Q(payment_method__icontains='terminal') | Q(payment_method__icontains='click') | Q(payment_method__icontains='payme') | Q(payment_method__icontains='uzum')
+    ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    card_exp = Expense.objects.filter(e_filter).filter(
+        Q(payment_method__icontains='plastik') | Q(payment_method__icontains='card') | Q(payment_method__icontains='terminal')
+    ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+    bank_inc = Payment.objects.filter(p_filter, amount__gt=0).filter(
+        Q(payment_method__icontains='bank') | Q(payment_method__icontains='hisob')
+    ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    bank_exp = Expense.objects.filter(e_filter).filter(
+        Q(payment_method__icontains='bank') | Q(payment_method__icontains='hisob')
+    ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+    by_payment_method = {
+        "naqd": {
+            "income": float(naqd_inc),
+            "expense": float(naqd_exp),
+            "net_profit": float(naqd_inc - naqd_exp)
+        },
+        "plastik": {
+            "income": float(card_inc),
+            "expense": float(card_exp),
+            "net_profit": float(card_inc - card_exp)
+        },
+        "bank": {
+            "income": float(bank_inc),
+            "expense": float(bank_exp),
+            "net_profit": float(bank_inc - bank_exp)
+        }
+    }
+
     return {
         "total_income": float(total_income),
         "total_expense": float(total_expense),
         "expenses": float(expenses_val),
         "teacher_salaries": float(teacher_expenses),
         "net_profit": float(net_profit),
-        "sof_foyda": float(net_profit)
+        "sof_foyda": float(net_profit),
+        "by_payment_method": by_payment_method
     }
 
 
@@ -430,8 +502,8 @@ def get_employee_finance_balance_report(org_id, branch_id=None):
     """
     User = get_user_model()
     employees_qs = User.objects.filter(organization_id=org_id).exclude(role='student').exclude(is_superuser=True)
-    if branch_id:
-        employees_qs = employees_qs.filter(branch_id=branch_id)
+    if branch_id and str(branch_id).lower() != "all":
+        employees_qs = employees_qs.filter(Q(branch_id=branch_id) | Q(branch__isnull=True))
 
     rows = []
     total_salary = 0
@@ -448,10 +520,17 @@ def get_employee_finance_balance_report(org_id, branch_id=None):
             employee=emp, type='EXPENSE', category='SALARY'
         ).aggregate(total=Sum('amount'))['total'] or 0
 
-        final_salary = float(salary_amount)
-        b_val = float(bonus_amount)
-        a_val = float(advance_amount)
-        p_val = float(penalty_amount)
+        # Teacher salary payments fallback
+        if salary_amount == 0 and getattr(emp, 'role', '') == 'teacher':
+            from finance.models import TeacherSalaryPayment, TeacherSalaryCalculation
+            ts_paid = TeacherSalaryPayment.objects.filter(teacher=emp).aggregate(total=Sum('amount'))['total'] or 0
+            ts_calc = TeacherSalaryCalculation.objects.filter(teacher=emp).aggregate(total=Sum('calculated_amount'))['total'] or 0
+            salary_amount = ts_calc or ts_paid
+
+        final_salary = float(salary_amount or 0)
+        b_val = float(bonus_amount or 0)
+        a_val = float(advance_amount or 0)
+        p_val = float(penalty_amount or 0)
 
         total_salary += final_salary
         total_bonus += b_val
@@ -459,19 +538,29 @@ def get_employee_finance_balance_report(org_id, branch_id=None):
         total_penalty += p_val
 
         full_name = f"{getattr(emp, 'first_name', '')} {getattr(emp, 'last_name', '')}".strip() or emp.username
+        emp_phone = getattr(emp, 'phone', None) or getattr(emp, 'phone_number', '-') or '-'
 
         rows.append({
             "id": emp.id,
             "full_name": full_name,
-            "phone": getattr(emp, 'phone', '-'),
-            "salary": f"{final_salary:,.0f} UZS".replace(",", " "),
-            "bonus": f"{b_val:,.0f} UZS".replace(",", " "),
-            "advance": f"{a_val:,.0f} UZS".replace(",", " "),
-            "penalty": f"{p_val:,.0f} UZS".replace(",", " ")
+            "fullName": full_name,
+            "name": full_name,
+            "phone": emp_phone,
+            "branch": emp.branch_id,
+            "branch_id": emp.branch_id,
+            "salary": final_salary,
+            "bonus": b_val,
+            "advance": a_val,
+            "penalty": p_val,
+            "ish_haqi": final_salary,
+            "avans": a_val,
+            "jarima": p_val
         })
 
     return {
+        "results": rows,
         "table_data": rows,
+        "data": rows,
         "totals": {
             "salary": total_salary,
             "bonus": total_bonus,
@@ -486,24 +575,31 @@ def get_revenue_plan_report(org_id, branch_id=None, date_str='Bugun'):
     Kutilayotgan tushum va qarzlar rejasi hisoboti.
     """
     debtors = Student.objects.filter(organization_id=org_id, balance__lt=0)
-    if branch_id:
+    if branch_id and str(branch_id).lower() != 'all':
         debtors = debtors.filter(branch_id=branch_id)
 
     debtors_count = debtors.count()
     debtors_sum = abs(float(debtors.aggregate(total=Sum('balance'))['total'] or 0))
 
     tx_filters = Q(cashbox__organization_id=org_id, type='INCOME')
-    if branch_id:
-        tx_filters &= Q(cashbox__branch_id=branch_id)
+    if branch_id and str(branch_id).lower() != 'all':
+        tx_filters &= (Q(cashbox__branch_id=branch_id) | Q(branch_id=branch_id))
 
     paid_sum = float(Transaction.objects.filter(tx_filters).aggregate(total=Sum('amount'))['total'] or 0)
+    if paid_sum == 0:
+        p_filter = Q(organization_id=org_id, amount__gt=0)
+        if branch_id and str(branch_id).lower() != 'all':
+            p_filter &= (Q(branch_id=branch_id) | Q(branch__isnull=True))
+        paid_sum = float(Payment.objects.filter(p_filter).aggregate(total=Sum('amount'))['total'] or 0)
+
+    display_date = date_str if date_str and date_str != 'Bugun' else 'Joriy davr'
 
     return [
-        {"target": f"{date_str} holatiga", "students_count": debtors_count, "expected_amount": debtors_sum + paid_sum},
-        {"target": "Eski oydan qarzdor bo'lib o'tgan o'quvchilar summasi", "students_count": debtors_count, "expected_amount": debtors_sum},
-        {"target": "Eski oydan o'quvchilar to'lab o'tgan summa", "students_count": 0, "expected_amount": 0},
-        {"target": "Shu oyda to'langan summa", "students_count": 0, "expected_amount": paid_sum},
-        {"target": "Qolgan kutilayotgan tushum", "students_count": debtors_count, "expected_amount": debtors_sum},
+        {"title": f"{display_date} holatiga", "target": f"{display_date} holatiga", "student_count": debtors_count, "students_count": debtors_count, "amount": debtors_sum + paid_sum, "expected_amount": debtors_sum + paid_sum},
+        {"title": "Eski oydan qarzdor bo'lib o'tgan o'quvchilar summasi", "target": "Eski oydan qarzdor bo'lib o'tgan o'quvchilar summasi", "student_count": debtors_count, "students_count": debtors_count, "amount": debtors_sum, "expected_amount": debtors_sum},
+        {"title": "Eski oydan o'quvchilar to'lab o'tgan summa", "target": "Eski oydan o'quvchilar to'lab o'tgan summa", "student_count": 0, "students_count": 0, "amount": 0, "expected_amount": 0},
+        {"title": "Shu oyda to'langan summa", "target": "Shu oyda to'langan summa", "student_count": 0, "students_count": 0, "amount": paid_sum, "expected_amount": paid_sum},
+        {"title": "Qolgan kutilayotgan tushum", "target": "Qolgan kutilayotgan tushum", "student_count": debtors_count, "students_count": debtors_count, "amount": debtors_sum, "expected_amount": debtors_sum},
     ]
 
 
@@ -512,7 +608,7 @@ def get_unpaid_lessons_report(org_id, branch_id=None):
     To'lanmagan darslar hisoboti.
     """
     students_qs = Student.objects.filter(organization_id=org_id, balance__lt=0).prefetch_related('student_groups__group')
-    if branch_id:
+    if branch_id and str(branch_id).lower() != 'all':
         students_qs = students_qs.filter(branch_id=branch_id)
 
     rows = []
@@ -526,14 +622,23 @@ def get_unpaid_lessons_report(org_id, branch_id=None):
         rows.append({
             "id": index,
             "name": f"{student.first_name} {student.last_name or ''}".strip(),
+            "student_name": f"{student.first_name} {student.last_name or ''}".strip(),
+            "fullName": f"{student.first_name} {student.last_name or ''}".strip(),
             "groups": groups_str,
+            "unpaid_lessons": int(balance_val / 60000) or 1,
             "unpaid_lessons_count": int(balance_val / 60000) or 1,
-            "total_unpaid_amount": balance_val
+            "total_unpaid_amount": balance_val,
+            "total_unpaid": balance_val,
+            "unpaid_amount": balance_val,
+            "branch": student.branch_id,
+            "branch_id": student.branch_id
         })
 
     return {
         "total_count": len(rows),
-        "table_data": rows
+        "table_data": rows,
+        "results": rows,
+        "data": rows
     }
 
 
@@ -542,11 +647,11 @@ def get_cancelled_payments_report(org_id, branch_id=None):
     Bekor qilingan to'lovlar hisoboti.
     """
     tx_qs = Transaction.objects.filter(
-        cashbox__organization_id=org_id,
-        description__icontains="bekor"
+        Q(cashbox__organization_id=org_id) | Q(organization_id=org_id),
+        Q(description__icontains="bekor") | Q(type='EXPENSE', category='REFUND') | Q(description__icontains="qaytar")
     )
-    if branch_id:
-        tx_qs = tx_qs.filter(cashbox__branch_id=branch_id)
+    if branch_id and str(branch_id).lower() != 'all':
+        tx_qs = tx_qs.filter(Q(cashbox__branch_id=branch_id) | Q(branch_id=branch_id))
 
     rows = []
     for index, tx in enumerate(tx_qs, start=1):
@@ -554,19 +659,29 @@ def get_cancelled_payments_report(org_id, branch_id=None):
         if tx.student:
             st_name = f"{tx.student.first_name} {tx.student.last_name or ''}".strip()
 
+        tx_branch = tx.branch_id or (tx.cashbox.branch_id if tx.cashbox else None)
+
         rows.append({
             "id": index,
             "name": st_name,
+            "student_name": st_name,
+            "payment_date": tx.created_at.strftime('%Y-%m-%d') if tx.created_at else "",
+            "amount": float(tx.amount),
             "unpaid_lessons": 0,
             "total_unpaid": float(tx.amount),
             "teacher": "-",
             "group": "-",
-            "description": tx.description or "To'lov bekor qilingan"
+            "description": tx.description or "To'lov bekor qilingan / Qaytarilgan",
+            "reason": tx.description or "To'lov bekor qilingan / Qaytarilgan",
+            "branch": tx_branch,
+            "branch_id": tx_branch
         })
 
     return {
         "total_count": len(rows),
-        "table_data": rows
+        "table_data": rows,
+        "results": rows,
+        "data": rows
     }
 
 

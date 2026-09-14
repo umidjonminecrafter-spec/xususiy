@@ -66,7 +66,10 @@ class ConversionReportsFunnelView(TenantViewSetMixin, APIView):
                 "course_chart": {"labels": [], "values": []}
             }, status=status.HTTP_200_OK)
 
+        branch_id = self.get_branch_id()
         base_filter = Q(organization_id=org_id, is_archived=False)
+        if branch_id:
+            base_filter &= Q(branch_id=branch_id)
 
         if start_date:
             base_filter &= Q(created_at__date__gte=start_date)
@@ -271,7 +274,10 @@ class LeadsReportPieChartView(TenantViewSetMixin, APIView):
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
 
+        branch_id = self.get_branch_id()
         leads_qs = Lead.objects.filter(organization_id=org_id)
+        if branch_id:
+            leads_qs = leads_qs.filter(branch_id=branch_id)
         if start_date:
             leads_qs = leads_qs.filter(created_at__date__gte=start_date)
         if end_date:
@@ -317,7 +323,10 @@ class LeadsReportBarChartView(TenantViewSetMixin, APIView):
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
 
+        branch_id = self.get_branch_id()
         leads_qs = Lead.objects.filter(organization_id=org_id)
+        if branch_id:
+            leads_qs = leads_qs.filter(branch_id=branch_id)
         if start_date:
             leads_qs = leads_qs.filter(created_at__date__gte=start_date)
         if end_date:
@@ -365,7 +374,10 @@ class LeadsReportStatisticsView(TenantViewSetMixin, APIView):
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
 
+        branch_id = self.get_branch_id()
         leads_qs = Lead.objects.filter(organization_id=org_id)
+        if branch_id:
+            leads_qs = leads_qs.filter(branch_id=branch_id)
         if start_date:
             leads_qs = leads_qs.filter(created_at__date__gte=start_date)
         if end_date:

@@ -157,6 +157,10 @@ class AttendanceAnalyticsAPIView(APIView):
 
         date_from = normalize_date(date_from_param or date_param)
         date_to = normalize_date(date_to_param)
+        course_id = request.query_params.get('course_id') or request.query_params.get('kurs')
+        group_id = request.query_params.get('group_id') or request.query_params.get('guruh')
+        teacher_id = request.query_params.get('teacher_id') or request.query_params.get('oqituvchi')
+        status = request.query_params.get('status') or request.query_params.get('holat')
 
         attendance_query = Attendance.objects.filter(organization_id=org_id)
         lesson_query = GroupLesson.objects.filter(organization_id=org_id)
@@ -167,10 +171,18 @@ class AttendanceAnalyticsAPIView(APIView):
         elif date_from:
             attendance_query = attendance_query.filter(date=date_from)
             lesson_query = lesson_query.filter(date=date_from)
-        else:
-            today = timezone.now().date().isoformat()
-            attendance_query = attendance_query.filter(date=today)
-            lesson_query = lesson_query.filter(date=today)
+
+        if course_id:
+            attendance_query = attendance_query.filter(group__course_id=course_id)
+            lesson_query = lesson_query.filter(group__course_id=course_id)
+        if group_id:
+            attendance_query = attendance_query.filter(group_id=group_id)
+            lesson_query = lesson_query.filter(group_id=group_id)
+        if teacher_id:
+            attendance_query = attendance_query.filter(group__teacher_id=teacher_id)
+            lesson_query = lesson_query.filter(group__teacher_id=teacher_id)
+        if status:
+            attendance_query = attendance_query.filter(student__status=status)
 
         # Davomat statistikasi
         stats = attendance_query.aggregate(
@@ -189,6 +201,25 @@ class AttendanceAnalyticsAPIView(APIView):
             if not Attendance.objects.filter(group=lesson.group, date=lesson.date).exists():
                 davomat_qilinmagan_guruhlar += 1
 
+        timeline_qs = attendance_query.values('date').annotate(
+            kelganlar=Count('id', filter=Q(status='present')),
+            sababli=Count('id', filter=Q(status='excused')),
+            sababsiz=Count('id', filter=Q(status='absent')),
+        ).order_by('date')
+
+        timeline_data = [
+            {
+                "date": str(item['date']),
+                "kelganlar": item['kelganlar'],
+                "sababli": item['sababli'],
+                "sababsiz": item['sababsiz'],
+                "birinchi_dars": 0,
+                "muzlatilgan": 0,
+                "davomat_qilinmagan": 0
+            }
+            for item in timeline_qs
+        ]
+
         return Response({
             "summary": {
                 "kelganlar": stats['kelganlar'] or 0,
@@ -198,7 +229,8 @@ class AttendanceAnalyticsAPIView(APIView):
                 "birinchi dars": first_lesson_count,  # Space version to support all frontend variants
                 "muzlatilgan": 0,  # Loyihada talaba statusi qo'shilganda integratsiya qilinadi
                 "davomat_qilinmagan": davomat_qilinmagan_guruhlar
-            }
+            },
+            "timeline": timeline_data
         })
 
 
@@ -372,4 +404,3 @@ class BranchStatusAPIView(APIView):
         }]
 
         return Response(branch_report)
-

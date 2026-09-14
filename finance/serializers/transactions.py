@@ -110,27 +110,6 @@ class TransactionSerializer(serializers.ModelSerializer):
             return float(obj.student.balance or 0)
         return 0.0
 
-    def to_internal_value(self, data):
-        if hasattr(data, 'copy'):
-            data = data.copy()
-        elif hasattr(data, 'dict'):
-            data = data.dict()
-        else:
-            data = dict(data) if data else {}
-
-        if not data.get('student') and data.get('student_id'):
-            data['student'] = data.get('student_id')
-
-        if not data.get('cashbox') and data.get('cashbox_id'):
-            data['cashbox'] = data.get('cashbox_id')
-
-        t_val = str(data.get('type') or data.get('transaction_type') or '').lower().strip()
-        if t_val in ('kirim', 'income'):
-            data['type'] = 'INCOME'
-        elif t_val in ('chiqim', 'expense'):
-            data['type'] = 'EXPENSE'
-
-        return super().to_internal_value(data)
 
     def validate(self, attrs):
         tx_type = attrs.get('type') or (self.instance.type if self.instance else None)
@@ -148,21 +127,6 @@ class TransactionSerializer(serializers.ModelSerializer):
                 if not student:
                     raise serializers.ValidationError({
                         "student": "Ushbu tranzaksiya turi uchun o'quvchini tanlash majburiy!"
-                    })
-            if student and amount is not None:
-                amount_dec = Decimal(str(amount))
-                st_balance = Decimal(str(student.balance or 0))
-                if self.instance and self.instance.student_id == student.id and getattr(self.instance, 'type', '') == 'INCOME':
-                    available = st_balance + Decimal(str(self.instance.amount or 0))
-                else:
-                    available = st_balance
-
-                if available < amount_dec:
-                    bal_str = f"{int(st_balance):,} UZS".replace(",", " ")
-                    amt_str = f"{int(amount_dec):,} UZS".replace(",", " ")
-                    raise serializers.ValidationError({
-                        "student": f"O'quvchi balansida mablag' yetarli emas! O'quvchining joriy balansi: {bal_str}. Kirim summasi: {amt_str} ⚠️",
-                        "detail": f"O'quvchi balansida mablag' yetarli emas! O'quvchining joriy balansi: {bal_str}. Kirim summasi: {amt_str}"
                     })
         elif tx_type == 'EXPENSE':
             if cashbox and amount is not None:
