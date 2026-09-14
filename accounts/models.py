@@ -1,7 +1,21 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
-from organizations.models import Organization
+from organizations.models import Organization, TenantModel
 from django.core.exceptions import ValidationError
+
+
+class WeeklyLessonHour(TenantModel):
+    name = models.CharField(max_length=255, blank=True, null=True, verbose_name="Nomi / Tavsifi")
+    hours = models.DecimalField(max_digits=6, decimal_places=2, verbose_name="Haftalik dars soati")
+
+    class Meta:
+        ordering = ['hours']
+        verbose_name = "Haftalik dars soati"
+        verbose_name_plural = "Haftalik dars soatlari"
+
+    def __str__(self):
+        return f"{self.hours} soat" if not self.name else f"{self.name} ({self.hours} soat)"
+
 
 
 class User(AbstractUser):
@@ -84,6 +98,8 @@ class User(AbstractUser):
         verbose_name="Qat'iy oylik summa (so'm)"
     )
 
+    specialization = models.CharField(max_length=255, null=True, blank=True, verbose_name="Fan / Mutaxassislik")
+
     # 🚀 O'qituvchi xodim yaratilayotganda moliya foiz stavkasini biriktirish (1-rasm)
     salary_percentage = models.ForeignKey(
         'finance.StaffSalaryPercent',
@@ -92,6 +108,14 @@ class User(AbstractUser):
         blank=True,
         related_name="teachers",
         verbose_name="Oladigan foizi"
+    )
+    weekly_lesson_hour = models.ForeignKey(
+        'accounts.WeeklyLessonHour',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="teachers",
+        verbose_name="Haftalik dars soati ma'lumotnomasi"
     )
 
     def clean(self):

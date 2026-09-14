@@ -764,3 +764,19 @@ class PasswordResetConfirmView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+@extend_schema_view(
+    list=extend_schema(summary="Haftalik dars soatlari ro'yxati", description="O'qituvchilar uchun haftalik dars soatlari ma'lumotnomasi.", tags=["Accounts"]),
+    retrieve=extend_schema(summary="Haftalik dars soati tafsiloti", tags=["Accounts"]),
+    create=extend_schema(summary="Yangi haftalik dars soati qo'shish", tags=["Accounts"]),
+    update=extend_schema(summary="Haftalik dars soatini yangilash", tags=["Accounts"]),
+    destroy=extend_schema(summary="Haftalik dars soatini o'chirish", tags=["Accounts"]),
+)
+class WeeklyLessonHourViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
+    from accounts.models import WeeklyLessonHour
+    from accounts.serializers import WeeklyLessonHourSerializer
+    queryset = WeeklyLessonHour.objects.all()
+    serializer_class = WeeklyLessonHourSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+
+

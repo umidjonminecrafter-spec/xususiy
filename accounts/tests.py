@@ -213,3 +213,51 @@ class AccountsAPITests(APITestCase):
         self.assertEqual(data["groups"], [group1.id])
         self.assertEqual(data["groups_detail"], [{"id": group1.id, "name": "Chem 101"}])
 
+    def test_weekly_lesson_hour_and_teacher_creation(self):
+        """
+        Verify WeeklyLessonHour API and employee creation with specialization, weekly_lesson_hour, gender, birth_date.
+        """
+        from accounts.models import WeeklyLessonHour
+        org = Organization.objects.create(name="Weekly Hours Org")
+        owner = User.objects.create_user(
+            username="+998901119999",
+            password="password123",
+            phone="+998901119999",
+            role="owner",
+            organization=org
+        )
+        self.client.force_authenticate(user=owner)
+
+        # 1. Create WeeklyLessonHour
+        hour_url = reverse('weekly-lesson-hour-list')
+        res = self.client.post(hour_url, {"name": "18 soat", "hours": "18.00"}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        wlh_id = res.data['id']
+
+        # 2. Create Teacher with all modal fields
+        emp_url = reverse('employee-list')
+        data = {
+            "first_name": "Aziz",
+            "last_name": "Qodirov",
+            "phone": "+998901234599",
+            "password": "Password123!",
+            "role": "teacher",
+            "position": "Matematika o'qituvchisi",
+            "subject": "Matematika",
+            "gender": "Erkak",
+            "birth_date": "15/05/1990",
+            "weekly_lesson_hour": wlh_id,
+            "salary_type": "Qat'iy oylik summa",
+            "fixed_salary": "5000000"
+        }
+        res2 = self.client.post(emp_url, data, format='json')
+        self.assertEqual(res2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res2.data['specialization'], "Matematika")
+        self.assertEqual(res2.data['gender'], "Erkak")
+        self.assertEqual(res2.data['birth_date'], "1990-05-15")
+        self.assertEqual(res2.data['weekly_lesson_hour'], wlh_id)
+        self.assertEqual(float(res2.data['weekly_hours']), 18.0)
+        self.assertEqual(res2.data['salary_type'], "fixed")
+        self.assertEqual(float(res2.data['fixed_salary']), 5000000.0)
+
+

@@ -4,7 +4,16 @@ from django.contrib.auth import get_user_model
 from organizations.models import Organization, Branch
 from common.utils import normalize_uz_phone
 
+from accounts.models import WeeklyLessonHour
+
 User = get_user_model()
+
+
+class WeeklyLessonHourSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WeeklyLessonHour
+        fields = ('id', 'name', 'hours', 'organization', 'branch', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'organization', 'created_at', 'updated_at')
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -16,6 +25,7 @@ class UserSerializer(serializers.ModelSerializer):
         required=False
     )
     branches_detail = serializers.SerializerMethodField(read_only=True)
+    weekly_lesson_hour_detail = WeeklyLessonHourSerializer(source='weekly_lesson_hour', read_only=True)
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
@@ -23,9 +33,10 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'organization',
-                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'hourly_rate',
-                  'fixed_salary', 'salary_type', 'weekly_hours', 'branches', 'branches_detail')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'specialization',
+                  'organization', 'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'hourly_rate',
+                  'fixed_salary', 'salary_type', 'weekly_hours', 'weekly_lesson_hour', 'weekly_lesson_hour_detail',
+                  'branches', 'branches_detail')
         read_only_fields = ('id', 'role', 'organization', 'branch')
 
 
@@ -124,6 +135,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
     groups = serializers.SerializerMethodField(read_only=True)
     groups_detail = serializers.SerializerMethodField(read_only=True)
     weekly_hours = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True)
+    weekly_lesson_hour_detail = WeeklyLessonHourSerializer(source='weekly_lesson_hour', read_only=True)
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
@@ -156,9 +168,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'password', 'email', 'first_name', 'last_name', 'phone', 'role', 'position',
-                  'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
+                  'specialization', 'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
                   'salary_percentage_detail', 'salary_type', 'hourly_rate', 'fixed_salary', 'weekly_hours',
-                  'branches', 'branches_detail', 'groups', 'groups_detail')
+                  'weekly_lesson_hour', 'weekly_lesson_hour_detail', 'branches', 'branches_detail', 'groups', 'groups_detail')
         read_only_fields = ('id', 'organization', 'branch')
 
     def validate(self, attrs):
@@ -248,6 +260,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
             data['first_name'] = parts[0]
             data['last_name'] = parts[1] if len(parts) > 1 else ''
 
+        # Fan / Mutaxassislik
+        spec = data.get('specialization') or data.get('subject') or data.get('fan') or data.get('mutaxassislik') or data.get('specialty')
+        if spec:
+            data['specialization'] = str(spec).strip()
+
         position = data.get('position')
         # BUGFIX: Faqat yangi yaratilayotganda (create) position bo'yicha rolni avtomatik aniqlaymiz.
         # Mavjud foydalanuvchini tahrirlayotganda (update) rolni o'zgartirmaymiz.
@@ -263,6 +280,44 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 data['role'] = 'receptionist'
             else:
                 data['role'] = 'employee'
+
+        # Jinsi normalizatsiyasi
+        gender = data.get('gender')
+        if gender:
+            g_str = str(gender).lower().strip()
+            if g_str in ['erkak', 'male', 'm']:
+                data['gender'] = 'male'
+            elif g_str in ['ayol', 'female', 'f']:
+                data['gender'] = 'female'
+
+        # Tug'ilgan sana normalizatsiyasi
+        b_date = data.get('birth_date') or data.get('birthDate') or data.get('sana')
+        if b_date:
+            b_str = str(b_date).strip()
+            if '/' in b_str:
+                parts = b_str.split('/')
+                if len(parts) == 3:
+                    if len(parts[2]) == 4:
+                        data['birth_date'] = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+                    elif len(parts[0]) == 4:
+                        data['birth_date'] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+            elif '.' in b_str:
+                parts = b_str.split('.')
+                if len(parts) == 3:
+                    if len(parts[2]) == 4:
+                        data['birth_date'] = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+
+        # Haftalik dars soati ma'lumotnomasi (weekly_lesson_hour)
+        wlh_id = data.get('weekly_lesson_hour') or data.get('weekly_lesson_hour_id')
+        if wlh_id:
+            try:
+                wlh = WeeklyLessonHour.objects.filter(id=wlh_id).first()
+                if wlh:
+                    data['weekly_lesson_hour'] = wlh.id
+                    if not data.get('weekly_hours'):
+                        data['weekly_hours'] = str(wlh.hours)
+            except Exception:
+                pass
 
         # Haftalik dars soati validatsiyasi (faqat raqam kiritilishi shart, harflar taqiqlanadi)
         raw_weekly_hours = data.get('weekly_hours')
@@ -404,7 +459,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 'student': 'Talaba'
             }
             rep['position'] = role_to_pos.get(instance.role, 'Xodim')
-        rep['gender'] = 'Erkak' if instance.gender == 'M' else ('Ayol' if instance.gender == 'F' else 'Erkak')
+        g_val = str(instance.gender or '').lower().strip()
+        rep['gender'] = 'Erkak' if g_val in ['m', 'male', 'erkak'] else ('Ayol' if g_val in ['f', 'female', 'ayol'] else instance.gender)
         return rep
 
 
