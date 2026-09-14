@@ -424,7 +424,7 @@ class LeadHistoryAPIView(APIView):
 
         if lead_id and str(lead_id).isdigit():
             try:
-                lead = Lead.objects.get(id=lead_id)
+                lead = Lead.objects.get(id=lead_id, organization_id=org_id)
                 history = CRMLeadsHistory.objects.filter(lead=lead).order_by('-created_at')
                 serializer = CRMLeadsHistorySerializer(history, many=True)
                 return Response({
@@ -478,7 +478,7 @@ class SMSTemplateListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = SMSBotTemplateSerializer
 
     def get_queryset(self):
-        queryset = BotMessageTemplate.objects.all()
+        queryset = BotMessageTemplate.objects.filter(organization_id=self.request.user.organization_id)
         audience = self.request.query_params.get('audience')
         if audience:
             queryset = queryset.filter(target_audience=audience)
@@ -488,12 +488,10 @@ class SMSTemplateListCreateAPIView(generics.ListCreateAPIView):
         user = self.request.user
         organization = getattr(user, 'organization', None)
 
-        if organization:
-            serializer.save(organization=organization)
-        else:
-            from organizations.models import Organization
-            first_org = Organization.objects.first()
-            serializer.save(organization=first_org)
+        if not organization:
+            from rest_framework import exceptions
+            raise exceptions.ValidationError({"detail": "Organization context is required."})
+        serializer.save(organization=organization)
 
 
 @extend_schema_view(
@@ -503,8 +501,10 @@ class SMSTemplateListCreateAPIView(generics.ListCreateAPIView):
     destroy=extend_schema(summary="SMS Bot shablonini o'chirish", description="Mavjud shablonni o'chirib tashlash.", tags=["CRM"]),
 )
 class SMSTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = BotMessageTemplate.objects.all()
     serializer_class = SMSBotTemplateSerializer
+
+    def get_queryset(self):
+        return BotMessageTemplate.objects.filter(organization_id=self.request.user.organization_id)
 
 
 class SendBulkSMSAPIView(APIView):
@@ -542,6 +542,9 @@ class SendBulkSMSAPIView(APIView):
         section_id = request.data.get('section_id')  # Agar 'leads' tanlansa, qaysi kanyatener (Section) id-si
         shablon_id = request.data.get('template_id')  # Tanlangan tayyor shablon IDsi (ixtiyoriy)
         custom_text = request.data.get('text')  # Qo'lda yozilgan matn (shablon tanlanmasa)
+        org_id = request.user.organization_id
+        if not org_id:
+            return Response({"error": "Organization context is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not target:
             return Response({"error": "target (leads, students, staff) yuborilishi majburiy!"},
@@ -550,7 +553,7 @@ class SendBulkSMSAPIView(APIView):
         msg_text = custom_text
         if shablon_id:
             try:
-                shablon = BotMessageTemplate.objects.get(id=shablon_id)
+                shablon = BotMessageTemplate.objects.get(id=shablon_id, organization_id=org_id)
                 msg_text = shablon.text
             except BotMessageTemplate.DoesNotExist:
                 return Response({"error": "Tanlangan shablon topilmadi!"}, status=status.HTTP_404_NOT_FOUND)
@@ -561,7 +564,7 @@ class SendBulkSMSAPIView(APIView):
         recipients = []
 
         if target == 'leads':
-            leads_query = Lead.objects.filter(is_archived=False)
+            leads_query = Lead.objects.filter(organization_id=org_id, is_archived=False)
             if section_id:
                 leads_query = leads_query.filter(section_id=section_id)
 
@@ -575,7 +578,7 @@ class SendBulkSMSAPIView(APIView):
                 })
 
         elif target == 'students':
-            students_query = Student.objects.filter(is_archived=False)
+            students_query = Student.objects.filter(organization_id=org_id, is_archived=False)
             for student in students_query:
                 chat_id = student.telegram_chat_id or student.father_telegram_chat_id or student.mother_telegram_chat_id
                 recipients.append({
@@ -587,7 +590,7 @@ class SendBulkSMSAPIView(APIView):
                 })
 
         elif target == 'staff':
-            staff_query = User.objects.filter(is_active=True).exclude(role='student')
+            staff_query = User.objects.filter(organization_id=org_id, is_active=True).exclude(role='student')
             for member in staff_query:
                 chat_id = getattr(member, 'telegram_chat_id', None)
                 recipients.append({
@@ -654,8 +657,13 @@ from rest_framework.permissions import AllowAny
 )
 class LeadFormListCreateAPIView(generics.ListCreateAPIView):
     """Adminlar uchun formalarni shakllantirish va ro'yxatini olish"""
-    queryset = LeadForm.objects.all()
     serializer_class = LeadFormCRUDSerializer
+
+    def get_queryset(self):
+        return LeadForm.objects.filter(organization_id=self.request.user.organization_id)
+
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.user.organization)
 
 
 @extend_schema_view(
@@ -666,8 +674,10 @@ class LeadFormListCreateAPIView(generics.ListCreateAPIView):
 )
 class LeadFormRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     """Adminlar uchun formani tahrirlash (Edit), o'chirish (Delete) va bitta formani ko'rish"""
-    queryset = LeadForm.objects.all()
     serializer_class = LeadFormCRUDSerializer
+
+    def get_queryset(self):
+        return LeadForm.objects.filter(organization_id=self.request.user.organization_id)
 
 
 # ================= 2. TASHQI DUNYO (PUBLIC) UCHUN APILAR =================
@@ -713,4 +723,3 @@ class PublicLeadSubmitAPIView(APIView):
                 "message": "Ma'lumotlar qabul qilindi, tez orada aloqaga chiqamiz!"
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-

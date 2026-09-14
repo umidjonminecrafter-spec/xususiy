@@ -1020,6 +1020,54 @@ def recompute_cashbox_balance(sender, instance, **kwargs):
     Cashbox.objects.filter(pk=cashbox.pk).update(balance=new_balance)
 
 
+@receiver(post_save, sender=Transaction)
+def direct_transaction_student_balance_sync(sender, instance, created, **kwargs):
+    """
+    To'g'ridan-to'g'ri Transaction (INCOME) yaratilganda (CashTransaction yoki Payment dan kelmagan bo'lsa),
+    o'quvchi balansidan mablag'ni avtomatik yechish.
+    """
+    if instance.type == 'INCOME' and instance.student and not instance.source_cashtransaction_id and not instance.source_payment_id:
+        if str(instance.description or '').startswith('Davomat #'):
+            return
+        from decimal import Decimal
+        from academics.models import BalanceHistory
+        student = instance.student
+        student_balance = Decimal(str(student.balance or 0))
+        if created:
+            student.balance = student_balance - instance.amount
+            student.save(update_fields=['balance'])
+            try:
+                BalanceHistory.objects.create(
+                    organization=instance.organization,
+                    student=student,
+                    amount=-instance.amount,
+                    transaction_type=f"Tranzaksiya kirimi ({instance.payment_method})"
+                )
+            except Exception:
+                pass
+
+
+@receiver(post_delete, sender=Transaction)
+def direct_transaction_student_balance_delete(sender, instance, **kwargs):
+    if instance.type == 'INCOME' and instance.student and not instance.source_cashtransaction_id and not instance.source_payment_id:
+        if str(instance.description or '').startswith('Davomat #'):
+            return
+        from decimal import Decimal
+        from academics.models import BalanceHistory
+        student = instance.student
+        student.balance = Decimal(str(student.balance or 0)) + instance.amount
+        student.save(update_fields=['balance'])
+        try:
+            BalanceHistory.objects.create(
+                organization=instance.organization,
+                student=student,
+                amount=instance.amount,
+                transaction_type="Tranzaksiya kirimi bekor qilindi"
+            )
+        except Exception:
+            pass
+
+
 # ================= O'QITUVCHI OYLIK TO'LOVI BO'YICHA TRANZAKSIYA SINXRONIZATSIYASI =================
 from academics.models import TeacherSalaryPayment
 

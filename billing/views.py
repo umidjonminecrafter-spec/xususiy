@@ -1,5 +1,6 @@
 import datetime
 from decimal import Decimal, InvalidOperation
+from django.db import transaction
 
 from rest_framework import permissions, status, serializers
 from rest_framework.views import APIView
@@ -150,27 +151,25 @@ class BalanceTopUpView(APIView):
         except (InvalidOperation, ValueError):
             return Response({"detail": "Summa musbat bo'lishi kerak."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Subscriptionni topish yoki yaratish
-        subscription, _ = Subscription.objects.get_or_create(
-            organization=org,
-            defaults={
-                'start_date': datetime.date.today(),
-                'end_date': datetime.date.today(),
-                'is_active': False,
-                'balance': Decimal("0.00"),
-            }
-        )
+        with transaction.atomic():
+            subscription = Subscription.objects.select_for_update().filter(organization=org).first()
+            if not subscription:
+                subscription = Subscription.objects.create(
+                    organization=org,
+                    start_date=datetime.date.today(),
+                    end_date=datetime.date.today(),
+                    is_active=False,
+                    balance=Decimal("0.00"),
+                )
 
-        # Balancega qo'shish — cheksiz
-        subscription.balance += amount
-        subscription.save(update_fields=['balance'])
+            subscription.balance += amount
+            subscription.save(update_fields=['balance'])
 
-        # Tarix saqlash
-        BalanceTopUp.objects.create(
-            organization=org,
-            amount=amount,
-            comment=request.data.get('comment', '')
-        )
+            BalanceTopUp.objects.create(
+                organization=org,
+                amount=amount,
+                comment=request.data.get('comment', '')
+            )
 
         return Response({
             "detail": "Balance muvaffaqiyatli yuklandi.",
@@ -303,41 +302,39 @@ class SubscribeConfirmView(APIView):
         if not tariff:
             return Response({"detail": "Tarif topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
 
-        subscription, _ = Subscription.objects.get_or_create(
-            organization=org,
-            defaults={
-                'start_date': datetime.date.today(),
-                'end_date': datetime.date.today(),
-                'is_active': False,
-                'balance': Decimal("0.00"),
-            }
-        )
+        with transaction.atomic():
+            subscription = Subscription.objects.select_for_update().filter(organization=org).first()
+            if not subscription:
+                subscription = Subscription.objects.create(
+                    organization=org,
+                    start_date=datetime.date.today(),
+                    end_date=datetime.date.today(),
+                    is_active=False,
+                    balance=Decimal("0.00"),
+                )
 
-        price = tariff.final_price
+            price = tariff.final_price
+            if subscription.balance < price:
+                return Response({
+                    "detail": "Mablag' yetarli emas.",
+                    "required": price,
+                    "balance": subscription.balance,
+                    "missing": price - subscription.balance,
+                }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Balance yetarlimi?
-        if subscription.balance < price:
-            return Response({
-                "detail": "Mablag' yetarli emas.",
-                "required": price,
-                "balance": subscription.balance,
-                "missing": price - subscription.balance,
-            }, status=status.HTTP_400_BAD_REQUEST)
+            subscription.balance -= price
+            subscription.save()
 
-        # Balancedan yechish
-        subscription.balance -= price
-        subscription.save()
+            approved_request = SubscriptionRequest.objects.create(
+                organization=org,
+                tariff=tariff,
+                months=tariff.months,
+                amount=price,
+                status='approved',
+                comment="Tarif tasdiqlash orqali faollashtirildi",
+            )
 
-        approved_request = SubscriptionRequest.objects.create(
-            organization=org,
-            tariff=tariff,
-            months=tariff.months,
-            amount=price,
-            status='approved',
-            comment="Tarif tasdiqlash orqali faollashtirildi",
-        )
-
-        subscription = Subscription.objects.filter(organization=org).first()
+            subscription.refresh_from_db()
         start = subscription.start_date if subscription else None
         end = subscription.end_date if subscription else None
         next_charge = end
@@ -495,4 +492,3 @@ class SubscriptionRequestListView(APIView):
                 "created_at": req.created_at.isoformat() if req.created_at else "",
             })
         return Response(data)
-

@@ -58,6 +58,13 @@ class BackupSettingSerializer(serializers.ModelSerializer):
         model = BackupSetting
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at', 'last_run_at')
+        extra_kwargs = {
+            'bot_token': {'write_only': True},
+            'chat_id': {'write_only': True},
+            'api_id': {'write_only': True},
+            'api_hash': {'write_only': True},
+            'session_string': {'write_only': True},
+        }
 
 
 class TelegramNotificationSettingSerializer(serializers.ModelSerializer):
@@ -65,6 +72,15 @@ class TelegramNotificationSettingSerializer(serializers.ModelSerializer):
         model = TelegramNotificationSetting
         fields = '__all__'
         read_only_fields = ('organization', 'created_at', 'updated_at')
+        extra_kwargs = {
+            'bot_token': {'write_only': True},
+            'verification_bot_token': {'write_only': True},
+            'student_bot_token': {'write_only': True},
+            'parent_bot_token': {'write_only': True},
+            'staff_bot_token': {'write_only': True},
+            'support_bot_token': {'write_only': True},
+            'chat_ids': {'write_only': True},
+        }
 
 class LessonNotificationTemplateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -78,5 +94,4 @@ class GlobalSearchSerializer(serializers.Serializer):
     type = serializers.CharField()         # 'student', 'staff', 'group'
     type_display = serializers.CharField() # "O'quvchi", "Xodim/O'qituvchi", "Guruh"
     additional_info = serializers.CharField()
-
 

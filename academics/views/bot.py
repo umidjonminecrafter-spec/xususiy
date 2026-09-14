@@ -149,11 +149,12 @@ class StudentProfileAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
+        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            student = Student.objects.get(phone=phone)
+            student = Student.objects.get(phone=phone, organization_id=org_id)
             serializer = StudentProfileSerializer(student)
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Student.DoesNotExist:
@@ -180,11 +181,12 @@ class StudentLessonsAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
+        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            student = Student.objects.get(phone=phone)
+            student = Student.objects.get(phone=phone, organization_id=org_id)
             st_groups = StudentGroup.objects.filter(student=student, group__status='active')
             lessons_list = []
             for st_g in st_groups:
@@ -218,11 +220,13 @@ class ParentStudentsAPIView(APIView):
     )
     def get(self, request):
         parent_phone = request.query_params.get('phone')
+        org_id = request.user.organization_id
         if not parent_phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
         students = Student.objects.filter(
-            Q(father_phone=parent_phone) | Q(mother_phone=parent_phone)
+            Q(father_phone=parent_phone) | Q(mother_phone=parent_phone),
+            organization_id=org_id,
         )
         student_list = []
         for student in students:
@@ -258,11 +262,12 @@ class ParentStudentDetailsAPIView(APIView):
     )
     def get(self, request):
         student_id = request.query_params.get('student_id')
+        org_id = request.user.organization_id
         if not student_id:
             return Response({"error": "student_id parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            student = Student.objects.get(id=student_id)
+            student = Student.objects.get(id=student_id, organization_id=org_id)
             exam_results = ExamResult.objects.filter(student=student).select_related('exam')
             marks = []
             for res in exam_results:
@@ -313,12 +318,13 @@ class StaffProfileAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
+        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            user = User.objects.get(phone=phone, is_active=True)
-            teaching_groups = Group.objects.filter(teacher=user, status='active')
+            user = User.objects.get(phone=phone, organization_id=org_id, is_active=True)
+            teaching_groups = Group.objects.filter(teacher=user, organization_id=org_id, status='active')
             groups_data = []
             for group in teaching_groups:
                 groups_data.append({
@@ -355,12 +361,13 @@ class StaffScheduleAPIView(APIView):
     )
     def get(self, request):
         phone = request.query_params.get('phone')
+        org_id = request.user.organization_id
         if not phone:
             return Response({"error": "phone parametri majburiy!"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            user = User.objects.get(phone=phone)
-            schedules = LessonSchedule.objects.filter(teacher=user).select_related('group')
+            user = User.objects.get(phone=phone, organization_id=org_id)
+            schedules = LessonSchedule.objects.filter(teacher=user, organization_id=org_id).select_related('group')
             schedule_list = []
             for sch in schedules:
                 schedule_list.append({
