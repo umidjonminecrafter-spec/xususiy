@@ -62,7 +62,7 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
     queryset = Student.objects.select_related('organization', 'branch').prefetch_related('student_groups__group__course')
     serializer_class = StudentSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter]
-    search_fields = ['first_name', 'last_name', 'phone', 'email']
+    search_fields = ['id', 'first_name', 'last_name', 'phone', 'email']
 
     def get_queryset(self):
         queryset = super().get_queryset().exclude(is_archived=True)
@@ -74,18 +74,7 @@ class StudentViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
         if student_id:
             queryset = queryset.filter(id=student_id)
 
-        search_param = self.request.query_params.get('search')
-        if search_param and search_param.isdigit():
-            queryset = queryset.filter(
-                Q(id=int(search_param)) |
-                Q(first_name__icontains=search_param) |
-                Q(last_name__icontains=search_param) |
-                Q(phone__icontains=search_param) |
-                Q(email__icontains=search_param)
-            )
-            self.search_fields = []
-
-        return queryset
+        return queryset.order_by('-id')
 
     def perform_create(self, serializer):
         org_id = self.get_organization_id()

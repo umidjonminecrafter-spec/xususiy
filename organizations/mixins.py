@@ -87,6 +87,12 @@ class TenantViewSetMixin:
                             db_models.Q(branch__isnull=True) |
                             db_models.Q(branches__isnull=True)
                         ).distinct()
+                    elif model.__name__ == 'Student':
+                        queryset = queryset.filter(
+                            db_models.Q(branch_id=branch_id) |
+                            db_models.Q(branch__isnull=True) |
+                            db_models.Q(student_groups__group__branch_id=branch_id)
+                        ).distinct()
                     else:
                         # Model lists that must be strictly isolated to the branch
                         strict_models = [

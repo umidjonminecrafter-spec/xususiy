@@ -249,5 +249,5 @@ class StudentSerializer(serializers.ModelSerializer):
         rep['phone_number'] = phone
         rep['email'] = email
         rep['groups'] = [{'id': sg.group.id, 'name': sg.group.name} for sg in
-                         instance.student_groups.select_related('group')]
+                         instance.student_groups.select_related('group') if sg.group]
         return rep
