@@ -51,7 +51,8 @@ class GroupSerializer(serializers.ModelSerializer):
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_group_teachers(self, obj):
         request = self.context.get('request')
-        if request and getattr(request.user, 'role', None) == 'student':
+        user = getattr(request, 'user', None) if request else None
+        if user and getattr(user, 'role', None) == 'student':
             return []
         return GroupTeacherSerializer(obj.group_teachers.all(), many=True).data
 
@@ -66,7 +67,8 @@ class GroupSerializer(serializers.ModelSerializer):
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_students(self, obj):
         request = self.context.get('request')
-        if request and getattr(request.user, 'role', None) == 'student':
+        user = getattr(request, 'user', None) if request else None
+        if user and getattr(user, 'role', None) == 'student':
             return []
         students_list = []
         for sg in obj.group_students.select_related('student').all():
@@ -268,7 +270,8 @@ class StudentGroupSerializer(serializers.ModelSerializer):
             full_name = f"{st_first} {st_last}".strip() or getattr(instance.student, 'name', '') or "O'quvchi"
 
             request = self.context.get('request')
-            if request and getattr(request.user, 'role', None) == 'teacher':
+            user = getattr(request, 'user', None) if request else None
+            if user and getattr(user, 'role', None) == 'teacher':
                 from organizations.models import Subscription
                 subscription = Subscription.objects.filter(
                     organization_id=instance.organization_id,

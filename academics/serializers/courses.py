@@ -32,7 +32,7 @@ class CourseSerializer(serializers.ModelSerializer):
             org_id = None
             if request:
                 org_id = request.query_params.get('org_id') or request.META.get('HTTP_X_ORG_ID')
-                if not org_id and request.user and request.user.is_authenticated:
+                if not org_id and getattr(request, 'user', None) and request.user.is_authenticated:
                     org_id = request.user.organization_id
 
             if org_id:
