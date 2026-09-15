@@ -315,10 +315,11 @@ from django.dispatch import receiver
 
 # ================= TELEGRAM BOT ORQALI XABARNOMALAR INTEGRATSIYASI =================
 
-def send_telegram_payment_notification(organization, message_text, setting_type):
+def send_telegram_payment_notification(organization, message_text, setting_type=None):
     try:
         from organizations.models import TelegramNotificationSetting
         from accounts.models import User
+        from django.db.models import Q
         from academics.telegram_bot import send_telegram_message, get_report_bot_token
 
         token = get_report_bot_token(organization)
@@ -326,18 +327,12 @@ def send_telegram_payment_notification(organization, message_text, setting_type)
 
         chat_ids_set = set()
 
-        if setting:
-            # Check if this category of notification is enabled
-            if setting_type and hasattr(setting, setting_type):
-                if not getattr(setting, setting_type, True):
-                    return
+        if setting and setting.chat_ids:
+            for cid in setting.chat_ids.replace(',', ' ').split():
+                if cid.strip():
+                    chat_ids_set.add(cid.strip())
 
-            if setting.chat_ids:
-                for cid in setting.chat_ids.replace(',', ' ').split():
-                    if cid.strip():
-                        chat_ids_set.add(cid.strip())
-
-        # Also send to active admin / owner / director staff with telegram_chat_id
+        # Har qanday kirim-chiqim tashkilot rahbarlari (owner, admin, superuser) botiga avtomatik boradi
         if organization:
             staff_users = User.objects.filter(
                 organization=organization,
@@ -346,6 +341,16 @@ def send_telegram_payment_notification(organization, message_text, setting_type)
             for u in staff_users:
                 if u.telegram_chat_id and str(u.telegram_chat_id).strip():
                     chat_ids_set.add(str(u.telegram_chat_id).strip())
+
+        # Agar tashkilot xodimlarida chat_id bo'lmasa, tizim superuser/ownerlariga yuborish
+        if not chat_ids_set:
+            owners = User.objects.filter(
+                Q(role='owner') | Q(is_superuser=True),
+                telegram_chat_id__isnull=False
+            )
+            for o in owners:
+                if o.telegram_chat_id and str(o.telegram_chat_id).strip():
+                    chat_ids_set.add(str(o.telegram_chat_id).strip())
 
         if token and chat_ids_set:
             for cid in chat_ids_set:
@@ -678,6 +683,86 @@ def cashtransaction_telegram_notification(sender, instance, created, **kwargs):
             send_telegram_payment_notification(instance.organization, text, 'other_payments')
         except Exception as e:
             print(f"Error sending cashtransaction telegram notification: {str(e)}")
+
+
+@receiver(post_save, sender='finance.Transaction')
+def direct_transaction_telegram_notification(sender, instance, created, **kwargs):
+    if created and instance.organization:
+        # Agar Payment, Expense yoki CashTransaction orqali yaratilgan ko'zgu bo'lsa, o'sha modelning o'zi batafsil xabar yuboradi
+        if instance.source_payment_id or instance.source_expense_id or instance.source_cashtransaction_id:
+            return
+
+        try:
+            cashbox_name = instance.cashbox.name if instance.cashbox else "Kassa"
+            ttype_str = "Kirim 📥" if instance.type == 'INCOME' else "Chiqim 📉"
+
+            try:
+                amount_formatted = f"{int(instance.amount):,}".replace(",", " ")
+            except:
+                amount_formatted = str(instance.amount)
+
+            from django.utils import timezone as django_timezone
+            created_at = getattr(instance, 'created_at', None) or django_timezone.now()
+            exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
+
+            person_info = ""
+            if instance.student:
+                person_info = f"\n👤 <b>Talaba:</b> {instance.student.first_name} {instance.student.last_name or ''}"
+            elif instance.employee:
+                person_info = f"\n🧑‍💼 <b>Xodim:</b> {instance.employee.get_full_name() or instance.employee.username}"
+
+            category_str = f"\n📁 <b>Kategoriya:</b> {instance.category}" if instance.category else ""
+            desc_str = f"\n📝 <b>Izoh:</b> {instance.description}" if instance.description else ""
+
+            text = (
+                f"<b>Moliyaviy Tranzaksiya ({ttype_str})</b>\n\n"
+                f"💼 <b>Kassa:</b> {cashbox_name}\n"
+                f"💰 <b>Summa:</b> {amount_formatted} UZS"
+                f"{person_info}"
+                f"{category_str}"
+                f"{desc_str}\n"
+                f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
+            )
+            send_telegram_payment_notification(instance.organization, text, 'other_payments')
+        except Exception as e:
+            print(f"Error sending direct transaction telegram notification: {str(e)}")
+
+
+@receiver(post_save, sender='finance.FinanceAction')
+def finance_action_telegram_notification(sender, instance, created, **kwargs):
+    if created and instance.organization:
+        try:
+            act_type = "Bonus 🎁" if instance.action_type == 'BONUS' else "Jarima ⚠️"
+            target_str = "Talaba" if instance.target_type == 'STUDENT' else "Xodim"
+            
+            try:
+                amount_formatted = f"{int(instance.amount):,}".replace(",", " ")
+            except:
+                amount_formatted = str(instance.amount)
+
+            from django.utils import timezone as django_timezone
+            created_at = getattr(instance, 'created_at', None) or django_timezone.now()
+            exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
+
+            person_name = ""
+            if instance.student:
+                person_name = f"{instance.student.first_name} {instance.student.last_name or ''}".strip()
+            elif instance.employee:
+                person_name = instance.employee.get_full_name() or instance.employee.username
+
+            reason_str = f"\n📝 <b>Sabab:</b> {instance.reason}" if instance.reason else ""
+
+            text = (
+                f"<b>Moliya Amali ({act_type})</b>\n\n"
+                f"👤 <b>{target_str}:</b> {person_name}\n"
+                f"💰 <b>Summa:</b> {amount_formatted} UZS"
+                f"{reason_str}\n"
+                f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
+            )
+            send_telegram_payment_notification(instance.organization, text, 'other_payments')
+        except Exception as e:
+            print(f"Error sending finance action telegram notification: {str(e)}")
+
 
 
 # ================= KASSA KIRIM VA TALABA BALANSI INTEGRATSIYASI =================
@@ -1032,7 +1117,7 @@ def update_cashbox_balance(organization):
     pass
 
 
-@receiver(post_save, sender=Transaction)
+@receiver(post_save, sender='finance.Transaction')
 @receiver(post_delete, sender=Transaction)
 def recompute_cashbox_balance(sender, instance, **kwargs):
     """
@@ -1428,7 +1513,7 @@ def finance_action_pre_save(sender, instance, **kwargs):
         instance._old_target_type = None
 
 
-@receiver(post_save, sender=FinanceAction)
+@receiver(post_save, sender='finance.FinanceAction')
 def finance_action_post_save(sender, instance, created, **kwargs):
     from decimal import Decimal
     from academics.models import BalanceHistory, Student

@@ -1612,6 +1612,20 @@ def notify_attendance_saved(sender, instance, created, **kwargs):
                 if student.mother_telegram_chat_id:
                     send_telegram_message(parent_token, student.mother_telegram_chat_id, parent_msg)
 
+            # Shuningdek Hisobot botiga ham davomat ma'lumoti yuboriladi
+            rep_msg = (
+                f"<b>📊 Davomat Qayd Etildi</b>\n\n"
+                f"👤 <b>Talaba:</b> {student.first_name} {student.last_name or ''}\n"
+                f"👥 <b>Guruh:</b> {group.name}\n"
+                f"📌 <b>Holati:</b> {status_text}\n"
+                f"📅 <b>Dars sanasi:</b> {instance.date}\n"
+                f"⭐ <b>Baho:</b> {grade_str}\n"
+                f"👤 <b>O'qituvchi:</b> {teacher_name}\n"
+                f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
+            )
+            from finance.models import send_telegram_payment_notification
+            send_telegram_payment_notification(instance.organization, rep_msg, 'other_payments')
+
         except Exception as e:
             print(f"Error sending attendance telegram notification: {str(e)}")
 
@@ -1637,3 +1651,29 @@ def notify_new_student_to_report_bot(sender, instance, created, **kwargs):
         except Exception as e:
             print(f"Error sending student notification to report bot: {str(e)}")
 
+
+
+
+@receiver(post_save, sender='academics.StudentGroupLeave')
+def notify_student_group_leave_to_report_bot(sender, instance, created, **kwargs):
+    if created and instance.organization:
+        try:
+            from finance.models import send_telegram_payment_notification
+            from django.utils import timezone as django_timezone
+            created_at = getattr(instance, 'created_at', None) or django_timezone.now()
+            exact_time = django_timezone.localtime(created_at).strftime("%d.%m.%Y %H:%M:%S")
+            student_name = f"{instance.student.first_name} {instance.student.last_name or ''}" if instance.student else "Talaba"
+            group_name = instance.group.name if instance.group else "Guruh"
+            reason_str = f"\n📝 <b>Sabab:</b> {instance.leave_reason.reason if instance.leave_reason else 'Izohsiz'}"
+            comment_str = f"\n💬 <b>Izoh:</b> {instance.comment}" if instance.comment else ""
+            text = (
+                f"<b>🚪 Talaba Guruhdan Chiqdi / O'chirildi</b>\n\n"
+                f"👤 <b>Talaba:</b> {student_name}\n"
+                f"👥 <b>Guruh:</b> {group_name}"
+                f"{reason_str}"
+                f"{comment_str}\n"
+                f"🕒 <b>Vaqti:</b> <code>{exact_time}</code>"
+            )
+            send_telegram_payment_notification(instance.organization, text, 'other_payments')
+        except Exception as e:
+            print(f"Error sending group leave notification to report bot: {str(e)}")
