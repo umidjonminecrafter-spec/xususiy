@@ -1,5 +1,5 @@
 from django.contrib import admin
-from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.db.models import Sum
 from finance.models import (
     ExpenseCategory, ExpenseSubcategory, Expense, MonthlyIncome,
@@ -22,9 +22,10 @@ class CashboxAdmin(admin.ModelAdmin):
 
     @admin.display(description="Balans", ordering='balance')
     def formatted_balance(self, obj):
-        bal = obj.balance or 0.0
+        bal = float(obj.balance or 0.0)
         color = '#10b981' if bal >= 0 else '#ef4444'
-        return format_html(f'<span style="color: {color}; font-weight: bold;">{{:,.2f}} UZS</span>', bal)
+        formatted = f"{bal:,.2f} UZS"
+        return mark_safe(f'<span style="color: {color}; font-weight: bold;">{formatted}</span>')
 
     def save_model(self, request, obj, form, change):
         if not obj.organization_id and not change:
@@ -54,15 +55,16 @@ class CashTransactionAdmin(admin.ModelAdmin):
     @admin.display(description="Turi", ordering='transaction_type')
     def colored_type(self, obj):
         if obj.transaction_type == 'kirim':
-            return format_html('<span style="background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 4px; font-weight: bold;">KIRIM</span>')
-        return format_html('<span style="background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; font-weight: bold;">CHIQIM</span>')
+            return mark_safe('<span style="background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 4px; font-weight: bold;">KIRIM</span>')
+        return mark_safe('<span style="background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; font-weight: bold;">CHIQIM</span>')
 
     @admin.display(description="Summa", ordering='amount')
     def formatted_amount(self, obj):
-        amt = obj.amount or 0.0
+        amt = float(obj.amount or 0.0)
         color = '#10b981' if obj.transaction_type == 'kirim' else '#ef4444'
         prefix = '+' if obj.transaction_type == 'kirim' else '-'
-        return format_html(f'<span style="color: {color}; font-weight: bold;">{prefix}{{:,.2f}} UZS</span>', amt)
+        formatted = f"{prefix}{amt:,.2f} UZS"
+        return mark_safe(f'<span style="color: {color}; font-weight: bold;">{formatted}</span>')
 
     @admin.display(description="Talaba / Xodim")
     def student_or_employee(self, obj):
@@ -101,15 +103,16 @@ class TransactionAdmin(admin.ModelAdmin):
     @admin.display(description="Turi", ordering='type')
     def colored_type(self, obj):
         if obj.type == 'INCOME':
-            return format_html('<span style="background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 4px; font-weight: bold;">KIRIM</span>')
-        return format_html('<span style="background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; font-weight: bold;">CHIQIM</span>')
+            return mark_safe('<span style="background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 4px; font-weight: bold;">KIRIM</span>')
+        return mark_safe('<span style="background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; font-weight: bold;">CHIQIM</span>')
 
     @admin.display(description="Summa", ordering='amount')
     def formatted_amount(self, obj):
-        amt = obj.amount or 0.0
+        amt = float(obj.amount or 0.0)
         color = '#10b981' if obj.type == 'INCOME' else '#ef4444'
         prefix = '+' if obj.type == 'INCOME' else '-'
-        return format_html(f'<span style="color: {color}; font-weight: bold;">{prefix}{{:,.2f}} UZS</span>', amt)
+        formatted = f"{prefix}{amt:,.2f} UZS"
+        return mark_safe(f'<span style="color: {color}; font-weight: bold;">{formatted}</span>')
 
     @admin.display(description="Talaba / Xodim")
     def student_or_employee(self, obj):
