@@ -270,6 +270,12 @@ class EmployeeSerializer(serializers.ModelSerializer):
             raw_weekly_hours = data.get('weekly_lesson_hours')
         elif raw_weekly_hours is None and 'dars_soati' in data:
             raw_weekly_hours = data.get('dars_soati')
+        elif raw_weekly_hours is None and 'haftalik_dars_soati' in data:
+            raw_weekly_hours = data.get('haftalik_dars_soati')
+        elif raw_weekly_hours is None and 'haftalik_soat' in data:
+            raw_weekly_hours = data.get('haftalik_soat')
+        elif raw_weekly_hours is None and 'lesson_hours' in data:
+            raw_weekly_hours = data.get('lesson_hours')
 
         if raw_weekly_hours is not None:
             val_str = str(raw_weekly_hours).strip()
@@ -469,6 +475,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 'student': 'Talaba'
             }
             rep['position'] = role_to_pos.get(instance.role, 'Xodim')
+        wh = float(instance.weekly_hours or 0)
+        rep['weekly_hours'] = wh
+        rep['weekly_lesson_hours'] = wh
+        rep['dars_soati'] = wh
+        rep['haftalik_dars_soati'] = wh
         rep['gender'] = 'Erkak' if instance.gender == 'M' else ('Ayol' if instance.gender == 'F' else 'Erkak')
         return rep
 
