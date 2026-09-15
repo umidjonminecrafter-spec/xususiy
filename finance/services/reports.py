@@ -1,3 +1,4 @@
+from django.utils import timezone
 import logging
 from datetime import datetime, time
 from decimal import Decimal
@@ -183,30 +184,36 @@ def get_financial_reports_data(org_id=None, branch_id=None, start_date_str=None,
     """
     Asosiy moliyaviy hisobot: kartochkalar, chiziqli grafik va pie-chart agregatsiyasini hisoblaydi.
     """
+    from common.utils import parse_flexible_date
+
     tx_filters = Q(organization_id=org_id) if org_id else Q()
-    if branch_id:
+    if branch_id and str(branch_id).lower() != 'all':
         tx_filters &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True) | Q(cashbox__branch_id=branch_id))
 
     queryset = Transaction.objects.filter(tx_filters)
 
-    if start_date_str:
+    start_date_iso = parse_flexible_date(start_date_str) if start_date_str else None
+    end_date_iso = parse_flexible_date(end_date_str) if end_date_str else None
+
+    if start_date_iso:
         try:
-            start_d = datetime.strptime(start_date_str, '%Y-%m-%d')
-            start_date = timezone.make_aware(start_d) if timezone.is_naive(start_d) else start_d
-            queryset = queryset.filter(created_at__gte=start_date)
-        except ValueError:
+            start_d = datetime.strptime(start_date_iso, '%Y-%m-%d').date()
+            start_dt = datetime.combine(start_d, time.min)
+            start_dt = timezone.make_aware(start_dt) if timezone.is_naive(start_dt) else start_dt
+            queryset = queryset.filter(created_at__gte=start_dt)
+        except Exception:
             pass
 
-    if end_date_str:
+    if end_date_iso:
         try:
-            end_d = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_d = datetime.strptime(end_date_iso, '%Y-%m-%d').date()
             end_dt = datetime.combine(end_d, time.max)
-            end_date = timezone.make_aware(end_dt) if timezone.is_naive(end_dt) else end_dt
-            queryset = queryset.filter(created_at__lte=end_date)
-        except ValueError:
+            end_dt = timezone.make_aware(end_dt) if timezone.is_naive(end_dt) else end_dt
+            queryset = queryset.filter(created_at__lte=end_dt)
+        except Exception:
             pass
 
-    if cashbox_id:
+    if cashbox_id and str(cashbox_id).lower() != 'all':
         try:
             queryset = queryset.filter(cashbox_id=int(cashbox_id))
         except ValueError:
@@ -215,61 +222,94 @@ def get_financial_reports_data(org_id=None, branch_id=None, start_date_str=None,
     total_income = queryset.filter(type='INCOME').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
     total_expense = queryset.filter(type='EXPENSE').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
-    # Fallback to model tables if transactions table does not yet have migrated records
-    if total_income == 0 and total_expense == 0 and org_id:
-        p_filter = Q(organization_id=org_id)
-        e_filter = Q(organization_id=org_id)
-        s_filter = Q(organization_id=org_id, status='paid')
-        t_filter = Q(organization_id=org_id)
+    income_breakdown = {}
+    expense_breakdown = {}
+    daily_data = {}
 
-        if branch_id:
+    if queryset.exists():
+        for tx in queryset.order_by('created_at'):
+            if not tx.created_at:
+                continue
+            date_key = tx.created_at.strftime('%d.%m')
+            if date_key not in daily_data:
+                daily_data[date_key] = {'kirim': 0, 'chiqim': 0}
+
+            amt = float(tx.amount or 0)
+            if tx.type == 'INCOME':
+                daily_data[date_key]['kirim'] += amt
+                desc = tx.description or "Boshqa kirimlar"
+                income_breakdown[desc] = income_breakdown.get(desc, 0) + amt
+            else:
+                daily_data[date_key]['chiqim'] += amt
+                desc = tx.description or "Boshqa chiqimlar"
+                expense_breakdown[desc] = expense_breakdown.get(desc, 0) + amt
+    else:
+        # Fallback to model tables if transactions table does not yet have migrated records
+        p_filter = Q(organization_id=org_id) if org_id else Q()
+        e_filter = Q(organization_id=org_id) if org_id else Q()
+        s_filter = Q(organization_id=org_id, status='paid') if org_id else Q(status='paid')
+        t_filter = Q(organization_id=org_id) if org_id else Q()
+
+        if branch_id and str(branch_id).lower() != 'all':
             p_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
             e_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
             s_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
             t_filter &= (Q(branch_id=branch_id) | Q(branch_id__isnull=True))
 
-        if start_date_str:
-            p_filter &= Q(date__gte=start_date_str)
-            e_filter &= Q(date__gte=start_date_str)
-            s_filter &= Q(date__gte=start_date_str)
-            t_filter &= Q(paid_at__date__gte=start_date_str)
+        if start_date_iso:
+            p_filter &= Q(date__gte=start_date_iso)
+            e_filter &= Q(date__gte=start_date_iso)
+            s_filter &= Q(date__gte=start_date_iso)
+            t_filter &= Q(paid_at__date__gte=start_date_iso)
 
-        if end_date_str:
-            p_filter &= Q(date__lte=end_date_str)
-            e_filter &= Q(date__lte=end_date_str)
-            s_filter &= Q(date__lte=end_date_str)
-            t_filter &= Q(paid_at__date__lte=end_date_str)
+        if end_date_iso:
+            p_filter &= Q(date__lte=end_date_iso)
+            e_filter &= Q(date__lte=end_date_iso)
+            s_filter &= Q(date__lte=end_date_iso)
+            t_filter &= Q(paid_at__date__lte=end_date_iso)
 
-        total_income = Payment.objects.filter(p_filter, amount__gt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-        expenses_val = Expense.objects.filter(e_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-        salaries_val = Salary.objects.filter(s_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-        tsalaries_val = TeacherSalaryPayment.objects.filter(t_filter).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-        total_expense = expenses_val + salaries_val + tsalaries_val
+        payments = Payment.objects.filter(p_filter, amount__gt=0).order_by('date')
+        for p in payments:
+            d_key = p.date.strftime('%d.%m') if p.date else (p.created_at.strftime('%d.%m') if p.created_at else '01.01')
+            if d_key not in daily_data:
+                daily_data[d_key] = {'kirim': 0, 'chiqim': 0}
+            amt = float(p.amount or 0)
+            daily_data[d_key]['kirim'] += amt
+            cat_name = p.payment_type or "Talaba to'lovi"
+            income_breakdown[cat_name] = income_breakdown.get(cat_name, 0) + amt
+
+        expenses = Expense.objects.filter(e_filter).order_by('date')
+        for e in expenses:
+            d_key = e.date.strftime('%d.%m') if e.date else (e.created_at.strftime('%d.%m') if e.created_at else '01.01')
+            if d_key not in daily_data:
+                daily_data[d_key] = {'kirim': 0, 'chiqim': 0}
+            amt = float(e.amount or 0)
+            daily_data[d_key]['chiqim'] += amt
+            cat_name = e.category or "Xarajat"
+            expense_breakdown[cat_name] = expense_breakdown.get(cat_name, 0) + amt
+
+        salaries = Salary.objects.filter(s_filter).order_by('date')
+        for s in salaries:
+            d_key = s.date.strftime('%d.%m') if s.date else '01.01'
+            if d_key not in daily_data:
+                daily_data[d_key] = {'kirim': 0, 'chiqim': 0}
+            amt = float(s.amount or 0)
+            daily_data[d_key]['chiqim'] += amt
+            expense_breakdown["Xodimlar maoshi"] = expense_breakdown.get("Xodimlar maoshi", 0) + amt
+
+        tsalaries = TeacherSalaryPayment.objects.filter(t_filter).order_by('paid_at')
+        for ts in tsalaries:
+            d_key = ts.paid_at.strftime('%d.%m') if ts.paid_at else '01.01'
+            if d_key not in daily_data:
+                daily_data[d_key] = {'kirim': 0, 'chiqim': 0}
+            amt = float(ts.amount or 0)
+            daily_data[d_key]['chiqim'] += amt
+            expense_breakdown["O'qituvchilar maoshi"] = expense_breakdown.get("O'qituvchilar maoshi", 0) + amt
+
+        total_income = sum(Decimal(str(v['kirim'])) for v in daily_data.values())
+        total_expense = sum(Decimal(str(v['chiqim'])) for v in daily_data.values())
 
     balance = total_income - total_expense
-
-    income_breakdown = {}
-    for tx in queryset.filter(type='INCOME'):
-        desc = tx.description or "Boshqa kirimlar"
-        income_breakdown[desc] = income_breakdown.get(desc, 0) + float(tx.amount)
-
-    expense_breakdown = {}
-    for tx in queryset.filter(type='EXPENSE'):
-        desc = tx.description or "Boshqa chiqimlar"
-        expense_breakdown[desc] = expense_breakdown.get(desc, 0) + float(tx.amount)
-
-    daily_data = {}
-    for tx in queryset.order_by('created_at'):
-        if not tx.created_at:
-            continue
-        date_key = tx.created_at.strftime('%d.%m')
-        if date_key not in daily_data:
-            daily_data[date_key] = {'kirim': 0, 'chiqim': 0}
-
-        if tx.type == 'INCOME':
-            daily_data[date_key]['kirim'] += float(tx.amount)
-        else:
-            daily_data[date_key]['chiqim'] += float(tx.amount)
 
     return {
         "cards": {
@@ -316,7 +356,6 @@ def get_financial_reports_data(org_id=None, branch_id=None, start_date_str=None,
             }
         }
     }
-
 
 def get_cash_flow_report_data(org_id=None, branch_id=None, from_date=None, to_date=None, cashbox_id=None):
     """
