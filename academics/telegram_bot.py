@@ -598,10 +598,10 @@ def handle_telegram_update(bot_type, token, update_data):
 
             linked = False
             if students.exists():
-                students.update(telegram_chat_id=chat_id)
+                students.update(telegram_chat_id=str(chat_id))
                 linked = True
             if users.exists():
-                users.update(telegram_chat_id=chat_id)
+                users.update(telegram_chat_id=str(chat_id))
                 linked = True
 
             if linked:
@@ -617,12 +617,12 @@ def handle_telegram_update(bot_type, token, update_data):
 
             linked = False
             if students.exists():
-                students.update(telegram_chat_id=chat_id)
+                students.update(telegram_chat_id=str(chat_id))
                 linked = True
             if users.exists():
                 student_users = users.filter(role='student')
                 if student_users.exists():
-                    student_users.update(telegram_chat_id=chat_id)
+                    student_users.update(telegram_chat_id=str(chat_id))
                 linked = True
 
             if linked:
@@ -644,10 +644,10 @@ def handle_telegram_update(bot_type, token, update_data):
 
             linked = False
             if students_father.exists():
-                students_father.update(father_telegram_chat_id=chat_id)
+                students_father.update(father_telegram_chat_id=str(chat_id))
                 linked = True
             if students_mother.exists():
-                students_mother.update(mother_telegram_chat_id=chat_id)
+                students_mother.update(mother_telegram_chat_id=str(chat_id))
                 linked = True
 
             if linked:
@@ -664,7 +664,7 @@ def handle_telegram_update(bot_type, token, update_data):
 
             orgs_found = []
             if users.exists():
-                users.update(telegram_chat_id=chat_id)
+                users.update(telegram_chat_id=str(chat_id))
                 for u in users:
                     if u.organization and u.organization not in orgs_found:
                         orgs_found.append(u.organization)
@@ -689,7 +689,7 @@ def handle_telegram_update(bot_type, token, update_data):
                         if not target_users.exists():
                             target_users = u_list
                         if target_users.exists():
-                            target_users.update(telegram_chat_id=chat_id)
+                            target_users.update(telegram_chat_id=str(chat_id))
                         else:
                             # User mavjud bo'lmasa yaratib bog'laymiz
                             username = f"{digits}_{o.id}"
@@ -739,7 +739,7 @@ def handle_telegram_update(bot_type, token, update_data):
         elif bot_type == 'staff':
             users = find_users_by_phone(phone_raw, roles=['teacher', 'administrator', 'manager', 'accountant', 'staff', 'owner', 'admin'], organization=org)
             if users.exists():
-                users.update(telegram_chat_id=chat_id)
+                users.update(telegram_chat_id=str(chat_id))
                 msg = (
                     "<b>Muvaffaqiyatli bog'landi! 💼</b>\n\n"
                     "Iltimos, bot tilini tanlang:\n"
@@ -795,20 +795,28 @@ def handle_telegram_update(bot_type, token, update_data):
             return
 
         # 🌟 Yangi: Agar foydalanuvchi allaqachon bog'langan bo'lsa menyuni qayta yuborish
-        if bot_type == 'student' and Student.objects.filter(telegram_chat_id=chat_id).exists():
-            student = Student.objects.filter(telegram_chat_id=chat_id).first()
-            msg = f"Assalomu alaykum, {student.first_name}! Xush kelibsiz."
-            menu = get_reply_keyboard([
-                ["👤 Profilim", "💰 Balans & Qarz"],
-                ["💳 Oxirgi to'lovlar", "🧾 Oxirgi to'lov cheki"],
-                ["📅 Dars jadvalim", "📊 Davomatlarim"],
-                ["🏆 Imtihon baholari", "📝 Uy vazifalarim"],
-                ["✉️ Kelgan xabarlar"]
-            ])
-            send_telegram_message(token, chat_id, msg, menu)
-            return
-        elif bot_type == 'reports' and User.objects.filter(telegram_chat_id=chat_id).exists():
-            user = User.objects.filter(telegram_chat_id=chat_id).first()
+        if bot_type == 'student':
+            student = Student.objects.filter(Q(telegram_chat_id=str(chat_id)) | Q(telegram_chat_id=chat_id)).first()
+            if not student:
+                user = User.objects.filter(Q(telegram_chat_id=str(chat_id)) | Q(telegram_chat_id=chat_id)).first()
+                if user:
+                    student = find_students_by_phone(user.phone or user.username, organization=org).first()
+                    if student:
+                        student.telegram_chat_id = str(chat_id)
+                        student.save(update_fields=['telegram_chat_id'])
+            if student:
+                msg = f"Assalomu alaykum, {student.first_name}! Xush kelibsiz."
+                menu = get_reply_keyboard([
+                    ["👤 Profilim", "💰 Balans & Qarz"],
+                    ["💳 Oxirgi to'lovlar", "🧾 Oxirgi to'lov cheki"],
+                    ["📅 Dars jadvalim", "📊 Davomatlarim"],
+                    ["🏆 Imtihon baholari", "📝 Uy vazifalarim"],
+                    ["✉️ Kelgan xabarlar"]
+                ])
+                send_telegram_message(token, chat_id, msg, menu)
+                return
+        elif bot_type == 'reports' and User.objects.filter(telegram_chat_id=str(chat_id)).exists():
+            user = User.objects.filter(telegram_chat_id=str(chat_id)).first()
             lang = getattr(user, 'telegram_language', 'uz') or 'uz'
             if lang == 'ru':
                 msg = f"Здравствуйте, {user.get_full_name() or user.username}! Добро пожаловать в бот отчетов."
@@ -824,8 +832,8 @@ def handle_telegram_update(bot_type, token, update_data):
                 ])
             send_telegram_message(token, chat_id, msg, menu)
             return
-        elif bot_type == 'staff' and User.objects.filter(telegram_chat_id=chat_id).exclude(role='student').exists():
-            user = User.objects.filter(telegram_chat_id=chat_id).exclude(role='student').first()
+        elif bot_type == 'staff' and User.objects.filter(telegram_chat_id=str(chat_id)).exclude(role='student').exists():
+            user = User.objects.filter(telegram_chat_id=str(chat_id)).exclude(role='student').first()
             lang = getattr(user, 'telegram_language', 'uz') or 'uz'
             if lang == 'ru':
                 msg = f"Здравствуйте, {user.get_full_name() or user.username}! Добро пожаловать."
@@ -843,7 +851,7 @@ def handle_telegram_update(bot_type, token, update_data):
                 ])
             send_telegram_message(token, chat_id, msg, menu)
             return
-        elif bot_type == 'parent' and Student.objects.filter(Q(father_telegram_chat_id=chat_id) | Q(mother_telegram_chat_id=chat_id)).exists():
+        elif bot_type == 'parent' and Student.objects.filter(Q(father_telegram_chat_id=str(chat_id)) | Q(mother_telegram_chat_id=str(chat_id))).exists():
             msg = "Assalomu alaykum! Xush kelibsiz."
             menu = get_reply_keyboard([["👶 Farzandlarim", "📊 Davomat"], ["🏆 Baholar", "💳 To'lovlar"]])
             send_telegram_message(token, chat_id, msg, menu)
@@ -955,7 +963,15 @@ def handle_telegram_update(bot_type, token, update_data):
                 send_telegram_message(token, chat_id, reply, menu)
 
     elif bot_type == 'student':
-        student = Student.objects.filter(telegram_chat_id=chat_id).first()
+        student = Student.objects.filter(Q(telegram_chat_id=str(chat_id)) | Q(telegram_chat_id=chat_id)).first()
+        if not student:
+            user = User.objects.filter(Q(telegram_chat_id=str(chat_id)) | Q(telegram_chat_id=chat_id)).first()
+            if user:
+                student = find_students_by_phone(user.phone or user.username, organization=org).first()
+                if student:
+                    student.telegram_chat_id = str(chat_id)
+                    student.save(update_fields=['telegram_chat_id'])
+
         if not student:
             msg = "Siz hali ro'yxatdan o'tmagansiz. Iltimos, telefon raqamingizni yuboring:"
             send_telegram_message(token, chat_id, msg, get_contact_keyboard())
@@ -1099,7 +1115,7 @@ def handle_telegram_update(bot_type, token, update_data):
             send_telegram_message(token, chat_id, "Noma'lum buyruq. Iltimos menyudan foydalaning.", menu)
 
     elif bot_type == 'parent':
-        students = Student.objects.filter(Q(father_telegram_chat_id=chat_id) | Q(mother_telegram_chat_id=chat_id))
+        students = Student.objects.filter(Q(father_telegram_chat_id=str(chat_id)) | Q(mother_telegram_chat_id=str(chat_id)))
         if not students.exists():
             msg = "Siz hali ro'yxatdan o'tmagansiz. Iltimos, telefon raqamingizni yuboring:"
             send_telegram_message(token, chat_id, msg, get_contact_keyboard())
@@ -1163,11 +1179,11 @@ def handle_telegram_update(bot_type, token, update_data):
             send_telegram_message(token, chat_id, "Noma'lum buyruq. Iltimos menyudan foydalaning.", menu)
 
     elif bot_type == 'reports':
-        user = User.objects.filter(telegram_chat_id=chat_id).filter(
+        user = User.objects.filter(telegram_chat_id=str(chat_id)).filter(
             Q(role__iexact='owner') | Q(role__iexact='admin') | Q(is_superuser=True) | Q(is_staff=True)
         ).first()
         if not user:
-            user = User.objects.filter(telegram_chat_id=chat_id).first()
+            user = User.objects.filter(telegram_chat_id=str(chat_id)).first()
         if not user:
             msg = "Kechirasiz, ushbu botga faqat tashkilot rahbarlari kira oladi. Telefon raqamingizni yuboring:"
             send_telegram_message(token, chat_id, msg, get_contact_keyboard())
@@ -1283,7 +1299,7 @@ def handle_telegram_update(bot_type, token, update_data):
             send_telegram_message(token, chat_id, err_msg, menu)
 
     elif bot_type == 'staff':
-        user = User.objects.filter(telegram_chat_id=chat_id).exclude(role='student').first()
+        user = User.objects.filter(telegram_chat_id=str(chat_id)).exclude(role='student').first()
         if not user:
             msg = "Siz hali ro'yxatdan o'tmagansiz. Iltimos, telefon raqamingizni yuboring:"
             send_telegram_message(token, chat_id, msg, get_contact_keyboard())
