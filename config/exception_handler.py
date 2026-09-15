@@ -132,5 +132,5 @@ def custom_exception_handler(exc, context):
     # Boshqa har qanday kutilmagan dasturiy xatolar (Oq sahifani butunlay yo'qotadi)
     logger.error(f"Unhandled exception in {view_name}: {type(exc).__name__}: {str(exc)}", exc_info=True)
     return Response({
-        "detail": "Server xatoligi yuz berdi"
+        "detail": f"Server xatoligi: {type(exc).__name__} - {str(exc)}"
     }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
