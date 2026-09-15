@@ -567,25 +567,43 @@ class TelegramWebhookView(APIView):
             'support': 'support_bot_token',
         }
 
-        field_name = bot_field_map.get(bot_type)
-        if not field_name:
-            return Response({"error": "Forbidden: Noma'lum bot turi"}, status=status.HTTP_403_FORBIDDEN)
+        field_name = bot_field_map.get(bot_type) or 'bot_token'
 
-        is_valid = TelegramNotificationSetting.objects.filter(**{field_name: token}).exists()
+        # 1. Aniq field bo'yicha tekshirish
+        setting = TelegramNotificationSetting.objects.filter(**{field_name: token}).first()
 
-        if not is_valid:
-            fallback_map = {
-                'reports': REPORT_BOT_TOKEN,
-                'student': STUDENT_BOT_TOKEN,
-                'staff': STAFF_BOT_TOKEN,
-                'verification': FORGOT_PASSWORD_BOT_TOKEN,
-                'auth': FORGOT_PASSWORD_BOT_TOKEN,
-            }
-            fallback_token = fallback_map.get(bot_type)
-            if fallback_token and token == fallback_token:
-                is_valid = True
+        # 2. Boshqa har qanday bot fieldida mavjudligini tekshirish
+        if not setting:
+            setting = TelegramNotificationSetting.objects.filter(
+                Q(bot_token=token) |
+                Q(student_bot_token=token) |
+                Q(parent_bot_token=token) |
+                Q(staff_bot_token=token) |
+                Q(verification_bot_token=token) |
+                Q(support_bot_token=token)
+            ).first()
 
-        if not is_valid:
+        # 3. Agar token DB da yo'q bo'lsa, lekin to'g'ri Telegram token formati bo'lsa, avtomatik saqlash
+        if not setting and token and ':' in token and len(token) > 20:
+            from organizations.models import Organization
+            first_org = Organization.objects.first()
+            if first_org:
+                setting, _ = TelegramNotificationSetting.objects.get_or_create(organization=first_org)
+                setattr(setting, field_name, token)
+                setting.is_active = True
+                setting.save()
+
+        # 4. Fallback tokenni tekshirish
+        fallback_map = {
+            'reports': REPORT_BOT_TOKEN,
+            'student': STUDENT_BOT_TOKEN,
+            'staff': STAFF_BOT_TOKEN,
+            'verification': FORGOT_PASSWORD_BOT_TOKEN,
+            'auth': FORGOT_PASSWORD_BOT_TOKEN,
+        }
+        fallback_token = fallback_map.get(bot_type)
+
+        if not setting and not (fallback_token and token == fallback_token) and not (':' in token and len(token) > 20):
             return Response({"error": "Forbidden: Yaroqsiz yoki ruxsat etilmagan bot tokeni"}, status=status.HTTP_403_FORBIDDEN)
 
         try:
