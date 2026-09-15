@@ -164,14 +164,21 @@ class EmployeeSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         role = attrs.get('role')
 
-        # Telefon raqam formatini va takrorlanmasligini qo'lda tekshiramiz (frontedga xato 'phone' maydonida borishi uchun)
+        # Telefon raqam formatini va takrorlanmasligini tekshiramiz
         phone = attrs.get('phone')
         if phone:
-            import re
-            if not re.match(r'^\+998\d{9}$', phone):
+            cleaned = ''.join(c for c in str(phone) if c.isdigit())
+            if len(cleaned) < 7:
                 raise serializers.ValidationError({
-                    "phone": "Telefon raqami noto'g'ri formatda. Loyihada O'zbekiston raqamlari (+998XXXXXXXXX) qabul qilinadi."
+                    "phone": "Telefon raqami kamida 7 ta raqamdan iborat bo'lishi kerak."
                 })
+            if len(cleaned) == 9:
+                phone = '+998' + cleaned
+            elif len(cleaned) == 12 and cleaned.startswith('998'):
+                phone = '+' + cleaned
+            else:
+                phone = '+' + cleaned if not str(phone).startswith('+') else str(phone).strip()
+            attrs['phone'] = phone
             
             # Tashkilot kontekstini aniq olamiz
             request = self.context.get('request')
