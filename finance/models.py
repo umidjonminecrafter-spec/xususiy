@@ -315,12 +315,43 @@ from django.dispatch import receiver
 
 # ================= TELEGRAM BOT ORQALI XABARNOMALAR INTEGRATSIYASI =================
 
-def send_telegram_payment_notification(*args, **kwargs):
-    """
-    Tezkor operatsion xabarlarni Hisobot botiga yuborish to'xtatilgan.
-    Hisobot botiga faqat har kuni soat 09:00 da kunlik umumiy hisobot boradi.
-    """
-    return
+def send_telegram_payment_notification(organization, message_text, setting_type):
+    try:
+        from organizations.models import TelegramNotificationSetting
+        from accounts.models import User
+        from academics.telegram_bot import send_telegram_message, get_report_bot_token
+
+        token = get_report_bot_token(organization)
+        setting = TelegramNotificationSetting.objects.filter(organization=organization).first()
+
+        chat_ids_set = set()
+
+        if setting:
+            # Check if this category of notification is enabled
+            if setting_type and hasattr(setting, setting_type):
+                if not getattr(setting, setting_type, True):
+                    return
+
+            if setting.chat_ids:
+                for cid in setting.chat_ids.replace(',', ' ').split():
+                    if cid.strip():
+                        chat_ids_set.add(cid.strip())
+
+        # Also send to active admin / owner / director staff with telegram_chat_id
+        if organization:
+            staff_users = User.objects.filter(
+                organization=organization,
+                telegram_chat_id__isnull=False
+            ).exclude(role='student')
+            for u in staff_users:
+                if u.telegram_chat_id and str(u.telegram_chat_id).strip():
+                    chat_ids_set.add(str(u.telegram_chat_id).strip())
+
+        if token and chat_ids_set:
+            for cid in chat_ids_set:
+                send_telegram_message(token, cid, message_text)
+    except Exception as e:
+        print(f'Error sending telegram payment notification: {str(e)}')
 
 
 @receiver(post_save, sender=Payment)

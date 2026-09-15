@@ -8,7 +8,7 @@ class Command(BaseCommand):
     help = "Server va Telegram o'rtasida Webhook'larni o'rnatish yoki o'chirish"
 
     def add_arguments(self, parser):
-        parser.add_argument('--domain', type=str, default='musojon1995.pythonanywhere.com', help='Server domeningiz (masalan: musojon1995.pythonanywhere.com)')
+        parser.add_argument('--domain', type=str, default='etirof.pythonanywhere.com', help='Server domeningiz (masalan: musojon1995.pythonanywhere.com)')
         parser.add_argument('--delete', action='store_true', help='Barcha webhooklarni o\'chirish (polling rejimiga o\'tish uchun)')
         parser.add_argument('--report-token', type=str, default=None, help='Hisobot bot tokeni')
         parser.add_argument('--student-token', type=str, default=None, help='Talaba bot tokeni')

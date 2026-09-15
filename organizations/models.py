@@ -212,39 +212,54 @@ class TelegramNotificationSetting(BaseModel):
     def save(self, *args, **kwargs):
         import requests
         bot_fields = [
-            ('verification_bot_token', 'verification_bot_username'),
-            ('student_bot_token', 'student_bot_username'),
-            ('parent_bot_token', 'parent_bot_username'),
-            ('staff_bot_token', 'staff_bot_username'),
-            ('support_bot_token', 'support_bot_username'),
+            ('bot_token', None, 'reports'),
+            ('verification_bot_token', 'verification_bot_username', 'verification'),
+            ('student_bot_token', 'student_bot_username', 'student'),
+            ('parent_bot_token', 'parent_bot_username', 'parent'),
+            ('staff_bot_token', 'staff_bot_username', 'staff'),
+            ('support_bot_token', 'support_bot_username', 'support'),
         ]
 
-        for token_field, username_field in bot_fields:
-            token = getattr(self, token_field)
+        server_domain = 'etirof.pythonanywhere.com'
+
+        for item in bot_fields:
+            token_field = item[0]
+            username_field = item[1]
+            bot_type = item[2]
+
+            token = (getattr(self, token_field) or '').strip()
             old_token = None
             if self.pk:
                 try:
                     old_obj = TelegramNotificationSetting.objects.get(pk=self.pk)
-                    old_token = getattr(old_obj, token_field)
+                    old_token = (getattr(old_obj, token_field) or '').strip()
                 except TelegramNotificationSetting.DoesNotExist:
                     pass
 
             if token and token != old_token:
+                # 1. Fetch bot username
                 try:
                     response = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
                     if response.status_code == 200:
                         data = response.json()
-                        if data.get('ok'):
+                        if data.get('ok') and username_field:
                             username = data['result']['username']
                             setattr(self, username_field, f"@{username}")
-                        else:
-                            setattr(self, username_field, None)
-                    else:
+                    elif username_field:
                         setattr(self, username_field, None)
                 except Exception as e:
                     print(f"Error fetching bot username for field {token_field}: {str(e)}")
-                    setattr(self, username_field, None)
-            elif not token:
+                    if username_field:
+                        setattr(self, username_field, None)
+
+                # 2. Auto-set webhook so incoming messages work immediately
+                try:
+                    wh_url = f"https://{server_domain}/api/telegram/webhook/{bot_type}/{token}/"
+                    requests.get(f"https://api.telegram.org/bot{token}/setWebhook?url={wh_url}", timeout=5)
+                except Exception as e_wh:
+                    print(f"Error auto-setting webhook for {bot_type}: {str(e_wh)}")
+
+            elif not token and username_field:
                 setattr(self, username_field, None)
 
         super().save(*args, **kwargs)
