@@ -173,41 +173,57 @@ class EmployeeSerializer(serializers.ModelSerializer):
                     "phone": "Telefon raqami noto'g'ri formatda. Loyihada O'zbekiston raqamlari (+998XXXXXXXXX) qabul qilinadi."
                 })
             
-            # Tashkilot kontekstini olamiz
+            # Tashkilot kontekstini aniq olamiz
             request = self.context.get('request')
             view = self.context.get('view')
             org_id = None
-            if self.instance:
+            if self.instance and self.instance.organization_id:
                 org_id = self.instance.organization_id
+            if not org_id and 'organization' in attrs:
+                org_val = attrs.get('organization')
+                org_id = org_val.id if hasattr(org_val, 'id') else org_val
             if not org_id and view and hasattr(view, 'get_organization_id'):
                 org_id = view.get_organization_id()
-            if not org_id and request and request.user:
-                org_id = getattr(request.user, 'organization_id', None)
+            if not org_id and request:
+                org_header = None
+                if hasattr(request, 'headers') and request.headers:
+                    org_header = request.headers.get('X-Org-ID') or request.headers.get('X-Organization-ID')
+                if org_header and str(org_header).isdigit():
+                    org_id = int(org_header)
+                if not org_id and hasattr(request, 'user') and getattr(request.user, 'organization_id', None):
+                    org_id = request.user.organization_id
 
             from django.db.models import Q
             from academics.models import Student
 
-            # 1. Boshqa xodimlar ro'yxatida tekshiramiz (shu tashkilotda, student bo'lmaganlar)
-            qs = User.objects.filter(
-                Q(phone=phone) | Q(username=phone) | Q(username__startswith=f"{phone}_")
-            ).exclude(role='student')
+            # Faqat SHU TASHKILOT (org_id) doirasidagi faol xodimlar va talabalarni tekshiramiz
             if org_id:
-                qs = qs.filter(organization_id=org_id)
-            if self.instance:
-                qs = qs.exclude(pk=self.instance.pk)
-            if qs.exists():
-                raise serializers.ValidationError({
-                    "phone": "Ushbu telefon raqamli xodim tizimda allaqachon ro'yxatdan o'tgan."
-                })
+                # 1. Boshqa faol xodimlar ro'yxatida tekshiramiz (shu tashkilotda, faol, student bo'lmaganlar)
+                qs = User.objects.filter(
+                    organization_id=org_id,
+                    is_active=True
+                ).filter(
+                    Q(phone=phone) | Q(username=phone) | Q(username=f"{phone}_{org_id}")
+                ).exclude(role='student')
 
-            # 2. Talabalar ro'yxatida tekshiramiz (shu tashkilotda)
-            student_qs = Student.objects.filter(phone=phone)
-            if org_id:
-                student_qs = student_qs.filter(organization_id=org_id)
-            if student_qs.exists():
-                raise serializers.ValidationError({
-                    "phone": "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
-                })
+                if self.instance:
+                    qs = qs.exclude(pk=self.instance.pk)
+
+                if qs.exists():
+                    raise serializers.ValidationError({
+                        "phone": "Ushbu telefon raqamli xodim tizimda allaqachon ro'yxatdan o'tgan."
+                    })
+
+                # 2. Talabalar ro'yxatida tekshiramiz (shu tashkilotda, faol talabalar)
+                student_qs = Student.objects.filter(
+                    organization_id=org_id,
+                    phone=phone,
+                    is_archived=False
+                )
+                if student_qs.exists():
+                    raise serializers.ValidationError({
+                        "phone": "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
+                    })
 
         # Xavfsizlik qoidalari:
         request = self.context.get('request')

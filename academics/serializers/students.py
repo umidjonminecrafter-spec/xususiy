@@ -120,32 +120,42 @@ class StudentSerializer(serializers.ModelSerializer):
                 request = self.context.get("request")
                 view = self.context.get("view")
                 org_id = None
-                if self.instance:
+                if self.instance and self.instance.organization_id:
                     org_id = self.instance.organization_id
+                if not org_id and 'organization' in attrs:
+                    org_val = attrs.get('organization')
+                    org_id = org_val.id if hasattr(org_val, 'id') else org_val
                 if not org_id and view and hasattr(view, 'get_organization_id'):
                     org_id = view.get_organization_id()
-                if not org_id and request and hasattr(request, "user") and getattr(request.user, "organization_id", None):
-                    org_id = request.user.organization_id
+                if not org_id and request:
+                    org_header = None
+                    if hasattr(request, 'headers') and request.headers:
+                        org_header = request.headers.get('X-Org-ID') or request.headers.get('X-Organization-ID')
+                    if org_header and str(org_header).isdigit():
+                        org_id = int(org_header)
+                    if not org_id and hasattr(request, "user") and getattr(request.user, "organization_id", None):
+                        org_id = request.user.organization_id
 
-                student_qs = Student.objects.filter(phone=phone)
                 if org_id:
-                    student_qs = student_qs.filter(organization_id=org_id)
-                if self.instance:
-                    student_qs = student_qs.exclude(pk=self.instance.pk)
+                    student_qs = Student.objects.filter(organization_id=org_id, phone=phone, is_archived=False)
+                    if self.instance:
+                        student_qs = student_qs.exclude(pk=self.instance.pk)
 
-                if student_qs.exists():
-                    errors["phone"] = "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
-                else:
-                    user_qs = User.objects.filter(
-                        Q(phone=phone) | Q(username=phone) | Q(username__startswith=f"{phone}_")
-                    ).exclude(role='student')
-                    if org_id:
-                        user_qs = user_qs.filter(organization_id=org_id)
-                    if self.instance and self.instance.phone:
-                        user_qs = user_qs.exclude(Q(phone=self.instance.phone) | Q(username=self.instance.phone))
+                    if student_qs.exists():
+                        errors["phone"] = "Ushbu telefon raqamli talaba tizimda allaqachon mavjud."
+                    else:
+                        user_qs = User.objects.filter(
+                            organization_id=org_id,
+                            is_active=True
+                        ).filter(
+                            Q(phone=phone) | Q(username=phone) | Q(username=f"{phone}_{org_id}")
+                        ).exclude(role='student')
 
-                    if user_qs.exists():
-                        errors["phone"] = "Ushbu telefon raqamli xodim tizimda allaqachon ro'yxatdan o'tgan."
+                        if self.instance and self.instance.phone:
+                            user_qs = user_qs.exclude(Q(phone=self.instance.phone) | Q(username=self.instance.phone))
+
+                        if user_qs.exists():
+                            errors["phone"] = "Ushbu telefon raqamli xodim tizimda allaqachon ro'yxatdan o'tgan."
 
         request = self.context.get("request")
         if request and hasattr(request.user, "organization"):
