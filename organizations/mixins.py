@@ -79,12 +79,13 @@ class TenantViewSetMixin:
                 if branch_id:
                     if model.__name__ == 'User':
                         # User (Employee/Teacher/Staff) can be assigned to multiple branches
-                        # Owners should be visible in all branches
+                        # Owners, Admins, or unassigned teachers should be visible
                         queryset = queryset.filter(
                             db_models.Q(branches=branch_id) |
                             db_models.Q(branch_id=branch_id) |
-                            db_models.Q(role='owner') |
-                            db_models.Q(branch__isnull=True, branches__isnull=True)
+                            db_models.Q(role__in=['owner', 'admin']) |
+                            db_models.Q(branch__isnull=True) |
+                            db_models.Q(branches__isnull=True)
                         ).distinct()
                     else:
                         # Model lists that must be strictly isolated to the branch
