@@ -139,9 +139,11 @@ class StudentSerializer(serializers.ModelSerializer):
                             errors["phone"] = "Ushbu telefon raqamli xodim tizimda allaqachon ro'yxatdan o'tgan."
 
         request = self.context.get("request")
-        if request and hasattr(request.user, "organization"):
+        user = getattr(request, 'user', None) if request else None
+        org = getattr(user, 'organization', None) if user else None
+        if org:
             required_fields = StudentFieldSetting.objects.filter(
-                organization=request.user.organization,
+                organization=org,
                 is_required=True
             )
             for setting in required_fields:
@@ -230,9 +232,10 @@ class StudentSerializer(serializers.ModelSerializer):
         rep['full_name'] = f"{instance.first_name} {instance.last_name}".strip()
 
         request = self.context.get('request')
-        phone = instance.phone
-        email = instance.email
-        if request and getattr(request.user, 'role', None) == 'teacher':
+        user = getattr(request, 'user', None) if request else None
+        phone = instance.phone or ''
+        email = instance.email or ''
+        if user and getattr(user, 'is_authenticated', False) and getattr(user, 'role', None) == 'teacher':
             from organizations.models import Subscription
             subscription = Subscription.objects.filter(
                 organization_id=instance.organization_id,
