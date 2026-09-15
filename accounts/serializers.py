@@ -416,6 +416,33 @@ class EmployeeSerializer(serializers.ModelSerializer):
             elif data.get('salary_type') == 'unassigned':
                 data['salary_percentage'] = None
 
+        # Tug'ilgan sana (birth_date) parsingi
+        raw_bdate = data.get('birth_date')
+        if raw_bdate:
+            from common.utils import parse_flexible_date
+            try:
+                parsed_bdate = parse_flexible_date(raw_bdate)
+                if parsed_bdate:
+                    data['birth_date'] = parsed_bdate.isoformat()
+            except Exception:
+                data['birth_date'] = None
+
+        # Jins (gender) normalizatsiyasi
+        raw_gender = data.get('gender')
+        if raw_gender is not None:
+            g_str = str(raw_gender).lower().strip()
+            if g_str in ('erkak', 'm', 'male', 'man', "o'g'il", "ogil"):
+                data['gender'] = 'M'
+            elif g_str in ('ayol', 'f', 'female', 'woman', 'qiz'):
+                data['gender'] = 'F'
+            else:
+                data['gender'] = 'M'
+
+        # Fan / Mutaxassislik (specialty) maydoni bo'lsa position ga qo'shish
+        specialty = data.get('specialty') or data.get('mutaxassislik') or data.get('subject')
+        if specialty and not data.get('position'):
+            data['position'] = f"O'qituvchi ({specialty})"
+
         return super().to_internal_value(data)
 
     # 🚀 2-YANGILIK: create mantiqini xavfsiz va aniq saqlaydigan qildik
@@ -433,10 +460,14 @@ class EmployeeSerializer(serializers.ModelSerializer):
         else:
             validated_data['username'] = phone or validated_data.get('username', '')
 
+        # User modelida mavjud bo'lgan maydonlarnigina uzatamiz
+        model_fields = {f.name for f in User._meta.get_fields() if hasattr(f, 'attname') or f.name in ('groups', 'user_permissions')}
+        user_kwargs = {k: v for k, v in validated_data.items() if k in model_fields}
+
         # Userni yaratamiz
         user = User.objects.create_user(
             password=password,
-            **validated_data
+            **user_kwargs
         )
 
         # Foizni majburiy ravishda bog'lab saqlaymiz
