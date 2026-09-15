@@ -137,40 +137,145 @@ class GroupSerializer(serializers.ModelSerializer):
         return attrs
 
     def to_internal_value(self, data):
+        from accounts.models import User
+        from organizations.models import Branch
+        from academics.models import Course, Room
+        from django.db.models import Q
+
         data = data.copy() if hasattr(data, 'copy') else dict(data)
-        
-        # 1. Teacher normalization (handle sinf_rahbar, teacher_id, etc.)
-        teacher = data.get('teacher') or data.get('sinf_rahbar') or data.get('sinf_rahbari') or data.get('class_teacher')
-        if isinstance(teacher, dict) and 'id' in teacher:
-            teacher = teacher['id']
-        elif isinstance(teacher, list):
-            teacher = teacher[0] if teacher else None
-        if teacher:
-            data['teacher'] = teacher
 
-        # 2. Branch normalization (handle bino, building, etc.)
-        branch = data.get('branch') or data.get('bino') or data.get('building')
-        if isinstance(branch, dict) and 'id' in branch:
-            branch = branch['id']
-        if branch:
-            data['branch'] = branch
+        # 1. Teacher normalization (handle ID, dict, list, or name string)
+        teacher_raw = data.get('teacher') or data.get('sinf_rahbar') or data.get('sinf_rahbari') or data.get('class_teacher')
+        if isinstance(teacher_raw, dict) and 'id' in teacher_raw:
+            teacher_raw = teacher_raw['id']
+        elif isinstance(teacher_raw, (list, tuple)):
+            teacher_raw = teacher_raw[0] if teacher_raw else None
 
-        # 3. Name normalization from grade_level and letter
+        if teacher_raw:
+            if str(teacher_raw).isdigit():
+                t_obj = User.objects.filter(id=int(teacher_raw)).first()
+                data['teacher'] = t_obj.id if t_obj else None
+            else:
+                name_str = str(teacher_raw).strip()
+                t_obj = User.objects.filter(
+                    Q(first_name__icontains=name_str) |
+                    Q(last_name__icontains=name_str) |
+                    Q(username__icontains=name_str)
+                ).first()
+                data['teacher'] = t_obj.id if t_obj else None
+        else:
+            data['teacher'] = None
+
+        # 2. Branch normalization (handle ID, dict, or name string)
+        branch_raw = data.get('branch') or data.get('bino') or data.get('building') or data.get('branch_id')
+        if isinstance(branch_raw, dict) and 'id' in branch_raw:
+            branch_raw = branch_raw['id']
+        elif isinstance(branch_raw, (list, tuple)):
+            branch_raw = branch_raw[0] if branch_raw else None
+
+        if branch_raw:
+            if str(branch_raw).isdigit():
+                b_obj = Branch.objects.filter(id=int(branch_raw)).first()
+                data['branch'] = b_obj.id if b_obj else None
+            else:
+                b_str = str(branch_raw).strip()
+                b_obj = Branch.objects.filter(name__icontains=b_str).first()
+                data['branch'] = b_obj.id if b_obj else None
+        else:
+            data['branch'] = None
+
+        # 3. Room normalization
+        room_raw = data.get('room') or data.get('xona') or data.get('room_id')
+        if isinstance(room_raw, dict) and 'id' in room_raw:
+            room_raw = room_raw['id']
+        if room_raw:
+            if str(room_raw).isdigit():
+                r_obj = Room.objects.filter(id=int(room_raw)).first()
+                data['room'] = r_obj.id if r_obj else None
+            else:
+                r_obj = Room.objects.filter(name__icontains=str(room_raw).strip()).first()
+                data['room'] = r_obj.id if r_obj else None
+        else:
+            data['room'] = None
+
+        # 4. Course normalization
+        course_raw = data.get('course') or data.get('fan') or data.get('course_id')
+        if isinstance(course_raw, dict) and 'id' in course_raw:
+            course_raw = course_raw['id']
+        if course_raw:
+            if str(course_raw).isdigit():
+                c_obj = Course.objects.filter(id=int(course_raw)).first()
+                data['course'] = c_obj.id if c_obj else None
+            else:
+                c_obj = Course.objects.filter(name__icontains=str(course_raw).strip()).first()
+                data['course'] = c_obj.id if c_obj else None
+        else:
+            data['course'] = None
+
+        # 5. Grade level and Section normalization
+        grade_level_raw = data.get('grade_level') or data.get('sinf_darajasi') or data.get('level') or data.get('grade')
+        if grade_level_raw is not None:
+            digits = "".join(c for c in str(grade_level_raw) if c.isdigit())
+            data['grade_level'] = int(digits) if digits else None
+
+        letter_raw = data.get('letter') or data.get('harf') or data.get('char') or data.get('section')
+        if letter_raw:
+            data['section'] = str(letter_raw).strip().upper()
+
+        # 6. Capacity normalization
+        capacity_raw = data.get('capacity') or data.get('oquvchi_soni') or data.get('max_students') or data.get('student_count') or data.get('students_count')
+        if capacity_raw is not None:
+            c_digits = "".join(c for c in str(capacity_raw) if c.isdigit())
+            data['capacity'] = int(c_digits) if c_digits else None
+
+        # 7. Language normalization
+        lang_raw = data.get('language') or data.get('talim_tili') or data.get('lang')
+        if lang_raw:
+            data['language'] = str(lang_raw).strip()[:20]
+
+        # 8. Name normalization
         name = data.get('name')
-        grade_level = data.get('grade_level') or data.get('sinf_darajasi') or data.get('level') or data.get('grade')
-        letter = data.get('letter') or data.get('harf') or data.get('char')
-        
+        grade_level = data.get('grade_level')
+        section = data.get('section')
+
         if not name:
-            if grade_level and letter:
-                data['name'] = f"{grade_level}-{str(letter).strip().upper()}"
-            elif grade_level:
+            if grade_level is not None and section:
+                data['name'] = f"{grade_level}-{section}"
+            elif grade_level is not None:
                 data['name'] = f"{grade_level}-sinf"
-            elif letter:
-                data['name'] = f"Sinf {str(letter).strip().upper()}"
+            elif section:
+                data['name'] = f"Sinf {section}"
             else:
                 data['name'] = "Yangi Sinf"
 
+        # Save student IDs list for post-creation enrollment
+        self._initial_student_ids = data.get('students') or data.get('student_ids') or data.get('selected_students') or []
+
         return super().to_internal_value(data)
+
+    def create(self, validated_data):
+        group = super().create(validated_data)
+        
+        # Avtomatik ravishda tanlangan o'quvchilarni sinfga biriktirish
+        student_ids = getattr(self, '_initial_student_ids', [])
+        if student_ids and isinstance(student_ids, (list, set, tuple)):
+            from academics.models import Student, StudentGroup
+            from django.utils import timezone
+            for s_item in student_ids:
+                s_id = s_item.get('id') if isinstance(s_item, dict) else s_item
+                if s_id and str(s_id).isdigit():
+                    student = Student.objects.filter(id=int(s_id)).first()
+                    if student:
+                        StudentGroup.objects.get_or_create(
+                            organization=group.organization,
+                            group=group,
+                            student=student,
+                            defaults={
+                                'branch': group.branch,
+                                'joined_date': timezone.now().date(),
+                            }
+                        )
+        return group
 
 
 class StudentGroupSerializer(serializers.ModelSerializer):
