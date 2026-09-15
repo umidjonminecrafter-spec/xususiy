@@ -130,20 +130,23 @@ class EmployeeSerializer(serializers.ModelSerializer):
         return [{"id": b.id, "name": b.name} for b in obj.branches.all()]
 
     def _get_teacher_groups(self, obj):
-        from academics.models import Group
-        # Teacher or assistant teacher or additional teacher via GroupTeacher relation
-        group_list = list(
-            Group.objects.filter(teacher=obj) |
-            Group.objects.filter(assistant_teacher=obj) |
-            Group.objects.filter(group_teachers__teacher=obj)
-        )
-        seen = set()
-        unique_groups = []
-        for g in group_list:
-            if g.id not in seen:
-                seen.add(g.id)
-                unique_groups.append(g)
-        return unique_groups
+        try:
+            from academics.models import Group
+            # Teacher or assistant teacher or additional teacher via GroupTeacher relation
+            group_list = list(
+                Group.objects.filter(teacher=obj) |
+                Group.objects.filter(assistant_teacher=obj) |
+                Group.objects.filter(group_teachers__teacher=obj)
+            )
+            seen = set()
+            unique_groups = []
+            for g in group_list:
+                if g.id not in seen:
+                    seen.add(g.id)
+                    unique_groups.append(g)
+            return unique_groups
+        except Exception:
+            return []
 
     @extend_schema_field(serializers.ListField(child=serializers.IntegerField()))
     def get_groups(self, obj):

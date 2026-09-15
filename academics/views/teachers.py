@@ -37,7 +37,7 @@ class TeacherViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
             Q(position__icontains="oqituvchi") |
             Q(position__icontains="teacher") |
             Q(position__icontains="ustoz")
-        ).exclude(is_superuser=True).exclude(role='student').distinct()
+        ).exclude(is_superuser=True).exclude(role='student').distinct().order_by('-date_joined', 'id')
 
 
 @extend_schema_view(

@@ -312,7 +312,7 @@ class EmployeeViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 )
             else:
                 qs = qs.filter(role=role)
-        return qs
+        return qs.order_by('-date_joined', 'id')
 
     def create(self, request, *args, **kwargs):
         from django.db import transaction as db_transaction
