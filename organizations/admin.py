@@ -113,6 +113,8 @@ class SubscriptionAdmin(admin.ModelAdmin):
     list_display_links = ['id', 'organization']
 
 
+
+
 @admin.register(TelegramNotificationSetting)
 class TelegramNotificationSettingAdmin(admin.ModelAdmin):
     list_display = ('id', 'organization', 'is_active', 'staff_bot_token', 'parent_bot_token')

@@ -314,6 +314,11 @@ class EmployeeViewSet(TenantViewSetMixin, viewsets.ModelViewSet):
                 qs = qs.filter(role=role)
         return qs
 
+    def create(self, request, *args, **kwargs):
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            return super().create(request, *args, **kwargs)
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         if instance == request.user:

@@ -28,17 +28,16 @@ class TeacherViewSet(TenantViewSetMixin, viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     permission_page_name = 'O\'qituvchilar'
     serializer_class = EmployeeSerializer
+    queryset = User.objects.select_related('organization', 'branch').prefetch_related('branches')
 
     def get_queryset(self):
-        return User.objects.filter(
-            organization_id=self.get_organization_id()
-        ).filter(
+        return super().get_queryset().filter(
             Q(role__iexact='teacher') |
             Q(position__icontains="o'qituvchi") |
             Q(position__icontains="oqituvchi") |
             Q(position__icontains="teacher") |
             Q(position__icontains="ustoz")
-        ).exclude(is_superuser=True).distinct()
+        ).exclude(is_superuser=True).exclude(role='student').distinct()
 
 
 @extend_schema_view(
