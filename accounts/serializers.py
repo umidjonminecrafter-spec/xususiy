@@ -23,8 +23,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'specialty', 'lesson_hours', 'organization',
-                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'branches', 'branches_detail')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'position', 'organization',
+                  'organization_name', 'branch', 'branch_name', 'photo', 'salary_percentage', 'hourly_rate',
+                  'fixed_salary', 'salary_type', 'weekly_hours', 'branches', 'branches_detail')
         read_only_fields = ('id', 'role', 'organization', 'branch')
 
 
@@ -122,6 +123,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
     branches_detail = serializers.SerializerMethodField(read_only=True)
     groups = serializers.SerializerMethodField(read_only=True)
     groups_detail = serializers.SerializerMethodField(read_only=True)
+    weekly_hours = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True)
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_branches_detail(self, obj):
@@ -155,28 +157,12 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = User
         fields = ('id', 'username', 'password', 'email', 'first_name', 'last_name', 'phone', 'role', 'position',
                   'organization', 'branch', 'birth_date', 'gender', 'photo', 'salary_percentage',
-                  'salary_percentage_detail', 'branches', 'branches_detail', 'groups', 'groups_detail',
-                  'specialty', 'lesson_hours')
+                  'salary_percentage_detail', 'salary_type', 'hourly_rate', 'fixed_salary', 'weekly_hours',
+                  'branches', 'branches_detail', 'groups', 'groups_detail')
         read_only_fields = ('id', 'organization', 'branch')
 
-    def to_representation(self, instance):
-        ret = super().to_representation(instance)
-        ret['subjects'] = instance.specialty or instance.position or "-"
-        ret['specialty'] = instance.specialty or instance.position or "-"
-        ret['lessonHours'] = instance.lesson_hours or "-"
-        ret['lesson_hours'] = instance.lesson_hours or "-"
-        return ret
-
-    # 🚀 1-YANGILIK: Abdulmajidga xatolik chiroyli "400 Bad Request" bo'lib borishi uchun:
     def validate(self, attrs):
         role = attrs.get('role')
-        salary_percentage = attrs.get('salary_percentage')
-
-        # to_internal_value dan kelgan rolni ham tekshiramiz
-        if role == 'teacher' and not salary_percentage:
-            raise serializers.ValidationError({
-                "salary_percentage": "O'qituvchi yaratish uchun ish haqi foizini yuborish majburiy!"
-            })
 
         # Telefon raqam formatini va takrorlanmasligini qo'lda tekshiramiz (frontedga xato 'phone' maydonida borishi uchun)
         phone = attrs.get('phone')
@@ -277,6 +263,129 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 data['role'] = 'receptionist'
             else:
                 data['role'] = 'employee'
+
+        # Haftalik dars soati validatsiyasi (faqat raqam kiritilishi shart, harflar taqiqlanadi)
+        raw_weekly_hours = data.get('weekly_hours')
+        if raw_weekly_hours is None and 'weekly_lesson_hours' in data:
+            raw_weekly_hours = data.get('weekly_lesson_hours')
+        elif raw_weekly_hours is None and 'dars_soati' in data:
+            raw_weekly_hours = data.get('dars_soati')
+
+        if raw_weekly_hours is not None:
+            val_str = str(raw_weekly_hours).strip()
+            if val_str != '':
+                try:
+                    float(val_str)
+                    data['weekly_hours'] = val_str
+                except ValueError:
+                    raise serializers.ValidationError({
+                        "weekly_hours": "Haftalik dars soatiga faqat raqam kiritilishi shart. Harf kiritish taqiqlangan."
+                    })
+            else:
+                data['weekly_hours'] = 0
+
+        # salary_type normalizatsiyasi (har qanday oylik turi nomini to'g'ri qabul qilish)
+        sal_type = data.get('salary_type')
+        if sal_type is not None:
+            st = str(sal_type).lower().strip()
+            if st in ['belgilanmagan', 'unassigned', 'none', 'null', 'false', '0', '']:
+                data['salary_type'] = 'unassigned'
+            elif any(x in st for x in ['foiz', 'percent']):
+                data['salary_type'] = 'percentage'
+            elif any(x in st for x in ['soat', 'hour']):
+                data['salary_type'] = 'hourly'
+            elif any(x in st for x in ['qat', 'oylik', 'fixed', 'summa']):
+                data['salary_type'] = 'fixed'
+
+        # Qat'iy oylik summa (fixed_salary) va soatbay stavkani (hourly_rate) tozalash
+        raw_fixed_salary = data.get('fixed_salary')
+        if raw_fixed_salary is None and 'monthly_salary' in data:
+            raw_fixed_salary = data.get('monthly_salary')
+        elif raw_fixed_salary is None and 'salary_amount' in data:
+            raw_fixed_salary = data.get('salary_amount')
+        elif raw_fixed_salary is None and 'fixed_amount' in data:
+            raw_fixed_salary = data.get('fixed_amount')
+
+        if raw_fixed_salary is not None:
+            val_clean = str(raw_fixed_salary).replace(' ', '').replace(',', '').strip()
+            if val_clean != '':
+                try:
+                    data['fixed_salary'] = float(val_clean)
+                except ValueError:
+                    pass
+
+        if 'hourly_rate' in data and data['hourly_rate'] is not None:
+            hr_clean = str(data['hourly_rate']).replace(' ', '').replace(',', '').strip()
+            if hr_clean != '':
+                try:
+                    data['hourly_rate'] = float(hr_clean)
+                except ValueError:
+                    pass
+
+        # salary_percentage va turli oylik variantlarini moslashtirish
+        raw_pct = data.get('salary_percentage')
+        if raw_pct is not None and str(raw_pct).strip() != '':
+            pct_clean = str(raw_pct).replace('%', '').replace(' ', '').replace(',', '').strip()
+            try:
+                pct_num = float(pct_clean)
+            except ValueError:
+                pct_num = None
+
+            current_st = data.get('salary_type')
+            if current_st == 'fixed':
+                if pct_num is not None and ('fixed_salary' not in data or data.get('fixed_salary') in [0, 0.0, None]):
+                    data['fixed_salary'] = pct_num
+                data['salary_percentage'] = None
+            elif current_st == 'hourly':
+                if pct_num is not None and ('hourly_rate' not in data or data.get('hourly_rate') in [0, 0.0, None]):
+                    data['hourly_rate'] = pct_num
+                data['salary_percentage'] = None
+            elif current_st == 'unassigned':
+                data['salary_percentage'] = None
+                data['fixed_salary'] = 0.0
+                data['hourly_rate'] = 0.0
+            else:
+                if pct_num is not None and pct_num > 100 and ('fixed_salary' not in data or data.get('fixed_salary') in [0, 0.0, None]):
+                    data['salary_type'] = 'fixed'
+                    data['fixed_salary'] = pct_num
+                    data['salary_percentage'] = None
+                elif pct_num is not None:
+                    # StaffSalaryPercent PK bormi yoki mavjud percent bormi tekshiramiz
+                    if not StaffSalaryPercent.objects.filter(pk=pct_clean).exists():
+                        request = self.context.get('request')
+                        view = self.context.get('view')
+                        org_id = None
+                        if self.instance:
+                            org_id = self.instance.organization_id
+                        if not org_id and view and hasattr(view, 'get_organization_id'):
+                            org_id = view.get_organization_id()
+                        if not org_id and request and request.user:
+                            org_id = getattr(request.user, 'organization_id', None)
+
+                        ssp = None
+                        if org_id:
+                            ssp = StaffSalaryPercent.objects.filter(organization_id=org_id, percent=pct_num).first()
+                        if not ssp:
+                            ssp = StaffSalaryPercent.objects.filter(percent=pct_num).first()
+                        if not ssp and org_id and 0 <= pct_num <= 100:
+                            ssp = StaffSalaryPercent.objects.create(
+                                organization_id=org_id,
+                                percent=pct_num,
+                                name=f"{int(pct_num) if pct_num.is_integer() else pct_num}%"
+                            )
+                        if ssp:
+                            data['salary_percentage'] = ssp.id
+                        else:
+                            data['salary_percentage'] = None
+                    if 'salary_type' not in data:
+                        data['salary_type'] = 'percentage'
+        else:
+            if data.get('salary_type') == 'fixed' and data.get('fixed_salary'):
+                data['salary_percentage'] = None
+            elif data.get('salary_type') == 'hourly' and data.get('hourly_rate'):
+                data['salary_percentage'] = None
+            elif data.get('salary_type') == 'unassigned':
+                data['salary_percentage'] = None
 
         return super().to_internal_value(data)
 

@@ -95,23 +95,27 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             serializer.is_valid(raise_exception=True)
         except Exception as e:
             # Fallback 1: eski foydalanuvchilar uchun faqat formatlangan telefon raqami bilan kirib ko'ramiz
-            alt_data = data.copy() if hasattr(data, 'copy') else dict(data)
-            alt_data['username'] = formatted_phone
-            serializer2 = self.get_serializer(data=alt_data)
-            try:
-                serializer2.is_valid(raise_exception=True)
-                serializer = serializer2
-            except Exception:
-                # Fallback 2: plyussiz raqam bilan urinib ko'ramiz
-                alt_data2 = data.copy() if hasattr(data, 'copy') else dict(data)
-                alt_data2['username'] = formatted_phone.replace('+', '')
-                serializer3 = self.get_serializer(data=alt_data2)
+            if formatted_phone:
+                alt_data = data.copy() if hasattr(data, 'copy') else dict(data)
+                alt_data['username'] = formatted_phone
+                serializer2 = self.get_serializer(data=alt_data)
                 try:
-                    serializer3.is_valid(raise_exception=True)
-                    serializer = serializer3
+                    serializer2.is_valid(raise_exception=True)
+                    serializer = serializer2
                 except Exception:
-                    print("Login validation failed:", str(e))
-                    return Response({"detail": "Telefon raqam yoki parol noto'g'ri."}, status=status.HTTP_400_BAD_REQUEST)
+                    # Fallback 2: plyussiz raqam bilan urinib ko'ramiz
+                    alt_data2 = data.copy() if hasattr(data, 'copy') else dict(data)
+                    alt_data2['username'] = formatted_phone.replace('+', '')
+                    serializer3 = self.get_serializer(data=alt_data2)
+                    try:
+                        serializer3.is_valid(raise_exception=True)
+                        serializer = serializer3
+                    except Exception:
+                        print("Login validation failed:", str(e))
+                        return Response({"detail": "Telefon raqam yoki parol noto'g'ri."}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                print("Login validation failed:", str(e))
+                return Response({"detail": "Telefon raqam yoki parol noto'g'ri."}, status=status.HTTP_400_BAD_REQUEST)
         
         user = serializer.user
         update_last_login(None, user)

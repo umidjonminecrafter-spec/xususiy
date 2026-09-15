@@ -85,9 +85,32 @@ def resolve_teacher_salary_rule(organization_id, teacher, period, year, month, s
         ).first()
 
     if not rule:
-        if getattr(teacher, 'salary_percentage', None):
+        st = getattr(teacher, 'salary_type', None)
+        fixed_val = getattr(teacher, 'fixed_salary', None)
+        hourly_val = getattr(teacher, 'hourly_rate', None)
+        percent_obj = getattr(teacher, 'salary_percentage', None)
+
+        if st == 'fixed' and fixed_val is not None and Decimal(str(fixed_val)) > 0:
+            rule_type = 'fixed'
+            rate = Decimal(str(fixed_val))
+        elif (st == 'hourly' or st == 'per_hour') and hourly_val is not None and Decimal(str(hourly_val)) > 0:
+            rule_type = 'per_hour'
+            rate = Decimal(str(hourly_val))
+        elif st == 'percentage' and percent_obj:
             rule_type = 'percentage'
-            rate = Decimal(str(teacher.salary_percentage.percent))
+            rate = Decimal(str(percent_obj.percent))
+        elif st in ['unassigned', 'none']:
+            rule_type = 'fixed'
+            rate = Decimal('0.00')
+        elif fixed_val and Decimal(str(fixed_val)) > 0:
+            rule_type = 'fixed'
+            rate = Decimal(str(fixed_val))
+        elif hourly_val and Decimal(str(hourly_val)) > 0:
+            rule_type = 'per_hour'
+            rate = Decimal(str(hourly_val))
+        elif percent_obj:
+            rule_type = 'percentage'
+            rate = Decimal(str(percent_obj.percent))
         elif std_rule:
             rule_type = std_rule.rule_type
             rate = std_rule.rate
@@ -257,7 +280,13 @@ def calculate_teacher_salaries(organization_id, period):
     month_start = timezone.datetime(year, month, 1).date()
     month_end = timezone.datetime(year, month, last_day).date()
 
-    teachers = User.objects.filter(organization_id=organization_id, role='teacher', is_active=True).exclude(username__startswith='test_user_')
+    teachers = User.objects.filter(organization_id=organization_id).filter(
+        Q(role='teacher') |
+        Q(position__icontains="o'qituvchi") |
+        Q(position__icontains="oqituvchi") |
+        Q(position__icontains="teacher") |
+        Q(position__icontains="ustoz")
+    ).exclude(is_superuser=True).distinct()
     subscription = Subscription.objects.filter(
         organization_id=organization_id,
         is_active=True
